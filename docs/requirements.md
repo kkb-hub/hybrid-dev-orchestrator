@@ -4,7 +4,7 @@
 - 対象リポジトリ: kkb-hub/hybrid-dev-orchestrator
 - MVP 対象OS: Windows native
 - ステータス: Draft for review
-- 最終更新: 2026-08-28
+- 最終更新: 2026-08-30
 
 ## 1. 概要
 
@@ -107,7 +107,7 @@ MVP reference environment:
 - Claude Code: Windows native
 - Codex CLI: Windows native
 - Ollama: Windows native
-- Local LLM: Ollamaから利用可能な量子化coding model
+- Local LLM: `qwen3.8:27b` (Ollama)
 
 RTX 4090 / RAM 128GBはreference environmentであり、HDOそのものがこのハードウェアだけに依存してはならない。
 
@@ -168,16 +168,16 @@ provider側のconversation stateへ依存せず、HDO自身が task、run、iter
 
 | Profile | Model | 想定用途 | 初期Context |
 |---|---|---|---:|
-| balanced | Qwen3-Coder-30B-A3B-Instruct Q4_K_M | 通常実装 | 32K |
+| balanced | `qwen3.8:27b` | 通常実装 | 32K |
 | long-context | Devstral Small 2 24B Q4_K_M | repo理解・長めのcontext | 32K |
 | reasoning | Qwen3.6-35B-A3B Q4_K_M | 高難度タスク | 16K |
 | experimental-large | Qwen3-Coder-Next Q4_K_M | RAM offload実験 | 16K |
 
-balanced を初期defaultとする。
+balanced を初期defaultとし、MVPのreference/default modelは Ollama の `qwen3.8:27b` とする。
 
 HDOでは1回の最大能力よりも、Implement -> Test -> Review -> Fix -> Test -> Review の time-to-correct-solution が重要である。
 
-Qwen3.6-35B-A3Bは能力面では有力だが、Q4でもRTX 4090 24GBに対するVRAM余裕が小さいため、MVPのdefaultにはしない。
+`qwen3.8:27b` はMVPで実際に利用する基準モデルとして扱う。ただしmodelIdは設定値として保持し、orchestration logicへhard-codeしない。
 
 Qwen3-Coder-Nextは128GB RAM環境ではロード可能でもGPU外offloadによって速度低下が大きいため、experimental扱いとする。
 
@@ -580,7 +580,7 @@ MVPは意図的に、Claude = 判断する、Local = 変更する、Human = 最�
 
 RTX 4090 + 128GB RAMでは大規模モデルをRAM offloadで動作させることは可能である。しかしHDOの最適化対象は1回の回答能力ではなく、review/fixを含むtime-to-correct-solutionである。
 
-高速にiterationを回せる30B前後のモデルをdefaultとし、大規模モデルはprofileで選択可能にする。
+MVPでは `qwen3.8:27b` をdefaultとし、review/fixを含むtime-to-correct-solutionを基準に評価する。大規模モデルや代替モデルはprofileで選択可能にする。
 
 ### 29.3 独自HTTP proxyをMVPで作らない
 
@@ -625,7 +625,7 @@ MCPは将来のinterfaceとして有用だが、MVPではPowerShell CLIで要件
 - Ollama Authentication: https://docs.ollama.com/api/authentication
 - Ollama Usage: https://docs.ollama.com/api/usage
 - Git Worktree: https://git-scm.com/docs/git-worktree
-- Qwen3-Coder-30B-A3B-Instruct: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+- Ollama qwen3.8:27b: https://ollama.com/library/qwen3.8:27b
 - Qwen3.6-35B-A3B: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
 - Devstral Small 2 24B: https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512
 
