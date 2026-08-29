@@ -625,7 +625,7 @@ MCPは将来のinterfaceとして有用だが、MVPではPowerShell CLIで要件
 - Ollama Authentication: https://docs.ollama.com/api/authentication
 - Ollama Usage: https://docs.ollama.com/api/usage
 - Git Worktree: https://git-scm.com/docs/git-worktree
-- Qwen3-Coder-30B-A3B-Instruct: https://huggingface.co/Qwen/Qwen3-Coder-30B-A3B-Instruct
+- Ollama qwen3.8:27b: https://ollama.com/library/qwen3.8:27b
 - Qwen3.6-35B-A3B: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
 - Devstral Small 2 24B: https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512
 
