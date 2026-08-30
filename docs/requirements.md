@@ -536,6 +536,8 @@ hybrid-dev-orchestrator/
 
 初回PRでは本要件定義書のみを追加する。
 
+本リポジトリには、HDO orchestrator とは**別の導入単位**として、net-equity で運用してきたレビュー基盤（多段レビュー・変異検証・token telemetry。net-equity issue #106 からの切り出し）を同居させる。同居の決定・条件・HDO との共有物の境界は `docs/review-platform.md` を正典とする。上の構成図にはまだ反映していない —— レビュー基盤側のディレクトリ配置は、schema の定義元を1箇所にする条件と両立する形を実装PRで確定してから足す。HDO 本体のMVPスコープは変わらない。
+
 ## 25. CI要件
 
 GitHub-hosted CIではGPUやOllama巨大モデルを要求しない。
