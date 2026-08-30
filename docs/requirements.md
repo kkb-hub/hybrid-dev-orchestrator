@@ -127,15 +127,22 @@ Claude Codeは通常フローで実装コードを直接変更してはならな
 
 Local Workerは repository exploration、implementation、refactoring、test追加、build、lint、test実行、review findingへの修正を担当する。
 
-Local Workerは Codex CLI exec --oss をagent harnessとして利用する。
+Local Workerは Codex CLI の非対話モードをagent harnessとして利用する (§6.4)。
 
 ### 6.4 Codex CLI
 
-Codex CLIはローカルLLMと開発ツールを接続するagent harnessとして利用する。HDOからは原則として非対話モードで呼び出す。
+Codex CLIはローカルLLMと開発ツールを接続するagent harnessとして利用する。HDOからは原則として非対話モード (`codex exec`) で呼び出す。
 
-利用する主要オプションは oss、local-provider ollama、workspace-write sandbox、JSONL出力、最終メッセージ保存である。
+HDOがCodex CLIへ要求する機能は以下とする。
 
-CLI仕様変更に備え、Codex CLI引数を orchestration logic 全体へ散在させない。
+- OSS / local provider機構によるローカルモデル接続
+- workspace-write相当のsandbox指定
+- 機械可読なevent stream出力 (JSONL)
+- 最終メッセージのファイル保存
+
+具体的なCLIフラグ名およびconfigキー名は要件ではなく実装詳細として扱い、単一のCodex adapter層へ閉じ込める。orchestration logicはadapterのみを呼び出し、Codex CLI引数を全体へ散在させない。
+
+Codex CLIはフラグおよびconfigキーの仕様変更が発生しうるため、動作確認済みバージョンを設定値として保持し、preflightで検出したバージョンと突き合わせる。
 
 ## 7. Provider設計
 
@@ -160,18 +167,22 @@ Provider profileは最低限以下を扱う。
 
 将来的に Ollama、LM Studio、llama.cpp server、vLLM、その他OpenAI-compatible endpoint を追加可能とする。
 
+context長の扱いには特に注意を要する。OpenAI-compatible endpoint経由の場合、provider側が実際にロードする実効context長と、harness側が想定するcontext長は独立に決まる。いずれかが小さいと入力が黙って切り詰められ、workerの失敗原因がモデル能力の問題と区別できなくなる。
+
+したがってcontextTokensはartifactへの記録専用の値ではなく、実際に適用する値とする。HDOはprofileのcontextTokensをprovider側とharness側の双方へ明示的に適用し、適用された値をartifactへ記録する。適用値を確認できない状態でworkerを実行してはならない。
+
 provider側のconversation stateへ依存せず、HDO自身が task、run、iteration、review findings、diff、test result、worker summary、model profile、execution status をsource of truthとして保持する。
 
 ## 8. モデルプロファイル
 
 モデル名をorchestration logicへhard-codeしてはならない。
 
-| Profile | Model | 想定用途 | 初期Context |
-|---|---|---|---:|
-| balanced | `qwen3.8:27b` | 通常実装 | 32K |
-| long-context | Devstral Small 2 24B Q4_K_M | repo理解・長めのcontext | 32K |
-| reasoning | Qwen3.6-35B-A3B Q4_K_M | 高難度タスク | 16K |
-| experimental-large | Qwen3-Coder-Next Q4_K_M | RAM offload実験 | 16K |
+| Profile | modelId (Ollama) | 重みサイズ | 想定用途 | 初期Context |
+|---|---|---:|---|---:|
+| balanced | `qwen3.8:27b` | 18GB | 通常実装 | 32K |
+| long-context | `devstral-small-2:24b` | 15GB | repo理解・長めのcontext | 64K |
+| reasoning | `qwen3.6:35b` | 23GB | 高難度タスク | 16K |
+| experimental-large | `qwen3-coder-next` | 52GB | RAM offload実験 | 16K |
 
 balanced を初期defaultとし、MVPのreference/default modelは Ollama の `qwen3.8:27b` とする。
 
@@ -179,7 +190,33 @@ HDOでは1回の最大能力よりも、Implement -> Test -> Review -> Fix -> Te
 
 `qwen3.8:27b` はMVPで実際に利用する基準モデルとして扱う。ただしmodelIdは設定値として保持し、orchestration logicへhard-codeしない。
 
-Qwen3-Coder-Nextは128GB RAM環境ではロード可能でもGPU外offloadによって速度低下が大きいため、experimental扱いとする。
+### 8.1 初期Contextの根拠
+
+上表の初期Contextはモデルの最大context長ではない。列挙した4モデルはいずれも公称256K以上のcontext長を持つ。
+
+制約となるのはreference environmentのVRAM 24GBであり、実際に確保できるcontext長は「VRAM - 重みサイズ」で決まるKV cache容量に依存する。すなわちprofile間の差はモデルの最大context長ではなく、VRAM内で実効的に確保できるcontext長である。long-contextプロファイルが成立するのは、`devstral-small-2:24b` の重みが4モデル中最小でKV cacheへ回せるVRAMが最も大きいためである。
+
+上表の値は初期目標値であり、確定値ではない。実際に確保できる値はquantization、KV cache精度、GPU上の他プロセスのVRAM使用量に依存するため、profileごとに実測して確定する。
+
+reasoningプロファイルは重みだけでVRAMの大半を占めるため初期値を16Kとしたが、thinkingトークンがcontextを消費するため不足する場合がある。実測により調整するか、KV cache量子化の適用を検討する。
+
+profileの追加・変更時は、long-contextのcontextTokensがbalancedを下回らないことを設定validationで確認する。
+
+### 8.2 thinking制御
+
+`qwen3.8` および `qwen3.6` はthinkingがdefaultで有効である。thinkingの有無とreasoning effortはworkerの実行時間およびcontext消費へ直接影響するため、profileの設定値として制御可能とする。制御できない場合でも、どの設定で実行したかをartifactへ記録する。
+
+### 8.3 導入経路
+
+MVP時点では上記4モデルはいずれもOllama library tagとして取得可能であり、GGUFからのimportを必須としない。
+
+ただしprofileごとの導入元と導入コマンドは `config/models.json` に保持し、§20 preflightでモデル未導入時にユーザーへ提示する情報として利用する。library tagが存在しないモデルを将来profileへ追加する場合に備え、導入元としてlibrary tagとModelfile importの双方を表現できるschemaとする。
+
+### 8.4 experimental-large
+
+`qwen3-coder-next` は52GBでありVRAM 24GBへ収まらないためRAM offloadが前提となる。
+
+ただし本モデルはMoEでありactive parameterが小さいため、同一サイズのdense modelほどoffloadによる速度低下を受けない可能性がある。MVPではexperimental扱いを維持し、実用可否はbenchmark suiteのtime-to-correct-solutionで再評価する。
 
 ## 9. Git Worktree隔離
 
@@ -215,6 +252,10 @@ Windows native MVPではCodexのWindows sandboxを利用する。
 
 無制限のsandbox bypassモードはMVPで利用しない。
 
+CodexのelevatedサンドボックスはOSレベルのセットアップ (低権限sandboxユーザーの作成、ACL設定、firewall規則、logon right付与) を必要とし、UAC拒否や企業ポリシーにより失敗して、より保護の弱いunelevatedモードへfallbackする場合がある。
+
+HDOはelevated / unelevatedのいずれで実行したかを判定してartifactへ記録し、期待するsandboxを満たせない場合の扱い (警告して継続 / 停止) を設定可能とする。既定は停止とし、sandbox強度の低下を黙って受け入れない。
+
 Local Workerの外部ネットワークアクセスは既定で禁止する。workerの判断だけで npm install、pip install、curl、Invoke-WebRequest、git fetch、任意外部APIアクセスを許可しない。
 
 必要な場合はユーザーが明示的にnetwork-enabled profileを選択する。
@@ -222,6 +263,8 @@ Local Workerの外部ネットワークアクセスは既定で禁止する。wo
 Local Workerへ不要なcredentialを継承してはならない。特に Anthropic API credential、OpenAI API credential、GitHub token、cloud provider credentials、unrelated application secrets を可能な限りworker環境から除外する。
 
 Ollama endpointは原則localhostに限定し、既定は http://localhost:11434 とする。不用意にLANへ公開しない。
+
+network denyの対象は、workerがsandbox内で実行するコマンドである。Codex CLI自身がlocal provider endpointへ行うmodel API呼び出しはこれとは別経路であり、両者を混同しない。この2経路がWindows sandbox上で実際に分離されることの確認は§30の未解決事項とする。
 
 ## 11. Claude Reviewer制約
 
@@ -246,7 +289,9 @@ Claude reviewerが利用可能:
 - git reset --hard
 - destructive filesystem operations
 
-MVPではClaude Code SkillとHooksの併用を想定し、hardeningではPreToolUse hook等により禁止操作を実行前にblockできる構成を目指す。
+MVPではClaude Code SkillとHooksを併用する。PreToolUse hookは対象のtool callを実行前にdenyできるため、禁止操作の強制はprompt依存ではなくhookで実装する。
+
+Skillは意図を伝える手段、hookは強制する手段として役割を分ける。
 
 ## 12. Claude Code Skill
 
@@ -293,27 +338,39 @@ CREATED
        -> APPROVED
        -> CHANGES_REQUESTED -> IMPLEMENTING
        -> ESCALATED
-       -> FAILED
+
+任意のnon-terminal state
+  -> FAILED      (回復不能なエラー)
+  -> CANCELLED   (ユーザーによる中断)
 ~~~
 
-不正な状態遷移を許可しない。
+FAILEDおよびCANCELLEDはREVIEW_PENDING固有ではない。preflight失敗、worker timeout、VRAM OOM、policy violationはIMPLEMENTINGやTESTINGからも発生するため、任意のnon-terminal stateからの遷移先とする。
+
+APPROVED / ESCALATED / FAILED / CANCELLED を終端状態とし、終端状態からの遷移を許可しない。
+
+不正な状態遷移を許可しない。状態遷移はstate-machine testで検証する。
 
 ## 15. Review / Fix Loop
 
 Claudeのレビュー結果は自然言語だけで保持せず構造化する。
 
-最低フィールド:
+review resultの最低フィールド:
 
 - decision
 - summary
-- findings
+- findings — finding objectの配列 (空配列を許容)
+
+各findingの最低フィールド:
+
 - severity
 - path
 - line
 - message
 - requiredAction
 
-許可するdecisionは approve / request_changes / escalate とする。
+許可するdecisionは approve / request_changes / escalate とする。decisionが request_changes の場合、findingsを空にしてはならない。
+
+review resultの構造はJSON Schemaとして `schemas/` へ定義し、CIで検証する。
 
 レビュー→修正ループは既定で最大3回とする。最大回数到達後は自動継続せずHumanへescalateする。無制限値は禁止する。
 
@@ -357,7 +414,11 @@ runごとに実行情報をrepository外へ保存する。
 - review result
 - metrics
 
-artifactには run id、repository、base commit、worktree path、branch、model/profile、context size、iteration、start/end time、exit code、worker events、git diff、test output、review result、failure category、timing metrics を記録可能とする。
+artifactには run id、repository、base commit、worktree path、branch、model/profile、実際に適用されたcontext長、thinking設定、Codex CLI version、判定されたsandbox mode、iteration、start/end time、exit code、worker events、git diff、test output、review result、failure category、timing metrics を記録可能とする。
+
+context長・sandbox mode・Codex CLI versionは「設定値」ではなく「実際に適用・検出された値」を記録する。設定値と実際値が異なる場合は両方を記録する。
+
+runがFAILEDまたはCANCELLEDで終了した場合も、その時点までに取得できたartifactを保存する。
 
 ## 19. Logging / Privacy
 
@@ -380,15 +441,20 @@ worktree作成前に以下を検査する。
 - base revisionが取得可能
 - PowerShell version
 - Codex CLIが存在する
+- Codex CLI versionが動作確認済み範囲である
 - Ollamaが到達可能
 - 指定modelが存在する
+- profileのcontextTokensを適用可能である
 - required disk space
 - worktree rootが書込可能
 - profileがvalid
 - iteration limitがvalid
 - sandbox policyがvalid
+- Codex sandboxのsetup状態 (elevated / unelevated) を判定できる
 
-modelが存在しない場合、HDOが自動で巨大モデルをpullしない。必要なコマンドをユーザーへ提示し、終了する。
+modelが存在しない場合、HDOが自動で巨大モデルをpullしない。`config/models.json` のprofile定義に基づき必要なコマンドをユーザーへ提示し、終了する。
+
+Codex CLI versionが動作確認済み範囲外の場合、およびelevated sandboxを要求していてunelevatedへfallbackする場合は、既定で停止する。設定により警告のうえ継続を許可できるが、いずれの場合も判定結果をartifactへ記録する。
 
 ## 21. Error Taxonomy
 
@@ -396,12 +462,16 @@ modelが存在しない場合、HDOが自動で巨大モデルをpullしない�
 |---|---|
 | Git不在 | worktree作成前にfail |
 | Codex不在 | worktree作成前にfail |
+| Codex CLI version不一致 | 既定で停止、設定により警告のうえ継続 |
 | Ollama不在 | retry後fail |
 | Model未導入 | pullせず導入方法を提示 |
+| Context適用失敗 | 黙って続行せずfail |
 | CUDA/VRAM OOM | profile変更候補を提示して停止 |
 | Worker timeout | process tree停止、artifact保存 |
+| User cancel | process tree停止、artifact保存、CANCELLEDで終了 |
 | Policy violation | 即時停止 |
 | Network violation | 即時停止 |
+| Sandbox格下げ | 既定で停止、設定により警告のうえ継続 |
 | Test failure | iteration範囲内でworkerへ返す |
 | No diff | 実装タスクなら異常扱い |
 | Max iterations | Humanへescalate |
@@ -428,10 +498,14 @@ HDOが黙ってcontext量、model、量子化方式、network policy等を変更
 - modelProfile
 - modelId
 - contextTokens
+- thinkingMode / reasoningEffort
 - maxIterations
 - workerTimeout
 - networkAccess
 - sandboxMode
+- onSandboxDowngrade (stop / warn)
+- expectedCodexCliVersion
+- onCodexVersionMismatch (stop / warn)
 - validationCommands
 - retention
 
@@ -524,6 +598,10 @@ local model、local provider、reviewer model、validation commands、future orc
 - AC-14 model未導入時に自動pullせず必要操作を提示する。
 - AC-15 ユーザーがrunをcancelでき、child processが残存しない。
 - AC-16 MVPのCIがGPUなしのGitHub-hosted Windows runnerで実行できる。
+- AC-17 profileのcontextTokensがproviderおよびharnessへ実際に適用され、適用値がartifactへ記録される。
+- AC-18 実行時のsandbox mode (elevated / unelevated) が判定されartifactへ記録され、期待するsandboxを満たせない場合は既定で停止する。
+- AC-19 runがFAILEDまたはCANCELLEDで終了した場合も、その時点までのartifactが保存される。
+- AC-20 review resultがJSON Schemaへ適合し、request_changes時にfindingsが空でない。
 
 ## 28. Roadmap
 
@@ -596,14 +674,16 @@ MCPは将来のinterfaceとして有用だが、MVPではPowerShell CLIで要件
 
 以下は実装PRで検証しながら最終決定する。
 
-1. Claude CodeのWrite/Edit禁止をSkill + Hookでどこまで確実に強制できるか。
-2. Windows sandboxとOllama localhost通信を両立する最小設定。
-3. Codex CLIのバージョン差異を吸収するadapterの粒度。
+1. PreToolUse hookによるWrite/Edit denyの網羅性。特にmatcher定義から漏れる経路の洗い出し。
+2. workerコマンドのnetwork denyと、Codex CLI自身のlocal provider通信を、Windows sandbox上で両立させる最小設定 (§10)。
+3. Codex CLIのバージョン差異を吸収するadapterの粒度と、動作確認済みversion範囲の表現方法。
 4. AGENTS.md / CLAUDE.md等をworkerへどの範囲まで渡すか。
 5. repositoryごとのvalidation command自動検出ルール。
 6. artifact retentionのdefault期間。
 7. network-enabled profileの明示承認UX。
 8. HDO自身のbenchmark suiteに採用する実タスク。
+9. profileごとのcontextTokens初期値のVRAM実測による確定 (§8.1)。
+10. thinkingの有効/無効およびreasoning effortが time-to-correct-solution へ与える影響 (§8.2)。
 
 これらはMVP着手を妨げるblocking issueではない。
 
@@ -611,32 +691,54 @@ MCPは将来のinterfaceとして有用だが、MVPではPowerShell CLIで要件
 
 一次資料を優先する。
 
-- OpenAI Codex CLI: https://developers.openai.com/codex/cli
-- OpenAI Codex Advanced Configuration: https://developers.openai.com/codex/config-advanced
-- OpenAI Codex Non-interactive Mode: https://developers.openai.com/codex/non-interactive-mode
-- OpenAI Codex Agent Approvals & Security: https://developers.openai.com/codex/agent-approvals-security
-- OpenAI Codex Windows Sandbox: https://developers.openai.com/codex/windows/windows-sandbox
-- OpenAI Codex WSL: https://developers.openai.com/codex/windows/wsl
+Codexのドキュメントは `developers.openai.com/codex/*` から `learn.chatgpt.com/docs/*` へ恒久リダイレクトされるため、リダイレクト後のURLを記載する。
+
+### Codex
+
+- OpenAI Codex CLI: https://learn.chatgpt.com/docs/codex/cli
+- OpenAI Codex Advanced Configuration: https://learn.chatgpt.com/docs/config-file/config-advanced
+- OpenAI Codex Non-interactive Mode: https://learn.chatgpt.com/docs/non-interactive-mode
+- OpenAI Codex Agent Approvals & Security: https://learn.chatgpt.com/docs/agent-approvals-security
+- OpenAI Codex Windows Sandbox: https://learn.chatgpt.com/docs/windows/windows-sandbox
+- OpenAI Codex WSL: https://learn.chatgpt.com/docs/windows/wsl
+
+### Claude Code
+
 - Anthropic Claude Code Skills: https://code.claude.com/docs/ja/skills
 - Anthropic Claude Code Hooks: https://code.claude.com/docs/ja/hooks
 - Anthropic Claude Code Sandboxing: https://code.claude.com/docs/ja/sandboxing
+
+### Ollama
+
 - Ollama Windows: https://docs.ollama.com/windows
+- Ollama Codex CLI Integration: https://docs.ollama.com/integrations/codex
 - Ollama OpenAI Compatibility: https://docs.ollama.com/api/openai-compatibility
 - Ollama Authentication: https://docs.ollama.com/api/authentication
 - Ollama Usage: https://docs.ollama.com/api/usage
+
+### モデル
+
+- Ollama qwen3.8: https://ollama.com/library/qwen3.8
+- Ollama devstral-small-2: https://ollama.com/library/devstral-small-2
+- Ollama qwen3.6: https://ollama.com/library/qwen3.6
+- Ollama qwen3-coder-next: https://ollama.com/library/qwen3-coder-next
+- Qwen3.6-35B-A3B (upstream): https://huggingface.co/Qwen/Qwen3.6-35B-A3B
+- Devstral Small 2 24B (upstream): https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512
+- Qwen3-Coder-Next (upstream): https://huggingface.co/Qwen/Qwen3-Coder-Next
+
+### その他
+
 - Git Worktree: https://git-scm.com/docs/git-worktree
-- Ollama qwen3.8:27b: https://ollama.com/library/qwen3.8:27b
-- Qwen3.6-35B-A3B: https://huggingface.co/Qwen/Qwen3.6-35B-A3B
-- Devstral Small 2 24B: https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512
 
 ## 32. 次の実装PR
 
 本要件PRのmerge後は、以下を次のPR候補とする。
 
-1. config/models.json と設定schema
-2. Test-HdoEnvironment.ps1 によるpreflight
-3. worktree lifecycle
-4. Codex/Ollama worker実行
-5. Claude Code Skill + review loop
+1. config/models.json と設定schema (profile、導入元、contextTokens、thinking設定)
+2. schemas/ の review result schema
+3. Test-HdoEnvironment.ps1 によるpreflight
+4. worktree lifecycle
+5. Codex/Ollama worker実行 (Codex adapter層を含む)
+6. Claude Code Skill + review loop
 
 実装は一度に全機能を作らず、preflight -> worktree -> worker -> review loopの順に積み上げる。
