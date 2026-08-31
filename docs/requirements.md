@@ -1,746 +1,420 @@
-# Hybrid Dev Orchestrator 要件定義書
+# Hybrid Dev Orchestrator 要件定義
 
-- 文書種別: MVP 要件定義書
-- 対象リポジトリ: kkb-hub/hybrid-dev-orchestrator
-- MVP 対象OS: Windows native
-- ステータス: Draft for review
-- 最終更新: 2026-08-30
+- 文書種別: 実装準拠 MVP 要件
+- 対象 repository: `kkb-hub/hybrid-dev-orchestrator`
+- 対象 OS: Windows native
+- runtime: PowerShell 7.2 以上
+- schema version: 1
+- 最終更新: 2026-09-01
 
 ## 1. 概要
 
-Hybrid Dev Orchestrator（以下 HDO）は、クラウド上の高性能LLMとローカルLLMを役割分担させる、ソフトウェア開発向けオーケストレーション基盤である。
+Hybrid Dev Orchestrator（HDO）は、GitHub Issue を起点に、task planning、isolated implementation、trusted validation、structured review、bounded fix を実行する one-shot CLI である。
 
-MVPでは Claude Code を Planner / Reviewer、Codex CLI + Ollama 上のローカルLLMを Implementer として利用する。
-
-目的は、ローカルLLMを Claude と同等にすることではない。高頻度な実装・テスト・修正をローカルへ移し、Claude の能力と利用量を、タスク整理・設計判断・レビュー・難易度の高い判断へ集中させることである。
-
-基本フロー:
+LLM や agent harness は runner として抽象化する。`plan`、`implement`、`review`、`fix` の各 step は異なる runner を選択できる。既定は Codex CLI による cloud-only profile であり、Ollama は任意の hybrid profile でのみ利用する。
 
 ~~~text
-Developer
-   |
-   v
-Claude Code
-Planner / Reviewer
-   |
-   | implementation contract
-   v
-HDO PowerShell Orchestrator
-   |
-   +--> Preflight / Policy
-   +--> Isolated Git Worktree
-   |
-   v
-Codex CLI --oss
-   |
-   v
-OpenAI-compatible provider boundary
-   |
-   v
-Ollama
-   |
-   v
-Local Coding LLM
-   |
-   +--> source changes
-   +--> tests / build / lint
-   |
-   v
-diff + test result + worker summary
-   |
-   v
-Claude Code Review
-   |
-   +--> approve
-   +--> request_changes --> Local Worker
-   +--> escalate
+GitHub Issue
+  -> normalize / validate / select
+  -> read-only preflight
+  -> optional GitHub claim
+  -> isolated Git worktree
+  -> plan (optional, read-only)
+  -> implement (workspace-write)
+  -> trusted validation gates
+  -> review (read-only)
+       -> approve
+       -> request_changes -> fix -> validate -> review
+       -> escalate
+  -> artifact + optional GitHub status write-back
 ~~~
 
-## 2. 背景
+HDO が最適化する対象は単発のモデル能力ではなく、Issue からレビュー済み差分までの再現可能な time-to-correct-solution である。
+
+## 2. MVP の目的
+
+MVP は次を満たす。
+
+1. GitHub Issue を明示指定、または決定的な pickup policy で1件選択できる。
+2. Issue 本文を versioned contract へ正規化し、必須 section、label、dependency、validation gate を検証できる。
+3. plan / implement / review / fix の runner、provider、model、reasoning、context、sandbox、timeout を設定で分離できる。
+4. Ollama がなくても cloud-only profile で動作し、Ollama を選択した場合だけ Ollama を検査する。
+5. 現在の working tree を変更せず、固定した base commit から run 専用 worktree を作る。
+6. Issue が指定した gate ID を、trusted `.hdo/project.json` の command へ解決して実行する。
+7. review result を JSON Schema と semantic rule で検証し、finding を fix step へ渡せる。
+8. fix 回数を有限にし、上限到達後に ESCALATED または FAILED で停止できる。
+9. run state、prompt、structured output、diff、validation、review、最終結果を repository 外へ保存する。
+10. dry-run と GitHub write-back 無効の full run を区別できる。
+
+## 3. 非目的
+
+MVP は次を行わない。
 
-フロンティアモデルは、既存リポジトリの理解、曖昧な要求の整理、複雑なデバッグ、設計判断、コードレビューにおいて、ローカル20B〜35B級モデルより強い。
+- commit、push、PR 作成、merge、Issue close、main branch 更新
+- 成果物の現在の working tree への自動適用
+- 無制限の fix loop
+- daemon、常駐 polling、scheduler、複数 repository の自動巡回
+- provider/model の暗黙 fallback
+- model の自動 download / pull
+- 独自 inference engine または独自 OpenAI-compatible proxy
+- GitHub Projects custom field の必須化
+- Linux、macOS、WSL2 の正式対応
+- OS firewall、VM、container による汎用 command adapter の完全な network isolation
+- 多段 reviewer orchestration、反証 batch、mutation runner、token telemetry、Claude Code plugin の配布
 
-一方、RTX 4090 24GBクラスのGPUでは、30B前後の量子化モデルを実用的な速度で動作させることができる。単純・定型・中難度の実装をすべてクラウドLLMへ依頼する必要はない。
+最後の項目群は review platform の post-MVP scope とする。
 
-HDOはモデル性能差を隠すのではなく、role separation、worktree isolation、sandbox、provider abstraction、structured review、bounded fix loop、run artifacts、benchmarkability により、性能差を前提として利用する。
+## 4. 前提環境
 
-## 3. MVPの目的
+必須:
 
-MVPは以下を実現する。
+- PowerShell 7.2 以上
+- Git for Windows
+- Git repository と解決可能な `HEAD`
+- GitHub CLI `gh`
+- `gh auth status` が成功する認証
+- GitHub Issue が有効な repository
+- 対象 repository の `.hdo/project.json`
+- active profile が参照する全 runner command
 
-1. Claude Code が実装タスクを整理できる。
-2. Claude Code が実装そのものを行わず、ローカルworkerへ委譲できる。
-3. ローカルworkerが隔離されたGit worktree内でコードを変更できる。
-4. ローカルworkerがbuild / lint / testを実行できる。
-5. Claude Codeが差分とテスト結果をレビューできる。
-6. レビュー指摘をローカルworkerへ返して修正させられる。
-7. 修正ループを有限回で停止できる。
-8. 実行内容・差分・テスト結果・レビュー結果を追跡できる。
-9. ローカルLLM providerを設定で切り替えられる。
+既定 profile では Codex CLI `codex` と、その cloud authentication/configuration が必要である。
 
-成功条件は、Windows native環境でClaude Codeから実装タスクを依頼し、planning -> local implementation -> test -> Claude review -> local fix -> re-test -> final review が手作業のコピー＆ペーストなしで完了することである。
+Ollama は必須ではない。active step が `provider: ollama` の runner を参照するときだけ次を要求する。
 
-## 4. 非目的
+- `ollama` command
+- 到達可能な Ollama service
+- runner の `model` と一致する導入済み model
 
-MVPでは以下を対象外とする。
+HDO は不足 model を自動 pull しない。
 
-- ローカルLLMをClaude / GPT等のフロンティアモデルと同等の能力にすること
-- Claude CodeまたはCodex CLIのfork
-- 独自LLM inference engine
-- 独自OpenAI-compatible HTTP proxy
-- MCP serverによる常駐daemon化
-- WSL2 / Linux / macOS対応
-- 複数GPU最適化
-- 自動commit / push / PR
-- 無制限の自律実行
-- GPUを必要とするGitHub-hosted CI
+## 5. CLI surface
 
-## 5. 前提環境
+root entrypoint は `hdo.ps1` とし、次の command を提供する。
 
-MVP reference environment:
+| Command | 主な機能 |
+|---|---|
+| `help` | 現行 CLI usage を表示 |
+| `doctor` | Git、GitHub auth、project contract、active runner/provider、保存先を preflight |
+| `config` | merge・profile 解決後の execution plan を表示 |
+| `issues` | eligible な pickup 候補を一覧 |
+| `inspect` | Issue、正規化 contract、semantic validation を表示 |
+| `run` | `-Issue` または `-Pick` で dry-run/full cycle を開始 |
+| `status` | artifact の `run.json` を取得 |
+| `cleanup` | run worktree を path/Git/dirty check 後に除去 |
+| `labels` | label catalog の差分を表示し、`-Apply` 時だけ同期 |
 
-- OS: Windows 11
-- Shell: PowerShell 7
-- GPU: NVIDIA RTX 4090 24GB
-- System RAM: 128GB
-- Git: Git for Windows
-- Claude Code: Windows native
-- Codex CLI: Windows native
-- Ollama: Windows native
-- Local LLM: `qwen3.8:27b` (Ollama)
+代表構文:
 
-RTX 4090 / RAM 128GBはreference environmentであり、HDOそのものがこのハードウェアだけに依存してはならない。
+~~~powershell
+pwsh ./hdo.ps1 doctor [-RepositoryPath <path>] [-Config <path>] [-Profile <name>] [-DryRun] [-Json]
+pwsh ./hdo.ps1 config [-RepositoryPath <path>] [-Config <path>] [-Profile <name>] [-Json]
+pwsh ./hdo.ps1 issues [-Repository owner/repo] [-Json]
+pwsh ./hdo.ps1 inspect -Issue <number> [-Repository owner/repo] [-Json]
+pwsh ./hdo.ps1 run (-Issue <number> | -Pick) [-Repository owner/repo] `
+  [-Config <path>] [-Profile <name>] [-SetStep <step=runner>] `
+  [-DryRun] [-NoWriteBack] [-Json]
+pwsh ./hdo.ps1 status -RunId <id> [-Json]
+pwsh ./hdo.ps1 cleanup -RunId <id> [-Force] [-WhatIf]
+pwsh ./hdo.ps1 labels [-Repository owner/repo] [-Apply] [-WhatIf]
+~~~
 
-## 6. 役割分担
+`-RepositoryPath` は local Git repository、`-Repository` は GitHub の `owner/repository` である。`-Repository` を省略した場合は設定または `origin` URL から解決する。
 
-### 6.1 Human
+exit code は次を使用する。
 
-Humanは最終的な権限主体である。task開始、security-sensitive action、network-enabled profile、最終成果物、commit、push、PRを最終承認する。
+| Code | 意味 |
+|---:|---|
+| 0 | command 成功、APPROVED、または dry-run 成功 |
+| 2 | CLI、configuration、Issue contract 等の処理例外 |
+| 3 | doctor / dry-run preflight 失敗 |
+| 4 | `issues` の候補なし |
+| 5 | full run が FAILED |
+| 6 | full run が ESCALATED |
 
-### 6.2 Claude Code
+## 6. Configuration と runner
 
-Claude Codeの役割は Planner / Task Framer / Reviewer / Escalation Judge とする。
+設定の詳細は `docs/configuration.md` を正典とする。
 
-Claude Codeは通常フローで実装コードを直接変更してはならない。レビューNGの場合もClaude自身が修正せず、actionableな指摘をローカルworkerへ返す。
+設定優先順位:
 
-### 6.3 Local Worker
+1. `config/hdo.default.json`
+2. `%APPDATA%/hdo/config.json` が存在する場合
+3. 明示した `-Config <path>`
+4. `-Profile <name>`、または merge 後の `activeProfile`
+5. `run -SetStep <step=runner>`
 
-Local Workerは repository exploration、implementation、refactoring、test追加、build、lint、test実行、review findingへの修正を担当する。
+対象 repository の `.hdo/config.json` は、branch 内の untrusted runner command/argument を暗黙実行しないため、自動読込しない。project-owned command は `.hdo/project.json` の validation gate に限定する。
 
-Local Workerは Codex CLI の非対話モードをagent harnessとして利用する (§6.4)。
+profile は `plan`、`implement`、`review`、`fix` の binding を持つ。`plan` だけは明示的に disable でき、その場合は Issue contract から synthetic task contract を生成する。ほかの3 step は必須である。
 
-### 6.4 Codex CLI
+runner type:
 
-Codex CLIはローカルLLMと開発ツールを接続するagent harnessとして利用する。HDOからは原則として非対話モード (`codex exec`) で呼び出す。
+- `codex`: `codex exec` を非対話実行し、output schema と last message file を使用する。
+- `claude`: print mode と JSON Schema output を使用する。
+- `command`: argument template と stdin/file transport を利用する adapter。stable config として利用する場合は schema と policy の両方を満たす必要がある。
 
-HDOがCodex CLIへ要求する機能は以下とする。
+provider:
 
-- OSS / local provider機構によるローカルモデル接続
-- workspace-write相当のsandbox指定
-- 機械可読なevent stream出力 (JSONL)
-- 最終メッセージのファイル保存
+- `cloud`
+- `ollama`
+- `lmstudio`
+- `custom`（command runner のみ）
 
-具体的なCLIフラグ名およびconfigキー名は要件ではなく実装詳細として扱い、単一のCodex adapter層へ閉じ込める。orchestration logicはadapterのみを呼び出し、Codex CLI引数を全体へ散在させない。
+plan/review runner は `read-only`、implement/fix runner は `workspace-write` でなければならない。timeout は1–86400秒、`maxFixAttempts` は0–10とする。
 
-Codex CLIはフラグおよびconfigキーの仕様変更が発生しうるため、動作確認済みバージョンを設定値として保持し、preflightで検出したバージョンと突き合わせる。
+runner の fallback 宣言、および `workflow.implicitFallback=true` は禁止する。model/provider を変更するには、profile、Issue route hint、`-Profile`、または `-SetStep` による明示選択を必要とする。
 
-## 7. Provider設計
+既定 `cloud-only` profile は Ollama を一切参照しない。`config/examples/ollama-hybrid.json` は plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
 
-Ollamaをreference implementationとする。
+## 7. GitHub Issue 契約
 
-HDOの内部設計はOllama固有APIへ密結合させず、OpenAI-compatible APIを前提とした provider / config / capability abstraction を持つ。
+詳細な field と label 規則は `docs/issue-contract.md`、構造は `schemas/issue-contract.schema.json` を正典とする。
 
-MVPでは独自HTTP proxyを作成しない。
+Issue の必須内容:
 
-Provider profileは最低限以下を扱う。
+- title
+- Problem / Context
+- Goal
+- In Scope 1件以上
+- Acceptance Criteria 1件以上
+- Validation Gate IDs 1件以上
+- Priority: `p0` / `p1` / `p2` / `p3`
+- Risk: `low` / `medium` / `high` / `critical`
 
-- providerName
-- baseUrl
-- wireApi
-- modelId
-- contextTokens
-- responses capability
-- tools capability
-- streaming capability
-- reasoning capability
-- healthCheck
+任意内容:
 
-将来的に Ollama、LM Studio、llama.cpp server、vLLM、その他OpenAI-compatible endpoint を追加可能とする。
+- Out of Scope
+- Constraints / Security Considerations
+- Dependencies: `#123` または `owner/repository#123`
+- Affected Areas
+- Route Hint
+- Additional Context
 
-context長の扱いには特に注意を要する。OpenAI-compatible endpoint経由の場合、provider側が実際にロードする実効context長と、harness側が想定するcontext長は独立に決まる。いずれかが小さいと入力が黙って切り詰められ、workerの失敗原因がモデル能力の問題と区別できなくなる。
+Issue、comment、添付、外部リンクは untrusted input である。Issue は validation gate ID を選択できるが、command を定義または上書きできない。
 
-したがってcontextTokensはartifactへの記録専用の値ではなく、実際に適用する値とする。HDOはprofileのcontextTokensをprovider側とharness側の双方へ明示的に適用し、適用された値をartifactへ記録する。適用値を確認できない状態でworkerを実行してはならない。
+### 7.1 Label
 
-provider側のconversation stateへ依存せず、HDO自身が task、run、iteration、review findings、diff、test result、worker summary、model profile、execution status をsource of truthとして保持する。
+- `hdo:ready`: contract を確認した Issue の実行許可
+- `hdo:skip`: pickup / run 対象外
+- `hdo:status/*`: mutually exclusive な coarse run status
+- `hdo:priority/*`: mutually exclusive な pickup priority
+- `hdo:risk/*`: mutually exclusive な risk
+- `hdo:route/*`: mutually exclusive な logical profile hint
 
-## 8. モデルプロファイル
+`hdo:ready` と `hdo:skip`、および `hdo:ready` と任意の `hdo:status/*` は同居できない。未知の reserved `hdo:` label は拒否する。
 
-モデル名をorchestration logicへhard-codeしてはならない。
+Issue Form は `hdo:ready` を自動付与しない。HDO は最新の ready label event と Issue の `updatedAt` を比較し、ready 付与後に更新された Issue を拒否する。`github.trustedActors` が空の場合、repository の label write permission を trust boundary とする。値がある場合は、最新の ready label actor を allowlist と照合する。
 
-| Profile | modelId (Ollama) | 重みサイズ | 想定用途 | 初期Context |
-|---|---|---:|---|---:|
-| balanced | `qwen3.8:27b` | 18GB | 通常実装 | 32K |
-| long-context | `devstral-small-2:24b` | 15GB | repo理解・長めのcontext | 64K |
-| reasoning | `qwen3.6:35b` | 23GB | 高難度タスク | 16K |
-| experimental-large | `qwen3-coder-next` | 52GB | RAM offload実験 | 16K |
+route label/section は provider や model ID ではなく profile 名を表す。CLI の `-Profile` は Issue route hint より優先する。
 
-balanced を初期defaultとし、MVPのreference/default modelは Ollama の `qwen3.8:27b` とする。
+### 7.2 Pickup
 
-HDOでは1回の最大能力よりも、Implement -> Test -> Review -> Fix -> Test -> Review の time-to-correct-solution が重要である。
+pickup candidate は open、ready、not skipped、status なし、contract valid、gate ID valid、dependency resolved、active claim なしを満たさなければならない。
 
-`qwen3.8:27b` はMVPで実際に利用する基準モデルとして扱う。ただしmodelIdは設定値として保持し、orchestration logicへhard-codeしない。
+既定順序:
 
-### 8.1 初期Contextの根拠
+1. `github.priorityOrder`
+2. `createdAt` の古い順
+3. issue number の小さい順
 
-上表の初期Contextはモデルの最大context長ではない。列挙した4モデルはいずれも公称256K以上のcontext長を持つ。
+GitHub API の返却順へ依存してはならない。HDO は最大1000件の ready Issue を取得して全候補を検査・整列し、その後に `candidateLimit` を適用する。明示 `-Issue` でも ready、skip、status、contract、gate、ready authorization の検証を省略しない。
 
-制約となるのはreference environmentのVRAM 24GBであり、実際に確保できるcontext長は「VRAM - 重みサイズ」で決まるKV cache容量に依存する。すなわちprofile間の差はモデルの最大context長ではなく、VRAM内で実効的に確保できるcontext長である。long-contextプロファイルが成立するのは、`devstral-small-2:24b` の重みが4モデル中最小でKV cacheへ回せるVRAMが最も大きいためである。
+### 7.3 Claim / write-back
 
-上表の値は初期目標値であり、確定値ではない。実際に確保できる値はquantization、KV cache精度、GPU上の他プロセスのVRAM使用量に依存するため、profileごとに実測して確定する。
+write-back 有効時は worktree 作成前に managed comment を作り、comment ID が最小の valid active marker を best-effort lock の勝者とする。
 
-reasoningプロファイルは重みだけでVRAMの大半を占めるため初期値を16Kとしたが、thinkingトークンがcontextを消費するため不足する場合がある。実測により調整するか、KV cache量子化の適用を検討する。
+~~~text
+<!-- hdo:claim:v1 {"version":1,"kind":"claim",...} -->
+~~~
 
-profileの追加・変更時は、long-contextのcontextTokensがbalancedを下回らないことを設定validationで確認する。
+marker comment author と `claimedBy` は一致しなければならない。`trustedActors` が非空なら両者と現在の authenticated actor を allowlist に照合する。空なら既存 marker の comment author association が `OWNER`、`MEMBER`、`COLLABORATOR` のいずれかでなければならない。claim 成功時は ready/status label を `hdo:status/claimed` へ置換し、設定により authenticated user を assignee に追加する。
 
-### 8.2 thinking制御
+phase label update は best effort であり、失敗は warning/event に記録して local cycle を継続する。final write-back は同じ managed comment を更新し、APPROVED / ESCALATED / FAILED に対応する status を設定する。Issue は自動 close しない。
 
-`qwen3.8` および `qwen3.6` はthinkingがdefaultで有効である。thinkingの有無とreasoning effortはworkerの実行時間およびcontext消費へ直接影響するため、profileの設定値として制御可能とする。制御できない場合でも、どの設定で実行したかをartifactへ記録する。
+claim lease 時刻は marker に記録するが、MVP は自動 force takeover を行わない。stale active marker の解消は Human recovery とする。
 
-### 8.3 導入経路
+## 8. Dry-run と NoWriteBack
 
-MVP時点では上記4モデルはいずれもOllama library tagとして取得可能であり、GGUFからのimportを必須としない。
+`run -DryRun` は次だけを行う。
 
-ただしprofileごとの導入元と導入コマンドは `config/models.json` に保持し、§20 preflightでモデル未導入時にユーザーへ提示する情報として利用する。library tagが存在しないモデルを将来profileへ追加する場合に備え、導入元としてlibrary tagとModelfile importの双方を表現できるschemaとする。
+- configuration/profile/step resolution
+- GitHub Issue read と contract validation
+- ready authorization
+- project contract read
+- selected command/provider の read-only preflight
 
-### 8.4 experimental-large
+AI runner、worktree、run artifact、GitHub mutation は作成しない。返却値の `mutations` は空である。
 
-`qwen3-coder-next` は52GBでありVRAM 24GBへ収まらないためRAM offloadが前提となる。
+`run -NoWriteBack` は full local orchestration cycle を実行し、worktree、artifact、runner、validation、review、fix をすべて動かす。一方、claim comment、label、assignee を変更しない。
 
-ただし本モデルはMoEでありactive parameterが小さいため、同一サイズのdense modelほどoffloadによる速度低下を受けない可能性がある。MVPではexperimental扱いを維持し、実用可否はbenchmark suiteのtime-to-correct-solutionで再評価する。
+## 9. Project contract と validation
 
-## 9. Git Worktree隔離
+対象 repository の `projectContractPath` は既定で `.hdo/project.json` である。このファイルは repository-owned trusted contract とし、実行前に Human がレビューする。
 
-ローカルworkerはユーザーの現在のworking treeを直接変更してはならない。
+主な内容:
 
-各runごとに専用のGit worktreeを作成する。既定保存先は %LOCALAPPDATA%\hdo\worktrees\<run-id> とし、設定で変更可能とする。
+- instruction/specification path
+- validation gate
+- worker policy
+- review policy
 
-Lifecycle:
+validation gate は少なくとも ID、実行 file、argument array、working directory、timeout、required、exit code classes を持つ。HDO は command line string を shell evaluation せず、executable と argument array を process API に渡す。
 
-1. repository状態確認
-2. base commit固定
-3. run-id生成
-4. dedicated branch生成
-5. worktree生成
-6. worker実行
-7. diff取得
-8. review
-9. approve / request_changes / escalate
-10. Humanによる成果物確認
-11. 明示的cleanup
+Issue から選択された gate だけを実行する。gate working directory は worktree 内の既存 directory に制限し、path segment に junction/symbolic link がある場合は拒否する。exit code は `pass`、`fail`、`indeterminate` に分類し、timeout や未知 code は indeterminate とする。required gate が1つでも pass でなければ `allRequiredPassed=false` である。
 
-Workerは commit、push、force push、destructive reset、main branch更新を実行してはならない。Workerは未コミット差分を残す。
+validation gate は対象 branch が所有する code/command を host process として実行する。HDO は path、argument、credential environment、timeout を制約するが、任意 validation executable に OS-level filesystem/network sandbox を付与しない。信頼できない repository では low-privilege account、VM/container、または sandbox wrapper を使う。
 
-## 10. Sandboxと権限
+既定 workflow は validation failure を reviewer へ渡して request_changes とする。設定により即時 ESCALATED または FAILED を選択できる。required validation が不合格のまま reviewer が approve しても、HDO は approval を拒否し blocker finding を追加する。
 
-Windows native MVPではCodexのWindows sandboxを利用する。
+## 10. Worktree と変更境界
 
-推奨:
+各 full run は固定した `HEAD` commit から次を作る。
 
-- Windows sandbox: elevated
-- execution sandbox: workspace-write
-- network access: false
+- branch: `hdo/issue-<number>-<run-id>`
+- worktree: `%LOCALAPPDATA%/hdo/worktrees/<run-id>`
 
-無制限のsandbox bypassモードはMVPで利用しない。
+ユーザーの現在の working tree にある未 commit 変更は base commit に含まれない。worker は専用 worktree だけを変更し、変更を commit しない。
 
-CodexのelevatedサンドボックスはOSレベルのセットアップ (低権限sandboxユーザーの作成、ACL設定、firewall規則、logon right付与) を必要とし、UAC拒否や企業ポリシーにより失敗して、より保護の弱いunelevatedモードへfallbackする場合がある。
+diff は tracked change と untracked file を含めて取得し、reviewer へ完全な patch として渡す。aggregate patch は32 MiBを上限とし、超過時は truncated review を行わず失敗する。no diff は `workflow.onNoDiff` に従って FAILED または ESCALATED とする。
 
-HDOはelevated / unelevatedのいずれで実行したかを判定してartifactへ記録し、期待するsandboxを満たせない場合の扱い (警告して継続 / 停止) を設定可能とする。既定は停止とし、sandbox強度の低下を黙って受け入れない。
+cleanup は run artifact の worktree path が configured root 内で、Git が worktree として認識する場合だけ実行する。dirty worktree は `-Force` がなければ拒否し、branch と artifact は cleanup 後も保存する。
 
-Local Workerの外部ネットワークアクセスは既定で禁止する。workerの判断だけで npm install、pip install、curl、Invoke-WebRequest、git fetch、任意外部APIアクセスを許可しない。
-
-必要な場合はユーザーが明示的にnetwork-enabled profileを選択する。
-
-Local Workerへ不要なcredentialを継承してはならない。特に Anthropic API credential、OpenAI API credential、GitHub token、cloud provider credentials、unrelated application secrets を可能な限りworker環境から除外する。
-
-Ollama endpointは原則localhostに限定し、既定は http://localhost:11434 とする。不用意にLANへ公開しない。
-
-network denyの対象は、workerがsandbox内で実行するコマンドである。Codex CLI自身がlocal provider endpointへ行うmodel API呼び出しはこれとは別経路であり、両者を混同しない。この2経路がWindows sandbox上で実際に分離されることの確認は§30の未解決事項とする。
-
-## 11. Claude Reviewer制約
-
-Claudeを実装しないReviewerにする要件はpromptだけに依存してはならない。
-
-Claude reviewerが利用可能:
-
-- Read
-- Grep
-- Glob
-- git status
-- git diff
-- test log閲覧
-- HDO worker invocation
-
-通常フローで禁止:
-
-- Write
-- Edit
-- git commit
-- git push
-- git reset --hard
-- destructive filesystem operations
-
-MVPではClaude Code SkillとHooksを併用する。PreToolUse hookは対象のtool callを実行前にdenyできるため、禁止操作の強制はprompt依存ではなくhookで実装する。
-
-Skillは意図を伝える手段、hookは強制する手段として役割を分ける。
-
-## 12. Claude Code Skill
-
-MVPでは .claude/skills/local-implement/SKILL.md を提供する。
-
-Skillの責務:
-
-1. ユーザー要求をimplementation contractへ変換する。
-2. PowerShell orchestratorを呼び出す。
-3. run manifest、diff、test results、worker summaryを読む。
-4. strict reviewを実施する。
-5. approve / request_changes / escalate のいずれかを返す。
-6. request_changes の場合、実装せずにworkerへ修正要求する。
-7. 最大iteration数で停止する。
-
-## 13. Orchestrator
-
-Windows native MVPではPowerShellをorchestration layerとする。
-
-MCP serverやdaemonはMVPでは導入しない。
-
-理由:
-
-- process lifecycleを単純化できる
-- Windows nativeとの相性が良い
-- Claude Code Skillから直接呼べる
-- Codex CLIとの接続が容易
-- デバッグが容易
-- MVPで不要な常駐サービスを増やさない
-
-post-MVPではMCP interfaceを検討できるが、PowerShell CLIとの互換性を可能な限り維持する。
-
-## 14. 状態モデル
-
-Runは最低限以下の状態を持つ。
+## 11. State machine
 
 ~~~text
 CREATED
+  -> ISSUE_SELECTED
   -> PREFLIGHT
-  -> WORKTREE_READY
+       -> ISSUE_CLAIMED -> WORKTREE_READY  (write-back enabled)
+       -> WORKTREE_READY                   (NoWriteBack)
+  -> PLANNING | IMPLEMENTING
   -> IMPLEMENTING
-  -> TESTING
-  -> REVIEW_PENDING
+  -> VALIDATING
+       -> REVIEWING
+       -> CHANGES_REQUESTED
+  -> REVIEWING
        -> APPROVED
        -> CHANGES_REQUESTED -> IMPLEMENTING
        -> ESCALATED
-
-任意のnon-terminal state
-  -> FAILED      (回復不能なエラー)
-  -> CANCELLED   (ユーザーによる中断)
 ~~~
 
-FAILEDおよびCANCELLEDはREVIEW_PENDING固有ではない。preflight失敗、worker timeout、VRAM OOM、policy violationはIMPLEMENTINGやTESTINGからも発生するため、任意のnon-terminal stateからの遷移先とする。
+任意の non-terminal state から FAILED / CANCELLED への遷移を state core は許可する。APPROVED、ESCALATED、FAILED、CANCELLED は terminal である。MVP CLI は cancel/resume command をまだ提供しない。
 
-APPROVED / ESCALATED / FAILED / CANCELLED を終端状態とし、終端状態からの遷移を許可しない。
+不正な遷移は `Test-HdoStateTransition` と state test で拒否する。
 
-不正な状態遷移を許可しない。状態遷移はstate-machine testで検証する。
-
-## 15. Review / Fix Loop
-
-Claudeのレビュー結果は自然言語だけで保持せず構造化する。
-
-review resultの最低フィールド:
-
-- decision
-- summary
-- findings — finding objectの配列 (空配列を許容)
-
-各findingの最低フィールド:
-
-- severity
-- path
-- line
-- message
-- requiredAction
-
-許可するdecisionは approve / request_changes / escalate とする。decisionが request_changes の場合、findingsを空にしてはならない。
-
-review resultの構造はJSON Schemaとして `schemas/` へ定義し、CIで検証する。
-
-レビュー→修正ループは既定で最大3回とする。最大回数到達後は自動継続せずHumanへescalateする。無制限値は禁止する。
-
-## 16. Worker Prompt
-
-初回worker promptは Task Contract、Repository Context、Constraints、Required Validation から構成する。
-
-修正回は Original Task、Current Implementation State、Claude Review Findings、Previous Test Result、Constraints から構成する。
-
-provider固有のconversation historyへ依存しない。
-
-## 17. Test / Build / Lint
-
-Local Workerは可能な範囲でrepository既存の検証方法を自動検出する。
-
-優先順位:
-
-1. repository instruction
-2. AGENTS.md / CLAUDE.md等のproject instruction
-3. package/build metadata
-4. configured HDO validation commands
-5. safe fallback
-
-テスト未実行を成功扱いにしてはならない。実行できない場合は理由をartifactへ残す。
-
-## 18. Run Artifacts
-
-runごとに実行情報をrepository外へ保存する。
-
-既定保存先は %LOCALAPPDATA%\hdo\runs\<run-id> とする。
-
-保存対象:
-
-- run.json
-- environment.json
-- worker prompt
-- worker JSONL events
-- worker final message
-- diff patch
-- test log
-- review result
-- metrics
-
-artifactには run id、repository、base commit、worktree path、branch、model/profile、実際に適用されたcontext長、thinking設定、Codex CLI version、判定されたsandbox mode、iteration、start/end time、exit code、worker events、git diff、test output、review result、failure category、timing metrics を記録可能とする。
-
-context長・sandbox mode・Codex CLI versionは「設定値」ではなく「実際に適用・検出された値」を記録する。設定値と実際値が異なる場合は両方を記録する。
-
-runがFAILEDまたはCANCELLEDで終了した場合も、その時点までに取得できたartifactを保存する。
-
-## 19. Logging / Privacy
-
-- environment variableの全量dumpを禁止する
-- known secret patternをredactする
-- credentialをpromptへ埋め込まない
-- artifactをrepositoryへ自動commitしない
-- retention policyを将来設定可能にする
-
-Claude reviewを利用する場合、diffおよび関連コードがクラウド側へ送信され得ることを明示する。
-
-Local Implementerという名称は、レビューを含む全処理がローカルであることを意味しない。
-
-## 20. Preflight
-
-worktree作成前に以下を検査する。
-
-- Gitが存在する
-- repository内である
-- base revisionが取得可能
-- PowerShell version
-- Codex CLIが存在する
-- Codex CLI versionが動作確認済み範囲である
-- Ollamaが到達可能
-- 指定modelが存在する
-- profileのcontextTokensを適用可能である
-- required disk space
-- worktree rootが書込可能
-- profileがvalid
-- iteration limitがvalid
-- sandbox policyがvalid
-- Codex sandboxのsetup状態 (elevated / unelevated) を判定できる
-
-modelが存在しない場合、HDOが自動で巨大モデルをpullしない。`config/models.json` のprofile定義に基づき必要なコマンドをユーザーへ提示し、終了する。
-
-Codex CLI versionが動作確認済み範囲外の場合、およびelevated sandboxを要求していてunelevatedへfallbackする場合は、既定で停止する。設定により警告のうえ継続を許可できるが、いずれの場合も判定結果をartifactへ記録する。
-
-## 21. Error Taxonomy
-
-| Error | HDO behavior |
-|---|---|
-| Git不在 | worktree作成前にfail |
-| Codex不在 | worktree作成前にfail |
-| Codex CLI version不一致 | 既定で停止、設定により警告のうえ継続 |
-| Ollama不在 | retry後fail |
-| Model未導入 | pullせず導入方法を提示 |
-| Context適用失敗 | 黙って続行せずfail |
-| CUDA/VRAM OOM | profile変更候補を提示して停止 |
-| Worker timeout | process tree停止、artifact保存 |
-| User cancel | process tree停止、artifact保存、CANCELLEDで終了 |
-| Policy violation | 即時停止 |
-| Network violation | 即時停止 |
-| Sandbox格下げ | 既定で停止、設定により警告のうえ継続 |
-| Test failure | iteration範囲内でworkerへ返す |
-| No diff | 実装タスクなら異常扱い |
-| Max iterations | Humanへescalate |
-| Dirty worktree cleanup | force削除せずrecovery情報を残す |
-
-HDOが黙ってcontext量、model、量子化方式、network policy等を変更して再試行してはならない。再現性を優先する。
-
-## 22. Timeout / Cancellation
-
-- worker実行にはtimeoutを設定できる
-- ユーザーがrunを中断できる
-- 中断時はchild processを残さない
-- 中断時も可能なartifactを保存する
-- dirty worktreeを自動force deleteしない
-
-## 23. Configuration
-
-最低限以下を設定可能とする。
-
-- worktreeRoot
-- runArtifactRoot
-- provider
-- providerBaseUrl
-- modelProfile
-- modelId
-- contextTokens
-- thinkingMode / reasoningEffort
-- maxIterations
-- workerTimeout
-- networkAccess
-- sandboxMode
-- onSandboxDowngrade (stop / warn)
-- expectedCodexCliVersion
-- onCodexVersionMismatch (stop / warn)
-- validationCommands
-- retention
-
-設定優先順位は CLI arguments > project config > user config > defaults を想定する。
-
-secretをproject configへ保存しない。
-
-## 24. 想定リポジトリ構成
-
-~~~text
-hybrid-dev-orchestrator/
-├── docs/
-│   ├── requirements.md
-│   ├── architecture.md
-│   └── security.md
-├── .claude/
-│   ├── skills/local-implement/SKILL.md
-│   ├── agents/hybrid-reviewer.md
-│   └── settings.json
-├── config/models.json
-├── schemas/
-├── scripts/
-├── tests/powershell/
-├── .github/workflows/ci.yml
-├── .gitignore
-└── README.md
-~~~
-
-初回PRでは本要件定義書のみを追加する。
-
-本リポジトリには、HDO orchestrator とは**別の導入単位**として、net-equity で運用してきたレビュー基盤（多段レビュー・変異検証・token telemetry。net-equity issue #106 からの切り出し）を同居させる。同居の決定・条件・HDO との共有物の境界は `docs/review-platform.md` を正典とする。上の構成図にはまだ反映していない —— レビュー基盤側のディレクトリ配置は、schema の定義元を1箇所にする条件と両立する形を実装PRで確定してから足す。HDO 本体のMVPスコープは変わらない。
-
-## 25. CI要件
-
-GitHub-hosted CIではGPUやOllama巨大モデルを要求しない。
-
-通常CIで検証するもの:
-
-- PowerShell syntax
-- Pester tests
-- PSScriptAnalyzer
-- JSON Schema validation
-- state-machine tests
-- mocked Codex execution
-- mocked Ollama endpoint
-- secret-redaction tests
-- Windows path tests
-
-実GPU integration testは将来self-hosted Windows runner等へ分離する。
-
-## 26. 非機能要件
-
-### Reproducibility
-
-同一runについて base commit、model profile、prompt、diff、validation result、review result、iteration が後から確認できること。
-
-### Safety
-
-- main working treeをworkerから隔離する
-- network denyをdefaultにする
-- secretをworkerへ不要に渡さない
-- destructive commandを禁止する
-- infinite loopを禁止する
-
-### Observability
-
-少なくとも wall-clock duration、worker duration、iteration count、test duration、changed files、additions/deletions、worker exit status、model/profile、取得可能なtoken/usage metricsを計測可能とする。
-
-### Extensibility
-
-local model、local provider、reviewer model、validation commands、future orchestration frontend を交換可能にする。
-
-### Usability
-
-通常利用で、ユーザーがworker promptやreview findingを手作業でコピー＆ペーストする必要がないこと。
-
-## 27. MVP Acceptance Criteria
-
-- AC-01 Windows native環境でClaude Codeからlocal implementation workflowを開始できる。
-- AC-02 HDOが専用Git worktreeを生成し、現在のworking treeを変更しない。
-- AC-03 Codex CLIがOllama上の指定local modelを利用してworktree内のファイルを変更できる。
-- AC-04 workerが対象repositoryで必要なvalidationを実行できる。
-- AC-05 HDOがgit diff、test result、worker summaryをClaude reviewerへ渡せる。
-- AC-06 Claude reviewerが approve / request_changes / escalate の構造化decisionを返せる。
-- AC-07 request_changesの場合、Claudeが直接修正せずfindingをlocal workerへ返せる。
-- AC-08 最大3iterationでループが停止し、それ以上はHumanへescalateする。
-- AC-09 workerがcommit/pushを行わない。
-- AC-10 workerのnetwork accessがdefaultでdenyされている。
-- AC-11 Claude/OpenAI/GitHub等の不要credentialをworkerへ渡さない。
-- AC-12 各runのmanifest、diff、test result、review result、主要logがrepository外へ保存される。
-- AC-13 Ollama停止時に安全な状態で明確にfailする。
-- AC-14 model未導入時に自動pullせず必要操作を提示する。
-- AC-15 ユーザーがrunをcancelでき、child processが残存しない。
-- AC-16 MVPのCIがGPUなしのGitHub-hosted Windows runnerで実行できる。
-- AC-17 profileのcontextTokensがproviderおよびharnessへ実際に適用され、適用値がartifactへ記録される。
-- AC-18 実行時のsandbox mode (elevated / unelevated) が判定されartifactへ記録され、期待するsandboxを満たせない場合は既定で停止する。
-- AC-19 runがFAILEDまたはCANCELLEDで終了した場合も、その時点までのartifactが保存される。
-- AC-20 review resultがJSON Schemaへ適合し、request_changes時にfindingsが空でない。
-
-## 28. Roadmap
-
-### Phase 1 — Windows native MVP
-
-- PowerShell orchestrator
-- Claude Code Skill
-- Claude reviewer restriction
-- Codex CLI --oss
-- Ollama
-- OpenAI-compatible provider abstraction
-- Git worktree isolation
-- structured review
-- bounded fix loop
-- run artifact
-- mocked CI
-
-### Phase 2 — Hardening
-
-- Claude Code Hooks強化
-- secret filtering
-- policy engine
-- recovery UX
-- benchmark suite
-- self-hosted GPU integration tests
-- model routing evaluation
-
-### Phase 3 — WSL2
-
-- WSL2 filesystem
-- Linux-style path/process abstraction
-- Claude sandbox利用
-- Codex Linux sandbox利用
-- Windows/Ollama接続方式検証
-
-### Phase 4 — Linux / Provider Expansion
-
-- Linux native
-- LM Studio
-- llama.cpp server
-- vLLM
-- cross-platform process layer
-- optional MCP server
-
-## 29. 設計上の重要判断
-
-### 29.1 Claudeに直接修正させない
-
-Claudeがレビュー後に小さな修正を直接行える設計にすると、ローカル実装へ処理を移すというHDOの目的が崩れる。
-
-MVPは意図的に、Claude = 判断する、Local = 変更する、Human = 最終承認する、と分離する。
-
-### 29.2 最大モデルをdefaultにしない
-
-RTX 4090 + 128GB RAMでは大規模モデルをRAM offloadで動作させることは可能である。しかしHDOの最適化対象は1回の回答能力ではなく、review/fixを含むtime-to-correct-solutionである。
-
-MVPでは `qwen3.8:27b` をdefaultとし、review/fixを含むtime-to-correct-solutionを基準に評価する。大規模モデルや代替モデルはprofileで選択可能にする。
-
-### 29.3 独自HTTP proxyをMVPで作らない
-
-OllamaとCodex CLIが既にOpenAI-compatible/local-provider接続を提供するため、HDO独自proxyはMVPに不要である。
-
-必要なのはnetwork hopではなくprovider設定とcapabilityの抽象化である。
-
-### 29.4 MCPをMVPで導入しない
-
-MCPは将来のinterfaceとして有用だが、MVPではPowerShell CLIで要件を満たせる。最初からdaemon/process lifecycle/schema/trust boundaryを増やさない。
-
-## 30. 未解決事項
-
-以下は実装PRで検証しながら最終決定する。
-
-1. PreToolUse hookによるWrite/Edit denyの網羅性。特にmatcher定義から漏れる経路の洗い出し。
-2. workerコマンドのnetwork denyと、Codex CLI自身のlocal provider通信を、Windows sandbox上で両立させる最小設定 (§10)。
-3. Codex CLIのバージョン差異を吸収するadapterの粒度と、動作確認済みversion範囲の表現方法。
-4. AGENTS.md / CLAUDE.md等をworkerへどの範囲まで渡すか。
-5. repositoryごとのvalidation command自動検出ルール。
-6. artifact retentionのdefault期間。
-7. network-enabled profileの明示承認UX。
-8. HDO自身のbenchmark suiteに採用する実タスク。
-9. profileごとのcontextTokens初期値のVRAM実測による確定 (§8.1)。
-10. thinkingの有効/無効およびreasoning effortが time-to-correct-solution へ与える影響 (§8.2)。
-
-これらはMVP着手を妨げるblocking issueではない。
-
-## 31. 参考資料
-
-一次資料を優先する。
-
-Codexのドキュメントは `developers.openai.com/codex/*` から `learn.chatgpt.com/docs/*` へ恒久リダイレクトされるため、リダイレクト後のURLを記載する。
-
-### Codex
-
-- OpenAI Codex CLI: https://learn.chatgpt.com/docs/codex/cli
-- OpenAI Codex Advanced Configuration: https://learn.chatgpt.com/docs/config-file/config-advanced
-- OpenAI Codex Non-interactive Mode: https://learn.chatgpt.com/docs/non-interactive-mode
-- OpenAI Codex Agent Approvals & Security: https://learn.chatgpt.com/docs/agent-approvals-security
-- OpenAI Codex Windows Sandbox: https://learn.chatgpt.com/docs/windows/windows-sandbox
-- OpenAI Codex WSL: https://learn.chatgpt.com/docs/windows/wsl
-
-### Claude Code
-
-- Anthropic Claude Code Skills: https://code.claude.com/docs/ja/skills
-- Anthropic Claude Code Hooks: https://code.claude.com/docs/ja/hooks
-- Anthropic Claude Code Sandboxing: https://code.claude.com/docs/ja/sandboxing
-
-### Ollama
-
-- Ollama Windows: https://docs.ollama.com/windows
-- Ollama Codex CLI Integration: https://docs.ollama.com/integrations/codex
-- Ollama OpenAI Compatibility: https://docs.ollama.com/api/openai-compatibility
-- Ollama Authentication: https://docs.ollama.com/api/authentication
-- Ollama Usage: https://docs.ollama.com/api/usage
-
-### モデル
-
-- Ollama qwen3.8: https://ollama.com/library/qwen3.8
-- Ollama devstral-small-2: https://ollama.com/library/devstral-small-2
-- Ollama qwen3.6: https://ollama.com/library/qwen3.6
-- Ollama qwen3-coder-next: https://ollama.com/library/qwen3-coder-next
-- Qwen3.6-35B-A3B (upstream): https://huggingface.co/Qwen/Qwen3.6-35B-A3B
-- Devstral Small 2 24B (upstream): https://huggingface.co/mistralai/Devstral-Small-2-24B-Instruct-2512
-- Qwen3-Coder-Next (upstream): https://huggingface.co/Qwen/Qwen3-Coder-Next
-
-### その他
-
-- Git Worktree: https://git-scm.com/docs/git-worktree
-
-## 32. 次の実装PR
-
-本要件PRのmerge後は、以下を次のPR候補とする。
-
-1. config/models.json と設定schema (profile、導入元、contextTokens、thinking設定)
-2. schemas/ の review result schema
-3. Test-HdoEnvironment.ps1 によるpreflight
-4. worktree lifecycle
-5. Codex/Ollama worker実行 (Codex adapter層を含む)
-6. Claude Code Skill + review loop
-
-実装は一度に全機能を作らず、preflight -> worktree -> worker -> review loopの順に積み上げる。
+## 12. Structured review と bounded fix
+
+review runner は complete diff、task contract、validation result、previous review を読み、`schemas/review-result.schema.json` に従う JSON を返す。結果の `runId`、`baseCommit`、`diffHash`、`reviewRound` は orchestrator の期待値と完全一致しなければならない。
+
+decision:
+
+- `approve`
+- `request_changes`
+- `escalate`
+
+finding は最低限次を持つ。
+
+- stable `id`
+- severity: `blocker` / `should` / `nit`
+- category
+- evidence: `measured` / `read`
+- evidence detail
+- status
+- actionable
+- path / line
+- message / required action
+
+fail-safe rule:
+
+- `request_changes` は open actionable finding を1件以上必要とする。
+- open blocker/should を含む approve を禁止する。
+- indeterminate finding は escalate を必要とする。
+- `missingViewpoints` は常に存在し、非空なら escalate を必要とする。
+- escalate は `escalationReason` を必要とする。
+- finding ID は大文字小文字を区別せず各 result 内で一意であり、previous review の ID は解消済みでも次 round へ明示的に持ち越す。消失または改名は拒否する。
+
+`maxFixAttempts` は初回 implement の後に許可する fix 実行回数である。既定値2は、最大で「初回 implement + fix 2回」の3 implementation/review iteration を意味する。上限で open finding が残る場合は `workflow.onMaxFixAttempts` に従って ESCALATED または FAILED とする。
+
+## 13. Run artifact
+
+既定 root は `%LOCALAPPDATA%/hdo/runs/<run-id>` である。
+
+root artifact:
+
+- `run.json`
+- `events.jsonl`
+- `issue.raw.json`
+- `issue.contract.json`
+- `execution-plan.json`
+- `effective-config.redacted.json`
+- `environment.json`
+- `worktree.json`
+- `project-contract.json`
+- `task-contract.json`
+
+iteration artifact:
+
+- step ごとの `prompt.md`, `events.jsonl`, `stdout.log`, `stderr.log`, `final.json`
+- validation gate log と `validation/result.json`
+- `diff.patch`, `diff.json`
+- `review/result.json`
+
+final artifact:
+
+- `final/diff.patch`
+- `final/summary.json`
+
+FAILED でも作成済み artifact と `run.json` の error を保存する。prompt/log/output には Issue や source diff が含まれるため、artifact root の access control は利用者の責任で設定する。
+
+## 14. Security / privacy
+
+HDO は次を実装する。
+
+- Issue text を prompt 内で untrusted と明示する。
+- Issue text から validation command を生成しない。
+- external process は executable と argument array で起動し、`Invoke-Expression` を使わない。
+- stdout/stderr を各 stream 32 MiBに制限し、上限超過時は process tree を停止して失敗とする。agent step は逐次 artifact へ書いて診断用 memory tail を64 KiBに制限し、出力を直接消費する Git/gh/validation process も32 MiBを超えて保持しない。
+- GitHub token を runner の `passEnvironment` に指定する設定を拒否する。
+- known credential name/pattern を runner/validation environment と log から除外・redactする。
+- plan/review と implement/fix の sandbox mode を semantic validation する。
+- worktree path と cleanup target を configured root に制限する。
+- validation working directory の junction/symbolic-link boundary を拒否する。
+- dangerous bypass argument を拒否する。
+
+ただし、`workerPolicy.networkAccess`、forbidden command、protected path は project policy と prompt の一部であり、HDO の process layer 自体が全 adapter または validation command に OS-level firewall、filesystem isolation、syscall interception を提供するわけではない。validation cwd の reparse-point 検査は process start 前の point-in-time check で、gate が引数や source 内の別 path を辿ることまでは制約しない。実効的な強制は Codex/Claude の sandbox と、low-privilege account、VM/container、firewall 等の host policy にも依存する。
+
+cloud runner/reviewer を選ぶと、Issue、関連 source、validation result、diff が cloud provider へ送信され得る。Local Implementer という route 名は review を含む全処理が local であることを意味しない。
+
+## 15. MVP acceptance criteria
+
+- AC-01 `hdo.ps1 help` が9 command の現行 usage を表示する。
+- AC-02 default config の execution plan が cloud runner だけを参照し、Ollama を probe しない。
+- AC-03 explicit hybrid config を選んだ場合だけ Ollama command/model を preflight する。
+- AC-04 plan/implement/review/fix を別 runner に割り当て、resolved plan を表示・保存できる。
+- AC-05 Issue Form の必須 section、priority、risk、gate ID を正規化できる。
+- AC-06 ready/skip/status の競合、同一 label axis の複数値、未知 gate を拒否する。
+- AC-07 pickup が priority、createdAt、number の決定的な順で候補を返す。
+- AC-08 `run -DryRun` が worktree、artifact、GitHub mutation、runner process を作らない。
+- AC-09 `run -NoWriteBack` が full cycle を実行し、GitHub comment/label/assignee を変更しない。
+- AC-10 full run が専用 worktree を作り、現在の working tree を変更しない。
+- AC-11 Issue command ではなく `.hdo/project.json` の validation gate だけを実行する。
+- AC-12 runner output と review result を JSON Schema で検証する。
+- AC-13 required validation failure中の approve を拒否する。
+- AC-14 request_changes が fix 上限内で fix/validate/review を繰り返し、上限後に停止する。
+- AC-15 tracked/untracked change を含む diff と主要 artifact を repository 外へ保存する。
+- AC-16 provider/model の暗黙 fallback、model auto-pull、worker commit/push を行わない。
+- AC-17 claim 競合時に comment ID 最小の valid marker だけを勝者にする。
+- AC-18 cleanup が root 外 path、Git 管理外 worktree、非 Force の dirty worktree を拒否する。
+- AC-19 schema fixture、state transition、Issue normalization、default/hybrid routing、credential redaction、command adapter を GPU/Ollama 不要の test で検証できる。
+
+## 16. Post-MVP
+
+- explicit cancel / resume と process-tree recovery UX
+- stale claim の安全な lease recovery
+- OS-level network policy の強化
+- GitHub Enterprise / 複数 repository orchestration
+- reviewer lens の多段実行、反証、mutation validation
+- usage/token telemetry schema と集計
+- Claude Code plugin と Codex review adapter の独立配布
+- WSL2 / Linux / macOS
+- self-hosted local-model integration benchmark

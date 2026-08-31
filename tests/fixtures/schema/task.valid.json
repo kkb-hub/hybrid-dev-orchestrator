@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "objective": "Implement the normalized issue delivery cycle.",
+  "approach": [
+    "Load the normalized issue contract.",
+    "Run implementation and review with the selected profile."
+  ],
+  "acceptanceCriteria": [
+    "The selected issue reaches an approved review decision."
+  ],
+  "expectedFiles": [
+    "src/Hdo.Orchestrator.psm1",
+    "tests/test-orchestrator.ps1"
+  ],
+  "risks": [
+    "A local model may be unavailable."
+  ],
+  "assumptions": [
+    "The issue contract has already been normalized and validated."
+  ]
+}

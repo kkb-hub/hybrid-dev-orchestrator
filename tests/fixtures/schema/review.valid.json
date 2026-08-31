@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "runId": "issue-42-20260831T120000Z-a1b2c3d4",
+  "baseCommit": "1111111111111111111111111111111111111111",
+  "diffHash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "reviewRound": 1,
+  "decision": "request_changes",
+  "summary": "One actionable reliability issue remains.",
+  "missingViewpoints": [],
+  "findings": [
+    {
+      "id": "R1-F1",
+      "severity": "should",
+      "category": "product_bug",
+      "evidence": "read",
+      "evidenceDetail": "The fallback branch returns before persisting the selected runner.",
+      "status": "open",
+      "actionable": true,
+      "path": "src/Hdo.Orchestrator.psm1",
+      "line": 120,
+      "message": "Persist the selected fallback runner before returning.",
+      "requiredAction": "Move runner persistence before the early return and cover the branch."
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "summary": "Implemented the issue delivery cycle and added coverage.",
+  "changedFiles": [
+    "src/Hdo.Orchestrator.psm1",
+    "tests/test-orchestrator.ps1"
+  ],
+  "tests": [
+    "pwsh -NoProfile -File tests/test-orchestrator.ps1"
+  ],
+  "notes": [
+    "The orchestrator records the authoritative model and validation metadata."
+  ],
+  "blockers": []
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/worker-result.schema.json",
+  "title": "HDO worker result",
+  "description": "Minimal structured output produced by an implement or fix worker. Exit status, actual model, diff, validation logs, and artifact paths are measured and attached by the orchestrator.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "summary",
+    "changedFiles",
+    "tests",
+    "notes",
+    "blockers"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10000
+    },
+    "changedFiles": {
+      "description": "Worker-reported repository-relative paths. The orchestrator independently derives the authoritative list from git diff.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      }
+    },
+    "tests": {
+      "description": "Human-readable test or validation claims. The orchestrator runs trusted project gates independently.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    },
+    "blockers": {
+      "description": "Empty means the worker reports no blocker; field absence must not be treated as an empty list.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4000
+      }
+    }
+  }
+}
