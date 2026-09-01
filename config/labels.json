@@ -1,0 +1,176 @@
+{
+  "catalogVersion": "1.0",
+  "namespace": "hdo:",
+  "ownership": {
+    "mutateOnlyCatalogLabels": true,
+    "preserveLabelsOutsideNamespace": true,
+    "rejectUnknownReservedLabels": true,
+    "issueFormAddsReady": false
+  },
+  "groupRules": {
+    "eligibility": {
+      "cardinality": "zero-or-one",
+      "mutuallyExclusive": true,
+      "removeReadyOnClaim": true
+    },
+    "status": {
+      "cardinality": "zero-or-one",
+      "mutuallyExclusive": true,
+      "mayCoexistWithReady": false
+    },
+    "priority": {
+      "cardinality": "zero-or-one",
+      "bodyFallback": true
+    },
+    "risk": {
+      "cardinality": "zero-or-one",
+      "bodyFallback": true
+    },
+    "route": {
+      "cardinality": "zero-or-one",
+      "bodyFallback": true,
+      "configuredRouteMustExist": true
+    }
+  },
+  "staticLabels": [
+    {
+      "name": "hdo:ready",
+      "group": "eligibility",
+      "value": "ready",
+      "color": "1F883D",
+      "description": "HDO contract 検証後に trusted maintainer が pickup を許可"
+    },
+    {
+      "name": "hdo:skip",
+      "group": "eligibility",
+      "value": "skip",
+      "color": "6E7781",
+      "description": "HDO の pickup 対象外"
+    },
+    {
+      "name": "hdo:status/claimed",
+      "group": "status",
+      "value": "claimed",
+      "color": "8250DF",
+      "description": "HDO run が claim 済み"
+    },
+    {
+      "name": "hdo:status/implementing",
+      "group": "status",
+      "value": "implementing",
+      "color": "0969DA",
+      "description": "初回実装または review finding の修正中"
+    },
+    {
+      "name": "hdo:status/review",
+      "group": "status",
+      "value": "review",
+      "color": "0E8A16",
+      "description": "validation 済みで review 中"
+    },
+    {
+      "name": "hdo:status/changes-requested",
+      "group": "status",
+      "value": "changes-requested",
+      "color": "D93F0B",
+      "description": "actionable finding があり修正待ち"
+    },
+    {
+      "name": "hdo:status/approved",
+      "group": "status",
+      "value": "approved",
+      "color": "1F883D",
+      "description": "review 承認済み。Issue close を意味しない"
+    },
+    {
+      "name": "hdo:status/blocked",
+      "group": "status",
+      "value": "blocked",
+      "color": "B60205",
+      "description": "Human input または外部条件待ち"
+    },
+    {
+      "name": "hdo:status/failed",
+      "group": "status",
+      "value": "failed",
+      "color": "B60205",
+      "description": "run が回復不能エラーで終了"
+    },
+    {
+      "name": "hdo:status/cancelled",
+      "group": "status",
+      "value": "cancelled",
+      "color": "6E7781",
+      "description": "Human が run を中断"
+    },
+    {
+      "name": "hdo:priority/p0",
+      "group": "priority",
+      "value": "p0",
+      "color": "B60205",
+      "description": "最優先。即時対応が必要"
+    },
+    {
+      "name": "hdo:priority/p1",
+      "group": "priority",
+      "value": "p1",
+      "color": "D93F0B",
+      "description": "高 priority"
+    },
+    {
+      "name": "hdo:priority/p2",
+      "group": "priority",
+      "value": "p2",
+      "color": "FBCA04",
+      "description": "通常 priority"
+    },
+    {
+      "name": "hdo:priority/p3",
+      "group": "priority",
+      "value": "p3",
+      "color": "C5DEF5",
+      "description": "低 priority"
+    },
+    {
+      "name": "hdo:risk/low",
+      "group": "risk",
+      "value": "low",
+      "color": "C2E0C6",
+      "description": "限定的な影響"
+    },
+    {
+      "name": "hdo:risk/medium",
+      "group": "risk",
+      "value": "medium",
+      "color": "FBCA04",
+      "description": "通常の変更 risk"
+    },
+    {
+      "name": "hdo:risk/high",
+      "group": "risk",
+      "value": "high",
+      "color": "D93F0B",
+      "description": "広い影響または security-sensitive な変更"
+    },
+    {
+      "name": "hdo:risk/critical",
+      "group": "risk",
+      "value": "critical",
+      "color": "B60205",
+      "description": "重大障害または重大な security 影響の可能性"
+    }
+  ],
+  "dynamicLabels": [
+    {
+      "prefix": "hdo:route/",
+      "group": "route",
+      "valuePattern": "^[a-z0-9][a-z0-9._-]{0,62}$",
+      "color": "5319E7",
+      "descriptionTemplate": "HDO logical route hint: {value}",
+      "examples": [
+        "hdo:route/local-balanced",
+        "hdo:route/cloud-review"
+      ]
+    }
+  ]
+}

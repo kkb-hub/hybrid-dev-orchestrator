@@ -1,0 +1,60 @@
+{
+  "schemaVersion": 1,
+  "activeProfile": "claude-only",
+  "profiles": {
+    "claude-only": {
+      "steps": {
+        "plan": "claude-planner",
+        "implement": "claude-implementer",
+        "review": "claude-reviewer",
+        "fix": "claude-fixer"
+      }
+    }
+  },
+  "runners": {
+    "claude-planner": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "model": "opus",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 900,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-implementer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "model": "sonnet",
+      "reasoningEffort": "medium",
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 3600,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-reviewer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "model": "opus",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 1200,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-fixer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "model": "sonnet",
+      "reasoningEffort": "medium",
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 3600,
+      "passEnvironment": [],
+      "extraArgs": []
+    }
+  }
+}

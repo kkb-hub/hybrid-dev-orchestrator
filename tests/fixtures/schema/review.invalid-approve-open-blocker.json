@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "runId": "issue-42-20260831T120000Z-a1b2c3d4",
+  "baseCommit": "1111111111111111111111111111111111111111",
+  "diffHash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "reviewRound": 2,
+  "decision": "approve",
+  "summary": "This approval incorrectly leaves a blocker open.",
+  "missingViewpoints": [],
+  "findings": [
+    {
+      "id": "R1-F1",
+      "severity": "blocker",
+      "category": "product_bug",
+      "evidence": "measured",
+      "evidenceDetail": "The required schema gate exits with code 1.",
+      "status": "open",
+      "actionable": true,
+      "path": "tests/test-schemas.ps1",
+      "line": 1,
+      "message": "The required schema gate is failing.",
+      "requiredAction": "Correct the contract mismatch and rerun the schema gate."
+    }
+  ]
+}

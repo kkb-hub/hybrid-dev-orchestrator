@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/review-result.schema.json",
+  "title": "HDO review result",
+  "description": "Minimal fail-safe review output. Finding ids are immutable after first publication and MUST be unique within a run; the orchestrator enforces id uniqueness across rounds.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "baseCommit",
+    "diffHash",
+    "reviewRound",
+    "decision",
+    "summary",
+    "missingViewpoints",
+    "findings"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "baseCommit": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}(?:[a-f0-9]{24})?$"
+    },
+    "diffHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "reviewRound": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "decision": {
+      "enum": ["approve", "request_changes", "escalate"]
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10000
+    },
+    "missingViewpoints": {
+      "description": "Always present. Empty means all required viewpoints completed; omission must never be interpreted as none missing.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 200
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "escalationReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4000
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "missingViewpoints": {
+            "minItems": 1
+          }
+        },
+        "required": ["missingViewpoints"]
+      },
+      "then": {
+        "properties": {
+          "decision": {
+            "const": "escalate"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "request_changes"
+          }
+        },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {
+          "findings": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "const": "open"
+                },
+                "actionable": {
+                  "const": true
+                }
+              },
+              "required": ["status", "actionable"]
+            },
+            "minContains": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "decision": {
+            "const": "approve"
+          }
+        },
+        "required": ["decision"]
+      },
+      "then": {
+        "properties": {
+          "missingViewpoints": {
+            "maxItems": 0
+          },
+          "findings": {
+            "not": {
+              "contains": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "const": "open"
+                  },
+                  "severity": {
+                    "enum": ["blocker", "should"]
+                  }
+                },
+                "required": ["status", "severity"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "findings": {
+            "contains": {
+              "type": "object",
+              "properties": {
+                "status": {
+                  "const": "indeterminate"
+                }
+              },
+              "required": ["status"]
+            }
+          }
+        },
+        "required": ["findings"]
+      },
+      "then": {
+        "properties": {
+          "decision": {
+            "const": "escalate"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "stableFindingId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "severity",
+        "category",
+        "evidence",
+        "evidenceDetail",
+        "status",
+        "actionable",
+        "path",
+        "line",
+        "message",
+        "requiredAction"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/stableFindingId"
+        },
+        "severity": {
+          "enum": ["blocker", "should", "nit"]
+        },
+        "category": {
+          "enum": ["product_bug", "test_detection", "docs", "spec_decision", "process", "minor"]
+        },
+        "evidence": {
+          "enum": ["measured", "read"]
+        },
+        "evidenceDetail": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "status": {
+          "enum": ["open", "resolved", "waived", "refuted", "indeterminate"]
+        },
+        "actionable": {
+          "type": "boolean"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 10000
+        },
+        "requiredAction": {
+          "type": ["string", "null"],
+          "maxLength": 10000
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "actionable": {
+                "const": true
+              }
+            },
+            "required": ["actionable"]
+          },
+          "then": {
+            "properties": {
+              "requiredAction": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "open"
+              },
+              "severity": {
+                "enum": ["blocker", "should"]
+              }
+            },
+            "required": ["status", "severity"]
+          },
+          "then": {
+            "properties": {
+              "actionable": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "refuted"
+              }
+            },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "actionable": {
+                "const": false
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

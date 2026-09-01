@@ -1,0 +1,4 @@
+.hdo/config.json
+artifacts/
+test-results/
+*.tmp

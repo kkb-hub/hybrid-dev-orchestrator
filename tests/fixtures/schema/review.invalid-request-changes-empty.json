@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "runId": "issue-42-20260831T120000Z-a1b2c3d4",
+  "baseCommit": "1111111111111111111111111111111111111111",
+  "diffHash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "reviewRound": 1,
+  "decision": "request_changes",
+  "summary": "Changes are requested without an actionable finding.",
+  "missingViewpoints": [],
+  "findings": []
+}

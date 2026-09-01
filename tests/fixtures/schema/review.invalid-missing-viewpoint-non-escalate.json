@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "runId": "issue-42-20260831T120000Z-a1b2c3d4",
+  "baseCommit": "1111111111111111111111111111111111111111",
+  "diffHash": "2222222222222222222222222222222222222222222222222222222222222222",
+  "reviewRound": 1,
+  "decision": "request_changes",
+  "summary": "The security viewpoint is missing but the result does not escalate.",
+  "missingViewpoints": [
+    "security"
+  ],
+  "findings": [
+    {
+      "id": "R1-F1",
+      "severity": "should",
+      "category": "process",
+      "evidence": "read",
+      "evidenceDetail": "The security review result is absent from the review artifact.",
+      "status": "open",
+      "actionable": true,
+      "path": "artifacts/review.json",
+      "line": null,
+      "message": "A required viewpoint was not completed.",
+      "requiredAction": "Escalate the review instead of requesting changes."
+    }
+  ]
+}

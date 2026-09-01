@@ -1,0 +1,85 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kkb-hub/hybrid-dev-orchestrator/main/schemas/project-contract.schema.json",
+  "schemaVersion": 1,
+  "instructions": {
+    "files": [],
+    "specificationPaths": [
+      "docs/requirements.md",
+      "docs/architecture.md",
+      "docs/issue-contract.md"
+    ]
+  },
+  "validationGates": [
+    {
+      "id": "tests",
+      "description": "Run the repository PowerShell test suite.",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "tests/test-suite.ps1"
+      ],
+      "workingDirectory": ".",
+      "timeoutSeconds": 300,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    },
+    {
+      "id": "schemas",
+      "description": "Validate all JSON examples and schemas.",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "tests/test-schemas.ps1"
+      ],
+      "workingDirectory": ".",
+      "timeoutSeconds": 120,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    }
+  ],
+  "workerPolicy": {
+    "networkAccess": "denied",
+    "oneWriterPerWorktree": true,
+    "allowCommit": false,
+    "allowPush": false,
+    "forbiddenCommands": [
+      "git commit",
+      "git push",
+      "git reset --hard"
+    ],
+    "protectedPaths": [
+      ".git"
+    ]
+  },
+  "reviewPolicy": {
+    "defaultViewpoints": [
+      "correctness",
+      "tests",
+      "security"
+    ],
+    "highRiskPaths": [
+      "src/HybridDevOrchestrator/Private/Common.ps1",
+      "src/HybridDevOrchestrator/Private/GitHub.ps1"
+    ],
+    "largeChangeLines": 500,
+    "onMissingViewpoint": "escalate",
+    "stableFindingIds": true,
+    "mutation": {
+      "enabled": false,
+      "oneWriterWindow": true,
+      "indeterminateIsSuccess": false
+    }
+  }
+}

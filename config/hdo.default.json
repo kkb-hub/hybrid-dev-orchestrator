@@ -1,0 +1,85 @@
+{
+  "$schema": "../schemas/hdo-config.schema.json",
+  "schemaVersion": 1,
+  "activeProfile": "claude-only",
+  "profiles": {
+    "claude-only": {
+      "steps": {
+        "plan": "claude-planner",
+        "implement": "claude-implementer",
+        "review": "claude-reviewer",
+        "fix": "claude-implementer"
+      }
+    }
+  },
+  "runners": {
+    "claude-planner": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 900,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-implementer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "reasoningEffort": "medium",
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 3600,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-reviewer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 1200,
+      "passEnvironment": [],
+      "extraArgs": []
+    }
+  },
+  "github": {
+    "labels": {
+      "ready": "hdo:ready",
+      "skip": "hdo:skip",
+      "statusPrefix": "hdo:status/",
+      "claimed": "hdo:status/claimed",
+      "implementing": "hdo:status/implementing",
+      "review": "hdo:status/review",
+      "changesRequested": "hdo:status/changes-requested",
+      "approved": "hdo:status/approved",
+      "escalated": "hdo:status/blocked",
+      "failed": "hdo:status/failed",
+      "cancelled": "hdo:status/cancelled"
+    },
+    "priorityOrder": [
+      "hdo:priority/p0",
+      "hdo:priority/p1",
+      "hdo:priority/p2",
+      "hdo:priority/p3"
+    ],
+    "writeBack": "status",
+    "candidateLimit": 50,
+    "assignOnClaim": true,
+    "trustedActors": [],
+    "claimLeaseHours": 24
+  },
+  "workflow": {
+    "maxFixAttempts": 2,
+    "implicitFallback": false,
+    "onNoDiff": "fail",
+    "onValidationFailure": "request-changes",
+    "onMaxFixAttempts": "escalate"
+  },
+  "paths": {
+    "worktreeRoot": "%LOCALAPPDATA%/hdo/worktrees",
+    "artifactRoot": "%LOCALAPPDATA%/hdo/runs"
+  },
+  "projectContractPath": ".hdo/project.json"
+}

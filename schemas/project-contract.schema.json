@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/project-contract.schema.json",
+  "title": "HDO project contract",
+  "description": "Trusted repository-owned instructions, validation gates, and safety/review policy. Runner/model routing, GitHub labels, workflow limits, and artifact/worktree roots remain in hdo-config.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "instructions",
+    "validationGates",
+    "workerPolicy",
+    "reviewPolicy"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "instructions": {
+      "$ref": "#/$defs/instructions"
+    },
+    "validationGates": {
+      "description": "The only trusted source of executable validation commands. Issue content may select known gate ids but may not define commands.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/validationGate"
+      }
+    },
+    "workerPolicy": {
+      "$ref": "#/$defs/workerPolicy"
+    },
+    "reviewPolicy": {
+      "$ref": "#/$defs/reviewPolicy"
+    }
+  },
+  "$defs": {
+    "logicalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "instructions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["files", "specificationPaths"],
+      "properties": {
+        "files": {
+          "description": "Instruction files in precedence order. Harness adapters should point to these files rather than copy their rules.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "specificationPaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "exitClasses": {
+      "description": "Exit-code arrays must be disjoint; consumers enforce that semantic constraint. Any unlisted exit code is indeterminate.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["passed", "failed", "indeterminate"],
+      "properties": {
+        "passed": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "failed": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer"
+          }
+        },
+        "indeterminate": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "validationGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "command",
+        "args",
+        "required",
+        "timeoutSeconds",
+        "exitCodes",
+        "continueAfterFailure"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/logicalId"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "command": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "args": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "workingDirectory": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "exitCodes": {
+          "$ref": "#/$defs/exitClasses"
+        },
+        "continueAfterFailure": {
+          "description": "Run later gates after a product failure, but never after cancellation or setup failure.",
+          "type": "boolean"
+        }
+      }
+    },
+    "workerPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "networkAccess",
+        "oneWriterPerWorktree",
+        "allowCommit",
+        "allowPush",
+        "forbiddenCommands",
+        "protectedPaths"
+      ],
+      "properties": {
+        "networkAccess": {
+          "enum": ["denied", "allowed"]
+        },
+        "oneWriterPerWorktree": {
+          "const": true
+        },
+        "allowCommit": {
+          "const": false
+        },
+        "allowPush": {
+          "const": false
+        },
+        "forbiddenCommands": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "protectedPaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "reviewPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "defaultViewpoints",
+        "highRiskPaths",
+        "largeChangeLines",
+        "onMissingViewpoint",
+        "stableFindingIds",
+        "mutation"
+      ],
+      "properties": {
+        "defaultViewpoints": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "highRiskPaths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "largeChangeLines": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "onMissingViewpoint": {
+          "const": "escalate"
+        },
+        "stableFindingIds": {
+          "const": true
+        },
+        "mutation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "oneWriterWindow", "indeterminateIsSuccess"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "oneWriterWindow": {
+              "const": true
+            },
+            "indeterminateIsSuccess": {
+              "const": false
+            }
+          }
+        }
+      }
+    }
+  }
+}

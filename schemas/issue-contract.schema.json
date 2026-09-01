@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/issue-contract.schema.json",
+  "title": "HDO normalized GitHub Issue contract",
+  "description": "The immutable normalized Issue input captured before claim. Issue content remains untrusted and validationGates contains IDs, never commands.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "issue",
+    "goal",
+    "context",
+    "scope",
+    "acceptanceCriteria",
+    "validationGates",
+    "constraints",
+    "dependencies",
+    "affectedAreas",
+    "additionalContext",
+    "priority",
+    "risk",
+    "preferredExecution",
+    "capturedAt"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "issue": { "$ref": "#/$defs/issue" },
+    "goal": { "type": "string", "minLength": 1, "maxLength": 10000 },
+    "context": { "type": "string", "minLength": 1, "maxLength": 20000 },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["include", "exclude"],
+      "properties": {
+        "include": { "$ref": "#/$defs/nonEmptyStringList" },
+        "exclude": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "acceptanceCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/acceptanceCriterion" }
+    },
+    "validationGates": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/logicalId" }
+    },
+    "constraints": { "$ref": "#/$defs/stringList" },
+    "dependencies": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/dependency" }
+    },
+    "affectedAreas": { "$ref": "#/$defs/stringList" },
+    "additionalContext": { "type": "string", "maxLength": 20000 },
+    "priority": { "enum": ["p0", "p1", "p2", "p3"] },
+    "risk": { "enum": ["low", "medium", "high", "critical"] },
+    "preferredExecution": {
+      "type": "string",
+      "maxLength": 63,
+      "pattern": "^$|^[a-z0-9][a-z0-9._-]{0,62}$"
+    },
+    "capturedAt": { "type": "string", "format": "date-time" }
+  },
+  "$defs": {
+    "logicalId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,62}$"
+    },
+    "stringList": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+    },
+    "nonEmptyStringList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 4000 }
+    },
+    "issue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "number", "url", "updatedAt", "title", "state", "labels", "bodyHash"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
+        "number": { "type": "integer", "minimum": 1 },
+        "url": { "type": "string", "format": "uri" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "state": { "enum": ["OPEN", "CLOSED"] },
+        "labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+        },
+        "bodyHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "acceptanceCriterion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "text"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^AC-[A-Z0-9][A-Z0-9._-]{0,59}$" },
+        "text": { "type": "string", "minLength": 1, "maxLength": 4000 }
+      }
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "number"],
+      "properties": {
+        "repository": { "type": "string", "pattern": "^[^/\\s]+/[^/\\s]+$" },
+        "number": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

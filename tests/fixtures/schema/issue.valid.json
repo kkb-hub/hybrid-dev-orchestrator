@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "issue": {
+    "repository": "kkb-hub/hybrid-dev-orchestrator",
+    "number": 42,
+    "url": "https://github.com/kkb-hub/hybrid-dev-orchestrator/issues/42",
+    "updatedAt": "2026-08-31T12:00:00Z",
+    "title": "Implement the generic issue delivery cycle",
+    "state": "OPEN",
+    "labels": [
+      "hdo:ready",
+      "hdo:priority/p1"
+    ],
+    "bodyHash": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "goal": "Pick up a ready issue and complete implementation and review.",
+  "context": "The orchestrator must work with cloud-only and hybrid execution profiles.",
+  "scope": {
+    "include": [
+      "src/**",
+      "tests/**"
+    ],
+    "exclude": [
+      "docs/archive/**"
+    ]
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC-1",
+      "text": "A ready issue can progress through planning, implementation, and review."
+    }
+  ],
+  "validationGates": [
+    "tests",
+    "schemas"
+  ],
+  "constraints": [
+    "Do not require Ollama for cloud-only execution."
+  ],
+  "dependencies": [],
+  "affectedAreas": [
+    "orchestrator",
+    "configuration"
+  ],
+  "additionalContext": "",
+  "priority": "p1",
+  "risk": "medium",
+  "preferredExecution": "cloud-only",
+  "capturedAt": "2026-08-31T12:00:01Z"
+}

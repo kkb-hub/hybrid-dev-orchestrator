@@ -1,0 +1,161 @@
+name: HDO implementation task
+description: HDO の issue pickup・実装・レビューサイクルへ渡すタスクを作成します
+title: "[HDO] "
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        この Issue の本文・コメントは HDO では untrusted input として扱われます。
+        Issue 作成時には `hdo:ready` は付きません。契約と validation gate を確認した trusted maintainer が後から付与してください。
+        secret、token、credential、実行させたい shell command は記載しないでください。
+
+  - type: textarea
+    id: problem-context
+    attributes:
+      label: Problem / Context
+      description: 解決したい問題、利用者への影響、背景を記載してください。
+      placeholder: 現在何が起きており、なぜ対応が必要か。
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: Goal
+      description: 実装手段ではなく、完了時に実現している結果を記載してください。
+      placeholder: 利用者または保守者が可能になること。
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: "`AC-<ID>: <判定可能な条件>` の形式で、1行に1件記載してください。"
+      placeholder: |
+        AC-01: 設定した実装 route で対象変更を完了できる
+        AC-02: 必須 validation gate がすべて成功する
+    validations:
+      required: true
+
+  - type: textarea
+    id: in-scope
+    attributes:
+      label: In Scope
+      description: 今回変更する機能、component、または振る舞いを1行に1件記載してください。
+      placeholder: |
+        Issue pickup policy
+        step ごとの runner 解決
+    validations:
+      required: true
+
+  - type: textarea
+    id: out-of-scope
+    attributes:
+      label: Out of Scope
+      description: 今回は変更しないものを1行に1件記載してください。なければ空欄で構いません。
+      placeholder: 将来対応に残す機能
+    validations:
+      required: false
+
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints / Security Considerations
+      description: 互換性、security、性能、禁止事項などを1行に1件記載してください。ここに書いた command は実行されません。
+      placeholder: |
+        公開 API の後方互換性を維持する
+        credential を worker へ渡さない
+    validations:
+      required: false
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: 先に解決が必要な Issue を `#123` または `owner/repository#123` の形式で1行に1件記載してください。
+      placeholder: |
+        #123
+        example/project#456
+    validations:
+      required: false
+
+  - type: textarea
+    id: validation-gate-ids
+    attributes:
+      label: Validation Gate IDs
+      description: trusted project contract に定義済みの gate ID だけを1行に1件記載してください。shell command は記載しないでください。
+      placeholder: |
+        tests
+        schemas
+    validations:
+      required: true
+
+  - type: textarea
+    id: affected-areas
+    attributes:
+      label: Affected Areas
+      description: 影響が想定される component、module、directory を1行に1件記載してください。
+      placeholder: |
+        issue adapter
+        configuration loader
+    validations:
+      required: false
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      description: 希望 priority です。`hdo:priority/*` label がある場合は label が優先されます。
+      options:
+        - p0
+        - p1
+        - p2
+        - p3
+      default: 2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk
+      description: 変更失敗時の影響です。`hdo:risk/*` label がある場合は label が優先されます。
+      options:
+        - low
+        - medium
+        - high
+        - critical
+      default: 1
+    validations:
+      required: true
+
+  - type: input
+    id: route-hint
+    attributes:
+      label: Route Hint
+      description: 任意の logical route name です。provider 名、model ID、URL は記載しないでください。`hdo:route/*` label がある場合は label が優先されます。
+      placeholder: local-balanced
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: 参考情報を記載してください。内容は untrusted reference として扱われます。
+      placeholder: 関連する設計判断や再現条件
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: policy-acknowledgements
+    attributes:
+      label: Input Policy
+      options:
+        - label: secret、token、credential を記載していません。
+          required: true
+        - label: validation は command ではなく project contract の gate ID で指定しました。
+          required: true
