@@ -90,7 +90,7 @@ source merge 後の configuration は `hdo-config.schema.json`、route 解決後
 - local provider は model を明示する。
 - Codex は cloud/ollama/lmstudio、Claude は cloud provider を使う。
 - GitHub token は runner environment へ渡さない。
-- adapter-controlled flag と dangerous sandbox bypass を `extraArgs` で上書きしない。
+- adapter-controlled flag と dangerous sandbox bypass を `extraArgs` で上書きしない。Claude runner は `extraArgs` 自体を宣言できない（adapter が argument surface を専有する）。
 - `implicitFallback` は false。
 - worktree/artifact root は repository 外で、互いに重ならない。
 - project contract path は repository 内。
@@ -252,7 +252,7 @@ review は read-only であり、source 修正は fix runner だけが行う。
   iterations/001/
     implement/ | fix/
       prompt.md
-      events.jsonl
+      envelope.json | events.jsonl   # Claude: 単一 result envelope / Codex・command: event stream
       stdout.log
       stderr.log
       final.json
@@ -263,7 +263,7 @@ review は read-only であり、source 修正は fix runner だけが行う。
     diff.json
     review/
       prompt.md
-      events.jsonl
+      envelope.json | events.jsonl
       stdout.log
       stderr.log
       final.json
@@ -272,6 +272,8 @@ review は read-only であり、source 修正は fix runner だけが行う。
     diff.patch
     summary.json
 ~~~
+
+step directory の stdout copy は adapter に応じて名前が変わる。Claude adapter は `--output-format json` の単一 envelope object を `envelope.json` として、Codex と command adapter は JSONL event stream を `events.jsonl` として保存する（run root の `events.jsonl` は HDO 自身の run event log であり、adapter に依存しない）。既定 profile は claude-only なので、既定の run では step artifact は `envelope.json` になる。
 
 JSON manifest は temporary file から replace する。config object、stdout/stderr、exception、GitHub summary は known secret pattern を redact する。prompt と source diff 自体は task artifact なので、artifact directory の access control は利用者が管理する。
 

@@ -50,14 +50,14 @@ profile は4 step を routing する。
 
 ~~~json
 {
-  "activeProfile": "cloud-only",
+  "activeProfile": "claude-only",
   "profiles": {
-    "cloud-only": {
+    "claude-only": {
       "steps": {
-        "plan": "cloud-planner",
-        "implement": "cloud-implementer",
-        "review": "cloud-reviewer",
-        "fix": "cloud-implementer"
+        "plan": "claude-planner",
+        "implement": "claude-implementer",
+        "review": "claude-reviewer",
+        "fix": "claude-implementer"
       }
     }
   }
@@ -70,9 +70,9 @@ profile は4 step を routing する。
 {
   "steps": {
     "plan": { "enabled": false },
-    "implement": "cloud-implementer",
-    "review": "cloud-reviewer",
-    "fix": "cloud-implementer"
+    "implement": "claude-implementer",
+    "review": "claude-reviewer",
+    "fix": "claude-implementer"
   }
 }
 ~~~
@@ -113,7 +113,7 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `sandbox` | yes | `read-only` または `workspace-write` |
 | `timeoutSeconds` | yes | 1–86400 |
 | `passEnvironment` | yes | runner へ明示継承する environment 名 |
-| `extraArgs` | yes | executable へ追加する argument array |
+| `extraArgs` | yes | executable へ追加する argument array。Claude runner は空配列必須（adapter が argument surface を専有） |
 | `promptTransport` | command only | `stdin` または `{promptFile}` を使う `file` |
 | `allowedTools` | Claude only | Claude CLI の `--allowedTools` permission allowlist へ渡す tool 名の配列 |
 
@@ -162,11 +162,13 @@ prompt は stdin で渡す。stdout の result envelope（単一 JSON object）�
 
 - **schema の正規化**: Claude CLI は `--json-schema` を Ajv strict mode で検証するため、adapter は CLI へ渡す直前に transport copy だけを正規化する（`$schema` 宣言の除去、既定値どおりの `minContains: 1` の除去、array keyword を持つ subschema への `type: "array"` 補完）。`schemas/*.schema.json` が唯一の編集元であることは変わらず、step 出力は元の厳密な schema で再検証するため、検証強度は落ちない。
 - **`--safe-mode`**: 利用者の CLAUDE.md、plugin、hook、MCP server、skill を HDO の agent run へ持ち込まないための固定 flag である。再現性と、untrusted な Issue input に対する安全性の両方を目的とする。
-- **sandbox の意味**: `read-only` は `--permission-mode plan`、`workspace-write` は `--permission-mode acceptEdits` に対応する。これは Claude Code の permission mode であって OS-level sandbox ではない。`acceptEdits` の runner に対して worktree 外への書込や network access を OS が阻止するわけではない点は command adapter と同じであり（Codex の `workspace-write` とは保証が等価でない）、必要に応じて low-privilege account、VM/container、firewall 等の host policy を併用する。
+- **sandbox の意味**: `read-only` は `--permission-mode plan`、`workspace-write` は `--permission-mode acceptEdits` に対応する。これは Claude Code の permission mode であって OS-level sandbox ではない。`acceptEdits` の runner に対して worktree 外への書込や network access を OS が阻止するわけではない点は command adapter と同じであり（Codex の `workspace-write` とは保証が等価でない）、必要に応じて low-privilege account、VM/container、firewall 等の host policy を併用する。なお `acceptEdits` は `allowedTools` 未設定でも Bash 等のコマンド実行を許可し、`plan` は書込・実行をブロックする（claude 2.1.250 で実測）。つまり既定 profile の implementer/fixer は build・test を実行できる。
+- **extraArgs**: Claude runner では使用できず configuration error になる。`--safe-mode` や `--permission-mode` などの隔離保証を per-run に迂回できないよう、adapter が claude の argument surface 全体を専有する。独自の argument 構成が必要な場合は `command` runner を使う。
 - **`reasoningEffort`**: Claude CLI の `--effort` は `low`、`medium`、`high`、`xhigh`、`max` のみを受け付け、他の値は警告だけを出して既定値で続行する。HDO はこの silent degradation を防ぐため、Claude runner にそれ以外の値を設定すると configuration error にする。
 - **`allowedTools`**: permission allowlist（`--allowedTools`）として渡す。利用可能な組み込み tool 集合の限定（`--tools`）ではない。
 - **認証**: HDO は runner process から `ANTHROPIC_API_KEY` と、名前が `TOKEN` / `SECRET` / `PASSWORD` / `API_KEY` で終わる環境変数（`CLAUDE_CODE_OAUTH_TOKEN` を含む）を既定で除外する。`claude` の OAuth login（`~/.claude` の credential store）はそのまま動作する。環境変数で認証する場合は、当該 runner の `passEnvironment` へ `ANTHROPIC_API_KEY` または `CLAUDE_CODE_OAUTH_TOKEN` を明示追加する（sensitive 名として warning が出る）。
 - `contextTokens` は設定できず、configuration error になる。
+- **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
 
 ### 4.4 Command adapter
 
@@ -433,7 +435,7 @@ structured review の fail-safe rule は `schemas/review-result.schema.json` と
 
 ~~~json
 {
-  "activeProfile": "cloud-only",
+  "activeProfile": "claude-only",
   "paths": {
     "worktreeRoot": "D:/hdo/worktrees",
     "artifactRoot": "D:/hdo/runs"
@@ -459,7 +461,9 @@ secret は user config にも保存しない。runner が authentication を必�
 | implement/fix sandbox error | runner を `workspace-write` にする |
 | route hint error | Issue の route 名が merge 済み `profiles` に存在するか |
 | Claude effort error | Claude runner の `reasoningEffort` を `low`/`medium`/`high`/`xhigh`/`max` にする |
+| Claude extraArgs error | Claude runner の `extraArgs` を空にする。独自 argument が必要なら `command` runner |
 | Claude 認証 error | `claude` の login 状態。環境変数認証なら `passEnvironment` に認証変数を追加したか |
+| Claude step で schema/JSON error | doctor の `runner:*:shim` warning。npm の `.cmd` shim ではなく native claude install を使う |
 | Ollama が突然必要 | active execution plan に `provider: ollama` がないか |
 | model missing | `ollama list` と runner.model。HDO は pull しない |
 | gate unknown | Issue の Validation Gate IDs と `.hdo/project.json` |

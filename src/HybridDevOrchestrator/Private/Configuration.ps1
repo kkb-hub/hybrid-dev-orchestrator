@@ -247,6 +247,12 @@ function Test-HdoConfiguration {
         if (@(Get-HdoValue $runner 'fallback' @()).Count -gt 0) {
             $errors.Add("Runner '$runnerName' declares fallback. Implicit provider/model fallback is not supported.")
         }
+        # A blocklist cannot durably protect the Claude adapter's isolation guarantees
+        # (--safe-mode, --permission-mode, --json-schema, ...) against the CLI's evolving
+        # flag surface, so claude runners may not declare extraArgs at all.
+        if ($type -eq 'claude' -and @(Get-HdoValue $runner 'extraArgs' @()).Count -gt 0) {
+            $errors.Add("Claude runner '$runnerName' may not use extraArgs; the Claude adapter controls the full claude argument surface. Use a 'command' runner when a custom argument layout is required.")
+        }
         foreach ($extraArgument in @(Get-HdoValue $runner 'extraArgs' @())) {
             $argumentText = [string]$extraArgument
             if ($argumentText -match "[\u0000\r\n]") {
@@ -255,7 +261,7 @@ function Test-HdoConfiguration {
             if ($argumentText -match '(?i)(danger-full-access|bypasspermissions|dangerously-(?:bypass|skip)|^--search(?:=|$))') {
                 $errors.Add("Runner '$runnerName' uses forbidden argument '$extraArgument'.")
             }
-            if ($type -in @('codex', 'claude') -and $argumentText -match '^(?:--sandbox|-s|--cd|-C|--permission-mode|--output-schema|--output-last-message|--json-schema|--output-format)(?:=|$)') {
+            if ($type -eq 'codex' -and $argumentText -match '^(?:--sandbox|-s|--cd|-C|--output-schema|--output-last-message|--json-schema|--output-format)(?:=|$)') {
                 $errors.Add("Runner '$runnerName' may not override adapter-controlled argument '$extraArgument'.")
             }
             if ($argumentText -match '(?i)(?:ghp_|github_pat_|sk-ant-|sk-proj-|xox[baprs]-)[-A-Za-z0-9_]{12,}') {

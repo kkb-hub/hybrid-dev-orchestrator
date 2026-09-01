@@ -6,7 +6,7 @@ allowed-tools: Bash(pwsh:*)
 Run the Hybrid Dev Orchestrator preflight for the repository in the current working directory:
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" doctor -RepositoryPath "<absolute path of the current working directory>" $ARGUMENTS
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" doctor $ARGUMENTS
 ```
 
 Pass any user-supplied arguments (for example `-Profile`, `-Config`, `-DryRun`, `-Json`) through unchanged. Exit code 3 means one or more required checks failed.

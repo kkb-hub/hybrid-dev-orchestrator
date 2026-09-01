@@ -9,7 +9,7 @@ Preview or synchronize the Hybrid Dev Orchestrator label catalog (`hdo:ready`, `
 Without `-Apply` this is a read-only diff preview:
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" labels -RepositoryPath "<absolute path of the current working directory>" $ARGUMENTS
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" labels $ARGUMENTS
 ```
 
 Pass user-supplied arguments (for example `-Repository owner/repo`, `-Apply`, `-WhatIf`) through unchanged. Only include `-Apply` when the user explicitly asked to apply the changes; otherwise show the preview and ask.

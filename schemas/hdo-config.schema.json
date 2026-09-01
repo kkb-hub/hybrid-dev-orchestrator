@@ -215,8 +215,7 @@
             "medium",
             "high",
             "xhigh",
-            "max",
-            "ultra"
+            "max"
           ]
         },
         "contextTokens": {
@@ -284,6 +283,35 @@
             "required": [
               "model"
             ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "claude"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reasoningEffort": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ]
+              },
+              "extraArgs": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
           }
         }
       ]

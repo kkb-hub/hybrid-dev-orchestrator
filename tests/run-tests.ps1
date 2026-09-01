@@ -222,10 +222,17 @@ Keep the cycle bounded.
     $claudeEffortResult = Test-HdoConfiguration $claudeEffortConfig
     Assert-Hdo (-not $claudeEffortResult.valid) 'Claude runner rejects effort values the Claude CLI would silently ignore'
 
+    $claudeExtraArgsConfig = Copy-HdoObject $config
+    $claudeExtraArgsConfig.runners['claude-planner'].extraArgs = @('--mcp-config', 'servers.json')
+    $claudeExtraArgsResult = Test-HdoConfiguration $claudeExtraArgsConfig
+    Assert-Hdo (-not $claudeExtraArgsResult.valid) 'Claude runner rejects extraArgs so isolation flags cannot be bypassed'
+
     $claudeWriteArguments = & $module {
         param($Runner)
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
-    } ([ordered]@{ sandbox = 'workspace-write'; model = 'opus'; reasoningEffort = 'high'; allowedTools = @('Read', 'Bash'); extraArgs = @() })
+    } ([ordered]@{ sandbox = 'workspace-write'; model = 'opus'; reasoningEffort = 'HIGH'; allowedTools = @('Read', 'Bash'); extraArgs = @() })
+    $effortIndex = [Array]::IndexOf($claudeWriteArguments, '--effort')
+    Assert-Hdo ($effortIndex -ge 0 -and $claudeWriteArguments[$effortIndex + 1] -ceq 'high') 'reasoningEffort is passed to --effort in canonical lowercase'
     Assert-Hdo ($claudeWriteArguments -contains '--safe-mode') 'Claude adapter disables user customizations with --safe-mode'
     $permissionModeIndex = [Array]::IndexOf($claudeWriteArguments, '--permission-mode')
     Assert-Hdo ($permissionModeIndex -ge 0 -and $claudeWriteArguments[$permissionModeIndex + 1] -eq 'acceptEdits') 'workspace-write maps to the acceptEdits permission mode'
@@ -235,15 +242,17 @@ Keep the cycle bounded.
     $claudeReadArguments = & $module {
         param($Runner)
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
-    } ([ordered]@{ sandbox = 'read-only'; extraArgs = @() })
+    } ([ordered]@{ sandbox = 'read-only'; extraArgs = @('--injected-extra-argument') })
     $readPermissionIndex = [Array]::IndexOf($claudeReadArguments, '--permission-mode')
     Assert-Hdo ($readPermissionIndex -ge 0 -and $claudeReadArguments[$readPermissionIndex + 1] -eq 'plan') 'read-only maps to the plan permission mode'
+    Assert-Hdo ($claudeReadArguments -notcontains '--injected-extra-argument') 'the Claude adapter never forwards extraArgs, even from an unvalidated runner'
 
+    $normalizedReviewJson = ''
     foreach ($claudeSchemaName in @('task-contract', 'worker-result', 'review-result')) {
         $normalizedSchemaJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } (Join-Path $repositoryRoot "schemas/$claudeSchemaName.schema.json")
         Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"' -and $normalizedSchemaJson -notmatch '"minContains"') "Claude-normalized $claudeSchemaName schema drops `$schema and default minContains"
+        if ($claudeSchemaName -eq 'review-result') { $normalizedReviewJson = $normalizedSchemaJson }
     }
-    $normalizedReviewJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } (Join-Path $repositoryRoot 'schemas/review-result.schema.json')
     $normalizedReview = $normalizedReviewJson | ConvertFrom-Json -AsHashtable -Depth 100
     Assert-Hdo ([string]$normalizedReview.allOf[0].if.properties.missingViewpoints.type -eq 'array') 'Claude schema normalization adds the explicit array type strict mode requires'
     $normalizedReviewSchemaPath = Join-Path $testAppData 'claude-review-result.schema.json'
@@ -259,6 +268,21 @@ Keep the cycle bounded.
         $invalidStillRejected = -not [bool]($invalidReviewJson | Test-Json -SchemaFile $normalizedReviewSchemaPath -ErrorAction SilentlyContinue)
         Assert-Hdo $invalidStillRejected "Claude schema normalization does not weaken validation: $invalidReviewFixture stays invalid"
     }
+
+    # const/enum/default hold data values, not schemas; normalization must never rewrite
+    # them or the CLI's structured output would fail re-validation against the canonical schema.
+    $dataKeywordSchemaPath = Join-Path $testAppData 'claude-data-keyword.schema.json'
+    Set-Content -LiteralPath $dataKeywordSchemaPath -Encoding utf8NoBOM -Value (@'
+{"type":"object","properties":{"x":{"enum":[{"$schema":"literal","minItems":1}],"default":{"minContains":1}}}}
+'@)
+    $normalizedDataKeyword = (& $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } $dataKeywordSchemaPath) | ConvertFrom-Json -AsHashtable -Depth 100
+    $enumLiteral = $normalizedDataKeyword.properties.x.enum[0]
+    Assert-Hdo ([string]$enumLiteral['$schema'] -eq 'literal' -and [int]$enumLiteral.minItems -eq 1 -and -not $enumLiteral.Contains('type')) 'Claude schema normalization leaves enum data values untouched'
+    Assert-Hdo ([int]$normalizedDataKeyword.properties.x.default.minContains -eq 1 -and -not $normalizedDataKeyword.properties.x.default.Contains('type')) 'Claude schema normalization leaves default data values untouched'
+
+    $claudeExampleConfig = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath (Join-Path $repositoryRoot 'config/examples/claude-only.json')
+    Assert-Hdo ($claudeExampleConfig.resolvedProfile -eq 'claude-only' -and [string]$claudeExampleConfig.steps.fix -eq 'claude-fixer') 'claude-only example overlays the default config into a valid merged configuration'
+    Assert-Hdo ([string]$claudeExampleConfig.runners['claude-fixer'].model -eq 'sonnet') 'claude-only example adds the claude-fixer runner through the merge'
 
     $plainResultText = & $module { ConvertFrom-HdoClaudeOutput '{"type":"result","result":"plain text"}' }
     Assert-Hdo ($plainResultText -eq 'plain text') 'Claude envelope conversion returns string results as-is'

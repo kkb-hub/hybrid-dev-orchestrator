@@ -360,7 +360,7 @@ root artifact:
 
 iteration artifact:
 
-- step ごとの `prompt.md`, `events.jsonl`, `stdout.log`, `stderr.log`, `final.json`
+- step ごとの `prompt.md`, `envelope.json`（Claude）または `events.jsonl`（Codex / command）, `stdout.log`, `stderr.log`, `final.json`
 - validation gate log と `validation/result.json`
 - `diff.patch`, `diff.json`
 - `review/result.json`

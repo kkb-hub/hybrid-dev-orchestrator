@@ -9,7 +9,7 @@ Run one Hybrid Dev Orchestrator cycle. Either `-Issue <number>` or `-Pick` is re
 Before a full run, confirm intent with the user unless they explicitly asked for it: a full run claims the Issue on GitHub (unless `-NoWriteBack`), creates a dedicated worktree and branch, and launches AI runner processes that can take a long time. Suggest `-DryRun` first when the user seems unsure.
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" run -RepositoryPath "<absolute path of the current working directory>" -Json $ARGUMENTS
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" run -Json $ARGUMENTS
 ```
 
 Pass all user-supplied arguments through unchanged (for example `-Issue`, `-Pick`, `-Repository`, `-Profile`, `-Config`, `-SetStep`, `-DryRun`, `-NoWriteBack`). Use a generous Bash timeout: a full cycle can run for the configured runner timeouts (up to hours). Exit codes: 3 preflight failed, 4 no eligible Issue, 5 FAILED, 6 ESCALATED.

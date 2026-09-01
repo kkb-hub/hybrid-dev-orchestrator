@@ -6,7 +6,7 @@ allowed-tools: Bash(pwsh:*)
 List the GitHub Issues that are eligible for Hybrid Dev Orchestrator pickup:
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" issues -RepositoryPath "<absolute path of the current working directory>" -Json $ARGUMENTS
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" issues -Json $ARGUMENTS
 ```
 
 Pass any user-supplied arguments (for example `-Repository owner/repo`) through unchanged. Exit code 4 means no eligible Issue was found.

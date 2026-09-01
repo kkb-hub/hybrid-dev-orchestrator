@@ -49,12 +49,20 @@ function Convert-HdoClaudeSchemaNode {
             return $result
         }
         $mapKeywords = @('properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas')
+        # These keywords hold data values, not schemas: copy them verbatim so normalization
+        # never rewrites a literal (an object const/enum/default containing "$schema" or
+        # array keywords must round-trip unchanged, or output re-validation would break).
+        $dataKeywords = @('const', 'enum', 'default', 'examples')
         foreach ($key in $Node.Keys) {
             $name = [string]$key
+            $value = $Node[$key]
             if ($name -eq '$schema') { continue }
-            if ($name -eq 'minContains' -and [int]$Node[$key] -eq 1) { continue }
-            if ($name -in $mapKeywords) { $result[$name] = Convert-HdoClaudeSchemaNode $Node[$key] $false }
-            else { $result[$name] = Convert-HdoClaudeSchemaNode $Node[$key] $true }
+            if ($name -eq 'minContains' -and $value -isnot [System.Collections.IDictionary] -and
+                $value -isnot [System.Collections.IEnumerable] -and $value -isnot [bool] -and
+                [string]$value -eq '1') { continue }
+            if ($name -in $dataKeywords) { $result[$name] = $value }
+            elseif ($name -in $mapKeywords) { $result[$name] = Convert-HdoClaudeSchemaNode $value $false }
+            else { $result[$name] = Convert-HdoClaudeSchemaNode $value $true }
         }
         $arrayKeywords = @('minItems', 'maxItems', 'uniqueItems', 'contains', 'minContains', 'maxContains')
         $usesArrayKeyword = $false
@@ -99,10 +107,14 @@ function Get-HdoClaudeArguments {
         '--json-schema', $SchemaJson
     )
     if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
-    if (Get-HdoValue $Runner 'reasoningEffort' '') { $arguments += @('--effort', [string]$Runner.reasoningEffort) }
+    # The CLI matches --effort values case-sensitively and silently falls back on a
+    # mismatch, so pass the canonical lowercase form regardless of config casing.
+    if (Get-HdoValue $Runner 'reasoningEffort' '') { $arguments += @('--effort', ([string]$Runner.reasoningEffort).ToLowerInvariant()) }
     $allowedTools = @(Get-HdoValue $Runner 'allowedTools' @())
     if ($allowedTools.Count -gt 0) { $arguments += @('--allowedTools', ($allowedTools -join ',')) }
-    foreach ($extraArgument in @(Get-HdoValue $Runner 'extraArgs' @())) { $arguments += [string]$extraArgument }
+    # No extraArgs passthrough: the Claude adapter owns its full argument surface so the
+    # --safe-mode isolation and structured-output contract cannot be overridden per run.
+    # Test-HdoConfiguration rejects claude runners that declare extraArgs.
     return $arguments
 }
 

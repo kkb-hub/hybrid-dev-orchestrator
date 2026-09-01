@@ -47,6 +47,13 @@ function Test-HdoEnvironment {
         $commandName = [string]$runner.command
         $command = Get-Command $commandName -ErrorAction SilentlyContinue
         Add-HdoPreflightCheck $checks "runner:$runnerName" $(if ($command) { 'pass' } else { 'fail' }) $(if ($command) { "$($runner.type) command '$commandName' is available." } else { "Runner command '$commandName' was not found." })
+        # The Claude adapter passes the normalized JSON schema inline via --json-schema
+        # (the CLI accepts no file path there). cmd.exe batch shims re-parse arguments and
+        # cap the command line at 8191 characters, so an npm .cmd shim can corrupt or
+        # truncate that argument even though a native install works.
+        if ([string]$runner.type -eq 'claude' -and $command -and [IO.Path]::GetExtension([string]$command.Source) -in @('.cmd', '.bat')) {
+            Add-HdoPreflightCheck $checks "runner:${runnerName}:shim" 'warning' "Claude command '$commandName' resolves to the batch shim '$($command.Source)'. cmd.exe argument re-parsing can corrupt the inline --json-schema argument; prefer a native claude install." $false
+        }
         if ([string](Get-HdoValue $runner 'provider' 'cloud') -eq 'ollama') { $hasOllama = $true }
     }
 

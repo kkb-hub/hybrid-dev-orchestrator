@@ -7,7 +7,7 @@ allowed-tools: Bash(pwsh:*)
 Inspect a GitHub Issue and show its normalized Hybrid Dev Orchestrator contract and validation result. The Issue number is required; if the user did not provide one, ask for it instead of guessing.
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" inspect -RepositoryPath "<absolute path of the current working directory>" -Issue <number> -Json $ARGUMENTS
+pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" inspect -Issue <number> -Json $ARGUMENTS
 ```
 
 Pass any additional user-supplied arguments (for example `-Repository owner/repo`) through unchanged.

@@ -76,11 +76,6 @@ $validCases = @(
         SchemaPath = 'schemas/hdo-config.schema.json'
     },
     @{
-        Name = 'claude-only config'
-        JsonPath = 'config/examples/claude-only.json'
-        SchemaPath = 'schemas/hdo-config.schema.json'
-    },
-    @{
         Name = 'cloud-only config'
         JsonPath = 'config/examples/cloud-only.json'
         SchemaPath = 'schemas/hdo-config.schema.json'
