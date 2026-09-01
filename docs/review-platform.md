@@ -9,9 +9,11 @@
 
 net-equity で得た finding 規律のうち、HDO の implementation/review cycle に必要な **shared schema、fail-safe decision rule、validation evidence、bounded fix loop** は実装済みである。
 
-一方、当初検討した standalone Claude Code plugin、多視点 reviewer の orchestration、反証 batch、mutation runner、usage/token telemetry、利用 repository 向け plugin 配布は post-MVP とする。現在の repository に未実装 plugin が存在することを前提にしてはならない。
+当初「post-MVP」としていた Claude Code plugin のうち、`hdo.ps1` を包む**薄い wrapper plugin**（`.claude-plugin/` + `commands/`）は方針を変更して本 repository に同梱した。Claude Code から `/hdo:run` 等で CLI を起動できるが、orchestration logic・schema・validation の正典は CLI 実装のままである。
 
-HDO MVP の review は、profile の `review` step に割り当てた1 runner が complete diff を構造化レビューする方式である。runner は Codex、Claude、または command adapter から選べ、Claude 固定ではない。
+一方、多視点 reviewer の orchestration、反証 batch、mutation runner、usage/token telemetry、および多段 review 機能を持つ standalone review-platform plugin は引き続き post-MVP とする。現在の repository にそれら未実装機能が存在することを前提にしてはならない。
+
+HDO MVP の review は、profile の `review` step に割り当てた1 runner が complete diff を構造化レビューする方式である。既定 profile は Claude runner を使うが、runner は Codex、Claude、または command adapter から選べ、Claude 固定ではない。
 
 ## 2. net-equity から継承した原則
 
@@ -46,7 +48,9 @@ review の唯一の schema 定義元は次である。
 
 Codex adapter は `--output-schema`、Claude adapter は JSON Schema output、command adapter は返却 JSON の runtime validation に同じ schema file を使う。HDO 用と将来 plugin 用に別の finding schema を作らない。
 
-将来 plugin を build するとき schema を同梱する場合も、この source から生成し、version/hash を CI で照合する。配布物の copy は編集元にしない。
+Claude adapter は CLI の strict-mode 制約のため、`--json-schema` へ渡す直前に in-memory の transport copy を正規化する（`$schema` / 既定値 `minContains` の除去、`type: "array"` 補完）。これは実行時変換であり、編集可能な copy を生成しない。出力の再検証は canonical schema で行う。
+
+同梱した thin-wrapper plugin は schema copy を持たず、repository の `schemas/` を直接参照する。将来 plugin へ schema を同梱する場合も、この source から生成し、version/hash を CI で照合する。配布物の copy は編集元にしない。
 
 ### 3.2 Review input
 
@@ -198,7 +202,8 @@ artifact は model/provider の conversation state ではなく HDO が所有す
 | counterargument batch | post-MVP review platform |
 | mutation manifest / runner | post-MVP review platform |
 | usage/token telemetry | post-MVP review platform |
-| Claude Code plugin packaging | post-MVP review platform |
+| Claude Code thin-wrapper plugin（`.claude-plugin/` + `commands/`） | HDO core（実装済み） |
+| standalone review-platform plugin packaging | post-MVP review platform |
 
 runner process invocation は共有できるが、role policy は分ける。implement/fix の workspace-write と review の read-only を同じ adapter 設定として混在させない。
 
@@ -229,7 +234,7 @@ runner process invocation は共有できるが、role policy は分ける。imp
 
 - usage report schema
 - unit / form / launch / subject / size-band の層別
-- Claude Code plugin と Codex-facing adapter の独立配布
+- standalone review-platform plugin と Codex-facing adapter の独立配布（`hdo.ps1` を包む薄い wrapper plugin は実装済み）
 - generated schema bundle と version check
 - net-equity との並走検証
 
@@ -261,6 +266,8 @@ token 削減率だけで成功を判定しない。quality gate が同等以上�
 - request_changes が bounded fix loop へ接続される。
 - fix 上限後に自動継続しない。
 - 同じ review schema を Codex / Claude / command adapter が利用できる。
+- Claude adapter へ渡す schema は strict-mode 向けに正規化した transport copy であり、canonical schema による出力再検証と、Claude CLI が正規化済み schema を受理する契約テスト（`tests/test-claude-contract.ps1`）を持つ。
+- `hdo.ps1` を包む薄い Claude Code plugin から各 command を起動できる。
 
 post-MVP であり、現在の acceptance 対象外:
 
@@ -268,7 +275,7 @@ post-MVP であり、現在の acceptance 対象外:
 - 反証 batch
 - mutation generation/execution
 - token telemetry report
-- standalone plugin install/update
+- standalone review-platform plugin の install/update
 
 ## 12. 履歴資料
 

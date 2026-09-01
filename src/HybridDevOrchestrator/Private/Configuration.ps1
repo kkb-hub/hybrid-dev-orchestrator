@@ -223,6 +223,10 @@ function Test-HdoConfiguration {
         if ($type -eq 'claude' -and (Get-HdoValue $runner 'contextTokens')) {
             $errors.Add("Claude runner '$runnerName' cannot set contextTokens because the Claude adapter does not expose a context-window argument.")
         }
+        $reasoningEffort = [string](Get-HdoValue $runner 'reasoningEffort' '')
+        if ($type -eq 'claude' -and $reasoningEffort -and $reasoningEffort -notin @('low', 'medium', 'high', 'xhigh', 'max')) {
+            $errors.Add("Claude runner '$runnerName' reasoningEffort '$reasoningEffort' is not supported; the Claude CLI --effort accepts low, medium, high, xhigh, or max and silently ignores other values.")
+        }
         if ($provider -in @('ollama', 'lmstudio') -and -not (Get-HdoValue $runner 'model' '')) {
             $errors.Add("Local runner '$runnerName' must define model.")
         }
@@ -251,7 +255,7 @@ function Test-HdoConfiguration {
             if ($argumentText -match '(?i)(danger-full-access|bypasspermissions|dangerously-(?:bypass|skip)|^--search(?:=|$))') {
                 $errors.Add("Runner '$runnerName' uses forbidden argument '$extraArgument'.")
             }
-            if ($type -in @('codex', 'claude') -and $argumentText -match '^(?:--sandbox|-s|--cd|-C|--permission-mode|--output-schema|--output-last-message|--json-schema)(?:=|$)') {
+            if ($type -in @('codex', 'claude') -and $argumentText -match '^(?:--sandbox|-s|--cd|-C|--permission-mode|--output-schema|--output-last-message|--json-schema|--output-format)(?:=|$)') {
                 $errors.Add("Runner '$runnerName' may not override adapter-controlled argument '$extraArgument'.")
             }
             if ($argumentText -match '(?i)(?:ghp_|github_pat_|sk-ant-|sk-proj-|xox[baprs]-)[-A-Za-z0-9_]{12,}') {

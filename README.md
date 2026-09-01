@@ -2,18 +2,18 @@
 
 Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化し、専用 Git worktree で planning、implementation、validation、review、fix を有限回実行する Windows / PowerShell CLI です。
 
-各 AI step は runner として設定します。既定は Codex CLI を使う cloud-only 構成で、Ollama は不要です。必要な場合だけ implementation / fix を Ollama へ切り替えられます。Claude や任意 command adapter も runner type として利用できます。
+各 AI step は runner として設定します。既定は Claude Code CLI を使う claude-only 構成で、Codex も Ollama も不要です。Codex CLI、Ollama hybrid、任意 command adapter は必要な場合だけ明示的に選択します。
 
 ## 前提
 
-- Windows 11 と PowerShell 7.2 以上
+- Windows 11 と PowerShell 7.2 以上（`pwsh`。Windows 同梱の Windows PowerShell 5.1 では動作しないため、別途導入してください）
 - Git for Windows
 - GitHub CLI `gh` と GitHub 認証
-- 既定構成では Codex CLI `codex` と利用可能な cloud 認証
+- 既定構成では Claude Code CLI `claude` と、その認証（`claude` での OAuth login、または runner の `passEnvironment` に明示追加した `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）
 - 対象 repository に、レビュー済みの `.hdo/project.json`
 - 対象 GitHub repository に HDO Issue Form と label
 
-Ollama は optional です。Ollama route を選んだ場合だけ `ollama` command、service、設定した model が必要になります。HDO は model を自動 pull しません。
+Codex と Ollama は optional です。Codex は `config/examples/cloud-only.json` 等で選んだ場合だけ `codex` command と cloud 認証が、Ollama route を選んだ場合だけ `ollama` command、service、設定した model が必要になります。HDO は model を自動 pull しません。
 
 ## 5分で試す
 
@@ -47,7 +47,7 @@ pwsh -NoProfile -File $hdo doctor `
   -RepositoryPath $repoPath -DryRun
 ```
 
-既定 profile は `cloud-only` です。`doctor -DryRun` でも GitHub、runner、選択済み local provider、project contract は読み取りますが、path probe file は作りません。
+既定 profile は `claude-only` です。`doctor -DryRun` でも GitHub、runner、選択済み local provider、project contract は読み取りますが、path probe file は作りません。
 
 ### 2. label を用意する
 
@@ -138,9 +138,19 @@ pickup は eligible な Issue を priority、作成日時、Issue number の順�
 
 `-NoWriteBack` は dry-run ではありません。コードを変更する full cycle であり、専用 worktree に未 commit の変更を残します。
 
-## Cloud-only と Ollama hybrid
+## Claude-only、Codex cloud、Ollama hybrid
 
-既定 [config/hdo.default.json](config/hdo.default.json) は全 step を Codex cloud runner へ割り当て、Ollama を probe しません。
+既定 [config/hdo.default.json](config/hdo.default.json) は全 step を Claude runner へ割り当て、Codex/Ollama を probe しません。Claude だけがインストールされた PC で完結します。model を明示したい場合は [config/examples/claude-only.json](config/examples/claude-only.json)（plan/review が `opus`、implement/fix が `sonnet`）を使えます。
+
+Codex を使う場合は [config/examples/cloud-only.json](config/examples/cloud-only.json) を明示します。
+
+```powershell
+$codexConfig = 'C:\src\hybrid-dev-orchestrator\config\examples\cloud-only.json'
+
+pwsh -NoProfile -File $hdo doctor `
+  -RepositoryPath $repoPath -Config $codexConfig `
+  -Profile cloud-only -DryRun
+```
 
 Ollama hybrid の設定例では plan/review は cloud、implement/fix は Ollama です。
 
@@ -205,6 +215,30 @@ pwsh -NoProfile -File $hdo cleanup -RunId '<run-id>' `
 ```
 
 worktree には意図的に未 commit の変更が残るため、通常の cleanup は拒否されます。`final/diff.patch` と必要な新規ファイルを確認・退避した後だけ、`-Force` を付けて実行してください。cleanup 後も run artifact と作成済み branch は残ります。
+
+## Claude Code plugin として使う
+
+この repository は Claude Code plugin としてもインストールできます。plugin は `hdo.ps1` を包む薄い層で、orchestration logic を複製しません。
+
+```text
+claude plugin marketplace add kkb-hub/hybrid-dev-orchestrator
+claude plugin install hdo@hybrid-dev-orchestrator
+```
+
+インストール後、Claude Code のセッションから次の slash command が使えます（対象 repository を作業ディレクトリとして開いた状態で実行します）。
+
+| Command | 内容 |
+|---|---|
+| `/hdo:doctor` | preflight 検査 |
+| `/hdo:config` | 解決済み設定と execution plan |
+| `/hdo:issues` | pickup 候補一覧 |
+| `/hdo:inspect` | Issue と正規化契約の検査 |
+| `/hdo:run` | dry-run / full cycle の実行 |
+| `/hdo:status` | run の状態表示 |
+| `/hdo:cleanup` | run worktree の除去（`-WhatIf` 既定） |
+| `/hdo:labels` | label catalog の差分・同期 |
+
+ローカル checkout を試す場合は `claude --plugin-dir C:\src\hybrid-dev-orchestrator` でも読み込めます。plugin 経由でも前提（`pwsh` 7.2+、`git`、`gh`、runner CLI）は同じです。
 
 ## 安全境界
 

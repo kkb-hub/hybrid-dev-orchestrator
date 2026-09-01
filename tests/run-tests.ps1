@@ -50,9 +50,11 @@ function Remove-HdoTestDirectory {
 
 try {
     $config = Get-HdoConfig -RepositoryPath $repositoryRoot
-    Assert-Hdo ($config.resolvedProfile -eq 'cloud-only') 'default profile is cloud-only'
-    Assert-Hdo ($config.runners['cloud-planner'].passEnvironment -is [array]) 'empty JSON arrays remain arrays after configuration merge'
-    Assert-Hdo ($config.runners['cloud-planner'].passEnvironment.Count -eq 0) 'empty passEnvironment remains empty'
+    Assert-Hdo ($config.resolvedProfile -eq 'claude-only') 'default profile is claude-only'
+    $defaultRunnerTypes = @($config.steps.Values | ForEach-Object { $config.runners[[string]$_].type } | Sort-Object -Unique)
+    Assert-Hdo ($defaultRunnerTypes.Count -eq 1 -and $defaultRunnerTypes[0] -eq 'claude') 'default profile routes every step to a Claude runner'
+    Assert-Hdo ($config.runners['claude-planner'].passEnvironment -is [array]) 'empty JSON arrays remain arrays after configuration merge'
+    Assert-Hdo ($config.runners['claude-planner'].passEnvironment.Count -eq 0) 'empty passEnvironment remains empty'
 
     $userConfigDirectory = Join-Path $testAppData 'hdo'
     New-Item -ItemType Directory -Path $userConfigDirectory -Force | Out-Null
@@ -75,7 +77,7 @@ try {
     New-Item -ItemType Directory -Path (Join-Path $otherRepository '.hdo') -Force | Out-Null
     '{"activeProfile":"must-not-load"}' | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
     $repositoryConfig = Get-HdoConfig -RepositoryPath $otherRepository
-    Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'cloud-only') 'repository .hdo/config.json is not loaded implicitly'
+    Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'claude-only') 'repository .hdo/config.json is not loaded implicitly'
 
     $invalidOverrideRejected = $false
     try { $null = Get-HdoConfig -RepositoryPath $repositoryRoot -Overrides @{ unknownRootProperty = $true } }
@@ -206,16 +208,62 @@ Keep the cycle bounded.
     Assert-Hdo (-not $unknownGateResult.valid) 'unknown validation gate IDs are rejected'
 
     $badConfig = Copy-HdoObject $config
-    $badConfig.steps.review = 'cloud-implementer'
+    $badConfig.steps.review = 'claude-implementer'
     $badConfigResult = Test-HdoConfiguration $badConfig
     Assert-Hdo (-not $badConfigResult.valid) 'review cannot use a workspace-write runner'
 
     $claudeContextConfig = Copy-HdoObject $config
-    $claudeContextConfig.runners['cloud-planner'].type = 'claude'
-    $claudeContextConfig.runners['cloud-planner'].command = 'claude'
-    $claudeContextConfig.runners['cloud-planner'].contextTokens = 8192
+    $claudeContextConfig.runners['claude-planner'].contextTokens = 8192
     $claudeContextResult = Test-HdoConfiguration $claudeContextConfig
     Assert-Hdo (-not $claudeContextResult.valid) 'Claude runner rejects unsupported contextTokens configuration'
+
+    $claudeEffortConfig = Copy-HdoObject $config
+    $claudeEffortConfig.runners['claude-planner'].reasoningEffort = 'ultra'
+    $claudeEffortResult = Test-HdoConfiguration $claudeEffortConfig
+    Assert-Hdo (-not $claudeEffortResult.valid) 'Claude runner rejects effort values the Claude CLI would silently ignore'
+
+    $claudeWriteArguments = & $module {
+        param($Runner)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
+    } ([ordered]@{ sandbox = 'workspace-write'; model = 'opus'; reasoningEffort = 'high'; allowedTools = @('Read', 'Bash'); extraArgs = @() })
+    Assert-Hdo ($claudeWriteArguments -contains '--safe-mode') 'Claude adapter disables user customizations with --safe-mode'
+    $permissionModeIndex = [Array]::IndexOf($claudeWriteArguments, '--permission-mode')
+    Assert-Hdo ($permissionModeIndex -ge 0 -and $claudeWriteArguments[$permissionModeIndex + 1] -eq 'acceptEdits') 'workspace-write maps to the acceptEdits permission mode'
+    $allowedToolsIndex = [Array]::IndexOf($claudeWriteArguments, '--allowedTools')
+    Assert-Hdo ($allowedToolsIndex -ge 0 -and $claudeWriteArguments[$allowedToolsIndex + 1] -eq 'Read,Bash') 'allowedTools is passed as the --allowedTools permission allowlist, not --tools'
+    Assert-Hdo ($claudeWriteArguments -notcontains '--tools') 'Claude adapter does not use the ambiguous --tools flag'
+    $claudeReadArguments = & $module {
+        param($Runner)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
+    } ([ordered]@{ sandbox = 'read-only'; extraArgs = @() })
+    $readPermissionIndex = [Array]::IndexOf($claudeReadArguments, '--permission-mode')
+    Assert-Hdo ($readPermissionIndex -ge 0 -and $claudeReadArguments[$readPermissionIndex + 1] -eq 'plan') 'read-only maps to the plan permission mode'
+
+    foreach ($claudeSchemaName in @('task-contract', 'worker-result', 'review-result')) {
+        $normalizedSchemaJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } (Join-Path $repositoryRoot "schemas/$claudeSchemaName.schema.json")
+        Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"' -and $normalizedSchemaJson -notmatch '"minContains"') "Claude-normalized $claudeSchemaName schema drops `$schema and default minContains"
+    }
+    $normalizedReviewJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } (Join-Path $repositoryRoot 'schemas/review-result.schema.json')
+    $normalizedReview = $normalizedReviewJson | ConvertFrom-Json -AsHashtable -Depth 100
+    Assert-Hdo ([string]$normalizedReview.allOf[0].if.properties.missingViewpoints.type -eq 'array') 'Claude schema normalization adds the explicit array type strict mode requires'
+    $normalizedReviewSchemaPath = Join-Path $testAppData 'claude-review-result.schema.json'
+    Set-Content -LiteralPath $normalizedReviewSchemaPath -Value $normalizedReviewJson -Encoding utf8NoBOM
+    $validReviewJson = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tests/fixtures/schema/review.valid.json') -Raw
+    Assert-Hdo ([bool]($validReviewJson | Test-Json -SchemaFile $normalizedReviewSchemaPath -ErrorAction SilentlyContinue)) 'valid review fixture passes the Claude-normalized schema'
+    foreach ($invalidReviewFixture in @(
+        'review.invalid-request-changes-empty.json',
+        'review.invalid-approve-open-blocker.json',
+        'review.invalid-missing-viewpoint-non-escalate.json'
+    )) {
+        $invalidReviewJson = Get-Content -LiteralPath (Join-Path $repositoryRoot "tests/fixtures/schema/$invalidReviewFixture") -Raw
+        $invalidStillRejected = -not [bool]($invalidReviewJson | Test-Json -SchemaFile $normalizedReviewSchemaPath -ErrorAction SilentlyContinue)
+        Assert-Hdo $invalidStillRejected "Claude schema normalization does not weaken validation: $invalidReviewFixture stays invalid"
+    }
+
+    $plainResultText = & $module { ConvertFrom-HdoClaudeOutput '{"type":"result","result":"plain text"}' }
+    Assert-Hdo ($plainResultText -eq 'plain text') 'Claude envelope conversion returns string results as-is'
+    $structuredResultText = & $module { ConvertFrom-HdoClaudeOutput '{"type":"result","result":"ignored","structured_output":{"schemaVersion":1}}' }
+    Assert-Hdo (($structuredResultText | ConvertFrom-Json).schemaVersion -eq 1) 'Claude envelope conversion prefers structured_output over result'
 
     $contextTokenExpansion = & $module {
         Expand-HdoArgumentTemplate '--context={contextTokens}' ([ordered]@{ contextTokens = 8192 })
@@ -424,6 +472,28 @@ Keep the cycle bounded.
         }
         catch { $invalidOutputRejected = $true }
         Assert-Hdo $invalidOutputRejected 'exit-zero agent output is rejected when it fails the output schema'
+
+        $claudeMockRunner = [ordered]@{
+            type = 'claude'
+            provider = 'cloud'
+            command = (Join-Path $repositoryRoot 'tests/fixtures/runtime/mock-claude.cmd')
+            sandbox = 'read-only'
+            timeoutSeconds = 30
+            passEnvironment = @()
+            extraArgs = @()
+        }
+        $claudeRunnerConfig = Copy-HdoObject $config
+        $claudeRunnerConfig.runners['mock-claude-plan'] = $claudeMockRunner
+        $claudeRunnerConfig.steps.plan = 'mock-claude-plan'
+        $claudeArtifact = Join-Path $tempRoot 'claude'
+        $claudeStepResult = & $module {
+            param($RunnerConfig, $Run, $WorkingDirectory, $ArtifactDirectory)
+            Invoke-HdoAgentStep $RunnerConfig $Run 'plan' 0 $WorkingDirectory 'mock prompt' $ArtifactDirectory 'task-contract'
+        } $claudeRunnerConfig $run $repositoryRoot $claudeArtifact
+        Assert-Hdo ($claudeStepResult.status -eq 'succeeded') 'Claude adapter extracts and validates structured output from the result envelope'
+        Assert-Hdo ($claudeStepResult.output.objective -eq 'Implement the normalized issue delivery cycle.') 'Claude adapter final output comes from structured_output'
+        $claudeEnvelopeArtifact = [string]$claudeStepResult.artifacts.events
+        Assert-Hdo (([IO.Path]::GetFileName($claudeEnvelopeArtifact) -eq 'envelope.json') -and (Test-Path -LiteralPath $claudeEnvelopeArtifact -PathType Leaf)) 'Claude adapter stores its single JSON envelope as envelope.json instead of events.jsonl'
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }

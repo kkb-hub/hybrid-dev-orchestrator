@@ -1,0 +1,16 @@
+{
+  "name": "hybrid-dev-orchestrator",
+  "owner": {
+    "name": "kkb-hub"
+  },
+  "metadata": {
+    "description": "Marketplace for the Hybrid Dev Orchestrator (HDO) Claude Code plugin."
+  },
+  "plugins": [
+    {
+      "name": "hdo",
+      "source": "./",
+      "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles, invoked from Claude Code as thin wrappers around hdo.ps1."
+    }
+  ]
+}

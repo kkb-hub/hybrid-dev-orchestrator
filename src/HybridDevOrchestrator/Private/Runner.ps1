@@ -34,6 +34,78 @@ function Expand-HdoArgumentTemplate {
     return $expanded
 }
 
+function Convert-HdoClaudeSchemaNode {
+    param(
+        [AllowNull()]$Node,
+        [bool]$IsSchema = $true
+    )
+
+    if ($Node -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        if (-not $IsSchema) {
+            # A property-name -> schema map (properties, $defs, ...). Keys are data names,
+            # never schema keywords, so recurse into values without keyword rewriting.
+            foreach ($key in $Node.Keys) { $result[[string]$key] = Convert-HdoClaudeSchemaNode $Node[$key] $true }
+            return $result
+        }
+        $mapKeywords = @('properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas')
+        foreach ($key in $Node.Keys) {
+            $name = [string]$key
+            if ($name -eq '$schema') { continue }
+            if ($name -eq 'minContains' -and [int]$Node[$key] -eq 1) { continue }
+            if ($name -in $mapKeywords) { $result[$name] = Convert-HdoClaudeSchemaNode $Node[$key] $false }
+            else { $result[$name] = Convert-HdoClaudeSchemaNode $Node[$key] $true }
+        }
+        $arrayKeywords = @('minItems', 'maxItems', 'uniqueItems', 'contains', 'minContains', 'maxContains')
+        $usesArrayKeyword = $false
+        foreach ($arrayKeyword in $arrayKeywords) {
+            if ($result.Contains($arrayKeyword)) { $usesArrayKeyword = $true; break }
+        }
+        if ($usesArrayKeyword -and -not $result.Contains('type')) { $result['type'] = 'array' }
+        return $result
+    }
+    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
+        $items = [object[]]@($Node | ForEach-Object { Convert-HdoClaudeSchemaNode $_ $IsSchema })
+        Write-Output -NoEnumerate $items
+        return
+    }
+    return $Node
+}
+
+function ConvertTo-HdoClaudeJsonSchema {
+    param([Parameter(Mandatory)][string]$SchemaPath)
+
+    # The Claude CLI validates --json-schema with Ajv in strict mode, which rejects the
+    # dialect declaration ("$schema"), the redundant default "minContains": 1, and array
+    # keywords on subschemas without an explicit "type": "array". Normalize a transport
+    # copy only; the canonical schema file stays the single source and the adapter still
+    # re-validates the final output against the original strict schema.
+    $schema = Read-HdoJsonFile $SchemaPath
+    $normalized = Convert-HdoClaudeSchemaNode $schema
+    return ($normalized | ConvertTo-Json -Depth 100 -Compress)
+}
+
+function Get-HdoClaudeArguments {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Runner,
+        [Parameter(Mandatory)][string]$SchemaJson
+    )
+
+    # --safe-mode keeps the run deterministic and untrusted-input safe: the user's
+    # CLAUDE.md, plugins, hooks, MCP servers, and skills never join an HDO agent run.
+    $arguments = @(
+        '-p', '--output-format', 'json', '--no-session-persistence', '--safe-mode',
+        '--permission-mode', $(if ($Runner.sandbox -eq 'read-only') { 'plan' } else { 'acceptEdits' }),
+        '--json-schema', $SchemaJson
+    )
+    if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
+    if (Get-HdoValue $Runner 'reasoningEffort' '') { $arguments += @('--effort', [string]$Runner.reasoningEffort) }
+    $allowedTools = @(Get-HdoValue $Runner 'allowedTools' @())
+    if ($allowedTools.Count -gt 0) { $arguments += @('--allowedTools', ($allowedTools -join ',')) }
+    foreach ($extraArgument in @(Get-HdoValue $Runner 'extraArgs' @())) { $arguments += [string]$extraArgument }
+    return $arguments
+}
+
 function ConvertFrom-HdoClaudeOutput {
     param([Parameter(Mandatory)][string]$Output)
 
@@ -64,16 +136,18 @@ function Invoke-HdoAgentStep {
     $binding = Get-HdoStepBinding $Config $Step
     if (-not $binding.enabled) { throw "Step '$Step' is disabled." }
     $runner = $binding.runner
+    $type = [string]$runner.type
     New-Item -ItemType Directory -Path $ArtifactDirectory -Force | Out-Null
     $promptPath = Join-Path $ArtifactDirectory 'prompt.md'
-    $eventsPath = Join-Path $ArtifactDirectory 'events.jsonl'
+    # Codex emits a JSONL event stream on stdout; Claude's --output-format json emits a
+    # single envelope object, so the copied artifact is named for what it actually is.
+    $eventsPath = if ($type -eq 'claude') { Join-Path $ArtifactDirectory 'envelope.json' } else { Join-Path $ArtifactDirectory 'events.jsonl' }
     $stdoutPath = Join-Path $ArtifactDirectory 'stdout.log'
     $stderrPath = Join-Path $ArtifactDirectory 'stderr.log'
     $finalPath = Join-Path $ArtifactDirectory 'final.json'
     $schemaPath = Resolve-HdoSchemaPath $OutputSchema
     Set-Content -LiteralPath $promptPath -Value (Protect-HdoText $Prompt) -Encoding utf8NoBOM
 
-    $type = [string]$runner.type
     $command = [string]$runner.command
     $arguments = @()
     $inputText = $Prompt
@@ -105,13 +179,7 @@ function Invoke-HdoAgentStep {
         $arguments += '-'
     }
     elseif ($type -eq 'claude') {
-        $schemaJson = (Get-Content -LiteralPath $schemaPath -Raw | ConvertFrom-Json -Depth 100 | ConvertTo-Json -Depth 100 -Compress)
-        $arguments = @('-p', '--output-format', 'json', '--no-session-persistence', '--permission-mode', $(if ($runner.sandbox -eq 'read-only') { 'plan' } else { 'acceptEdits' }), '--json-schema', $schemaJson)
-        if (Get-HdoValue $runner 'model' '') { $arguments += @('--model', [string]$runner.model) }
-        if (Get-HdoValue $runner 'reasoningEffort' '') { $arguments += @('--effort', [string]$runner.reasoningEffort) }
-        $allowedTools = @(Get-HdoValue $runner 'allowedTools' @())
-        if ($allowedTools.Count -gt 0) { $arguments += @('--tools', ($allowedTools -join ',')) }
-        foreach ($extraArgument in @(Get-HdoValue $runner 'extraArgs' @())) { $arguments += [string]$extraArgument }
+        $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson (ConvertTo-HdoClaudeJsonSchema $schemaPath)
     }
     elseif ($type -eq 'command') {
         foreach ($argument in @(Get-HdoValue $runner 'extraArgs' @())) {

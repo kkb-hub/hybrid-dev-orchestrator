@@ -18,7 +18,7 @@ try {
     $missingRunnerConfig = Join-Path $temporaryRoot 'missing-runner.json'
     [ordered]@{
         runners = [ordered]@{
-            'cloud-planner' = [ordered]@{ command = 'hdo-command-that-does-not-exist' }
+            'claude-planner' = [ordered]@{ command = 'hdo-command-that-does-not-exist' }
         }
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $missingRunnerConfig -Encoding utf8NoBOM
 

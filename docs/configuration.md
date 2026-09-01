@@ -108,14 +108,14 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `provider` | yes | `cloud`, `ollama`, `lmstudio`, `custom` |
 | `command` | yes | executable 名または path。shell command line ではない |
 | `model` | local は yes | model ID。cloud で省略すると harness default |
-| `reasoningEffort` | no | harness が対応する effort |
+| `reasoningEffort` | no | harness が対応する effort。Claude は `low`/`medium`/`high`/`xhigh`/`max` のみ（他値は configuration error） |
 | `contextTokens` | no | Codex へ要求する context window。command は `{contextTokens}` token で明示利用 |
 | `sandbox` | yes | `read-only` または `workspace-write` |
 | `timeoutSeconds` | yes | 1–86400 |
 | `passEnvironment` | yes | runner へ明示継承する environment 名 |
 | `extraArgs` | yes | executable へ追加する argument array |
 | `promptTransport` | command only | `stdin` または `{promptFile}` を使う `file` |
-| `allowedTools` | Claude only | Claude CLI へ明示する tool 名の配列 |
+| `allowedTools` | Claude only | Claude CLI の `--allowedTools` permission allowlist へ渡す tool 名の配列 |
 
 ### 4.1 Step ごとの権限
 
@@ -147,7 +147,26 @@ Codex runner は `cloud`、`ollama`、`lmstudio` に対応する。Claude runner
 
 ### 4.3 Claude adapter
 
-Claude runner は print mode、session persistence 無効、JSON Schema output を利用する。read-only は plan permission、workspace-write は edit permission に対応させる。model と effort は設定時だけ明示する。
+Claude runner は概ね次を組み立てる。
+
+~~~text
+claude -p --output-format json --no-session-persistence --safe-mode
+  --permission-mode <plan|acceptEdits>
+  --json-schema <normalized schema JSON>
+  [--model <model>]
+  [--effort <low|medium|high|xhigh|max>]
+  [--allowedTools <name,name,...>]
+~~~
+
+prompt は stdin で渡す。stdout の result envelope（単一 JSON object）は `envelope.json` として保存し、`structured_output`（なければ `result`）を final JSON として取り出したうえで、正規の schema で再検証する。
+
+- **schema の正規化**: Claude CLI は `--json-schema` を Ajv strict mode で検証するため、adapter は CLI へ渡す直前に transport copy だけを正規化する（`$schema` 宣言の除去、既定値どおりの `minContains: 1` の除去、array keyword を持つ subschema への `type: "array"` 補完）。`schemas/*.schema.json` が唯一の編集元であることは変わらず、step 出力は元の厳密な schema で再検証するため、検証強度は落ちない。
+- **`--safe-mode`**: 利用者の CLAUDE.md、plugin、hook、MCP server、skill を HDO の agent run へ持ち込まないための固定 flag である。再現性と、untrusted な Issue input に対する安全性の両方を目的とする。
+- **sandbox の意味**: `read-only` は `--permission-mode plan`、`workspace-write` は `--permission-mode acceptEdits` に対応する。これは Claude Code の permission mode であって OS-level sandbox ではない。`acceptEdits` の runner に対して worktree 外への書込や network access を OS が阻止するわけではない点は command adapter と同じであり（Codex の `workspace-write` とは保証が等価でない）、必要に応じて low-privilege account、VM/container、firewall 等の host policy を併用する。
+- **`reasoningEffort`**: Claude CLI の `--effort` は `low`、`medium`、`high`、`xhigh`、`max` のみを受け付け、他の値は警告だけを出して既定値で続行する。HDO はこの silent degradation を防ぐため、Claude runner にそれ以外の値を設定すると configuration error にする。
+- **`allowedTools`**: permission allowlist（`--allowedTools`）として渡す。利用可能な組み込み tool 集合の限定（`--tools`）ではない。
+- **認証**: HDO は runner process から `ANTHROPIC_API_KEY` と、名前が `TOKEN` / `SECRET` / `PASSWORD` / `API_KEY` で終わる環境変数（`CLAUDE_CODE_OAUTH_TOKEN` を含む）を既定で除外する。`claude` の OAuth login（`~/.claude` の credential store）はそのまま動作する。環境変数で認証する場合は、当該 runner の `passEnvironment` へ `ANTHROPIC_API_KEY` または `CLAUDE_CODE_OAUTH_TOKEN` を明示追加する（sensitive 名として warning が出る）。
+- `contextTokens` は設定できず、configuration error になる。
 
 ### 4.4 Command adapter
 
@@ -180,20 +199,34 @@ runner と validation process は、known credential および名前が `TOKEN`�
 
 runner の `fallback` 配列は許可しない。
 
-## 5. 既定 cloud-only profile
+## 5. 既定 claude-only profile
 
-`config/hdo.default.json` は model ID を固定せず、Codex の configured cloud default を使う。
+`config/hdo.default.json` は model ID を固定せず、Claude CLI の configured default model を使う。Codex も Ollama もインストールされていない「Claude のみの PC」が既定のサポート対象である。
 
 | Step | Runner | Provider | Sandbox | Timeout |
 |---|---|---|---|---:|
-| plan | `cloud-planner` | cloud | read-only | 900s |
-| implement | `cloud-implementer` | cloud | workspace-write | 3600s |
-| review | `cloud-reviewer` | cloud | read-only | 1200s |
-| fix | `cloud-implementer` | cloud | workspace-write | 3600s |
+| plan | `claude-planner` | cloud | read-only | 900s |
+| implement | `claude-implementer` | cloud | workspace-write | 3600s |
+| review | `claude-reviewer` | cloud | read-only | 1200s |
+| fix | `claude-implementer` | cloud | workspace-write | 3600s |
 
-この profile の doctor は Ollama を probe せず、`provider:ollama` check を `skipped` として返す。
+この profile の doctor は Codex/Ollama を要求せず、`provider:ollama` check を `skipped` として返す。
 
-Codex command の存在は preflight するが、cloud account/model の実利用可否は agent step の実行時にも検証される。事前に Codex CLI の authentication/configuration を完了しておく。
+`claude` command の存在は preflight するが、account/model の実利用可否は agent step の実行時にも検証される。事前に `claude` で login を完了しておくか、4.3 の `passEnvironment` による環境変数認証を設定する。
+
+model を明示したい場合は `config/examples/claude-only.json`（plan/review が `opus`、implement/fix が `sonnet`）を出発点にできる。
+
+### 5.1 Codex cloud profile
+
+Codex を使う構成は `config/examples/cloud-only.json` を明示的に選択する。
+
+~~~powershell
+pwsh ./hdo.ps1 doctor `
+  -Config ./config/examples/cloud-only.json `
+  -Profile cloud-only -DryRun
+~~~
+
+Codex CLI の authentication/configuration は事前に完了しておく。
 
 ## 6. Ollama hybrid profile
 
@@ -425,6 +458,8 @@ secret は user config にも保存しない。runner が authentication を必�
 | review/plan sandbox error | runner を `read-only` にする |
 | implement/fix sandbox error | runner を `workspace-write` にする |
 | route hint error | Issue の route 名が merge 済み `profiles` に存在するか |
+| Claude effort error | Claude runner の `reasoningEffort` を `low`/`medium`/`high`/`xhigh`/`max` にする |
+| Claude 認証 error | `claude` の login 状態。環境変数認証なら `passEnvironment` に認証変数を追加したか |
 | Ollama が突然必要 | active execution plan に `provider: ollama` がないか |
 | model missing | `ollama list` と runner.model。HDO は pull しない |
 | gate unknown | Issue の Validation Gate IDs と `.hdo/project.json` |

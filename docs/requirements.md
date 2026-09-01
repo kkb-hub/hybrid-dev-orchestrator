@@ -11,7 +11,7 @@
 
 Hybrid Dev Orchestrator（HDO）は、GitHub Issue を起点に、task planning、isolated implementation、trusted validation、structured review、bounded fix を実行する one-shot CLI である。
 
-LLM や agent harness は runner として抽象化する。`plan`、`implement`、`review`、`fix` の各 step は異なる runner を選択できる。既定は Codex CLI による cloud-only profile であり、Ollama は任意の hybrid profile でのみ利用する。
+LLM や agent harness は runner として抽象化する。`plan`、`implement`、`review`、`fix` の各 step は異なる runner を選択できる。既定は Claude CLI による claude-only profile であり、Codex は明示的に選択する profile、Ollama は任意の hybrid profile でのみ利用する。
 
 ~~~text
 GitHub Issue
@@ -38,7 +38,7 @@ MVP は次を満たす。
 1. GitHub Issue を明示指定、または決定的な pickup policy で1件選択できる。
 2. Issue 本文を versioned contract へ正規化し、必須 section、label、dependency、validation gate を検証できる。
 3. plan / implement / review / fix の runner、provider、model、reasoning、context、sandbox、timeout を設定で分離できる。
-4. Ollama がなくても cloud-only profile で動作し、Ollama を選択した場合だけ Ollama を検査する。
+4. Codex も Ollama もない「Claude CLI のみの PC」で既定 claude-only profile が完結し、Codex/Ollama は選択した場合だけ検査する。
 5. 現在の working tree を変更せず、固定した base commit から run 専用 worktree を作る。
 6. Issue が指定した gate ID を、trusted `.hdo/project.json` の command へ解決して実行する。
 7. review result を JSON Schema と semantic rule で検証し、finding を fix step へ渡せる。
@@ -60,9 +60,9 @@ MVP は次を行わない。
 - GitHub Projects custom field の必須化
 - Linux、macOS、WSL2 の正式対応
 - OS firewall、VM、container による汎用 command adapter の完全な network isolation
-- 多段 reviewer orchestration、反証 batch、mutation runner、token telemetry、Claude Code plugin の配布
+- 多段 reviewer orchestration、反証 batch、mutation runner、token telemetry
 
-最後の項目群は review platform の post-MVP scope とする。
+最後の項目群は review platform の post-MVP scope とする。なお、`hdo.ps1` を包む薄い Claude Code plugin（`.claude-plugin/` + `commands/`）は scope に含め、本 repository から配布する。多段 review 機能を持つ standalone review-platform plugin は引き続き post-MVP とする。
 
 ## 4. 前提環境
 
@@ -77,7 +77,9 @@ MVP は次を行わない。
 - 対象 repository の `.hdo/project.json`
 - active profile が参照する全 runner command
 
-既定 profile では Codex CLI `codex` と、その cloud authentication/configuration が必要である。
+既定 profile では Claude CLI `claude` と、その authentication（OAuth login、または `passEnvironment` で明示継承する `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）が必要である。Codex CLI は `config/examples/cloud-only.json` 等で明示的に選択した場合だけ必要になる。
+
+PowerShell は 7.2 以上が必須であり、Windows 同梱の Windows PowerShell 5.1 では動作しない。「Claude のみの PC」でも `pwsh` の別途導入は前提となる。
 
 Ollama は必須ではない。active step が `provider: ollama` の runner を参照するときだけ次を要求する。
 
@@ -118,6 +120,10 @@ pwsh ./hdo.ps1 cleanup -RunId <id> [-Force] [-WhatIf]
 pwsh ./hdo.ps1 labels [-Repository owner/repo] [-Apply] [-WhatIf]
 ~~~
 
+### 5.1 Claude Code plugin
+
+本 repository は Claude Code plugin としても利用できる。`.claude-plugin/plugin.json` と `commands/` は `hdo.ps1` の各 command を包む薄い層であり、orchestration logic を複製しない。plugin から実行しても、設定・schema・validation の正典は本 repository の CLI 実装のままである。schema を含む配布物は repository の `schemas/` を single source とし、編集元となる copy を作らない。
+
 `-RepositoryPath` は local Git repository、`-Repository` は GitHub の `owner/repository` である。`-Repository` を省略した場合は設定または `origin` URL から解決する。
 
 exit code は次を使用する。
@@ -149,8 +155,8 @@ profile は `plan`、`implement`、`review`、`fix` の binding を持つ。`pla
 
 runner type:
 
+- `claude`: 既定。print mode、`--safe-mode`、strict-mode 向けに正規化した JSON Schema output を使用する。
 - `codex`: `codex exec` を非対話実行し、output schema と last message file を使用する。
-- `claude`: print mode と JSON Schema output を使用する。
 - `command`: argument template と stdin/file transport を利用する adapter。stable config として利用する場合は schema と policy の両方を満たす必要がある。
 
 provider:
@@ -164,7 +170,7 @@ plan/review runner は `read-only`、implement/fix runner は `workspace-write` 
 
 runner の fallback 宣言、および `workflow.implicitFallback=true` は禁止する。model/provider を変更するには、profile、Issue route hint、`-Profile`、または `-SetStep` による明示選択を必要とする。
 
-既定 `cloud-only` profile は Ollama を一切参照しない。`config/examples/ollama-hybrid.json` は plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
+既定 `claude-only` profile は Codex/Ollama を一切参照しない。`config/examples/claude-only.json` は model を明示した Claude 構成、`config/examples/cloud-only.json` は Codex cloud 構成、`config/examples/ollama-hybrid.json` は plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
 
 ## 7. GitHub Issue 契約
 
@@ -415,6 +421,6 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 - GitHub Enterprise / 複数 repository orchestration
 - reviewer lens の多段実行、反証、mutation validation
 - usage/token telemetry schema と集計
-- Claude Code plugin と Codex review adapter の独立配布
+- standalone review-platform plugin（多段 review lens）と Codex review adapter の独立配布
 - WSL2 / Linux / macOS
 - self-hosted local-model integration benchmark

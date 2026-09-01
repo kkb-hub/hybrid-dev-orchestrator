@@ -1,5 +1,5 @@
 {
-  "$schema": "../schemas/hdo-config.schema.json",
+  "$schema": "../../schemas/hdo-config.schema.json",
   "schemaVersion": 1,
   "activeProfile": "claude-only",
   "profiles": {
@@ -8,7 +8,7 @@
         "plan": "claude-planner",
         "implement": "claude-implementer",
         "review": "claude-reviewer",
-        "fix": "claude-implementer"
+        "fix": "claude-fixer"
       }
     }
   },
@@ -17,6 +17,7 @@
       "type": "claude",
       "provider": "cloud",
       "command": "claude",
+      "model": "opus",
       "reasoningEffort": "high",
       "sandbox": "read-only",
       "timeoutSeconds": 900,
@@ -27,6 +28,7 @@
       "type": "claude",
       "provider": "cloud",
       "command": "claude",
+      "model": "sonnet",
       "reasoningEffort": "medium",
       "sandbox": "workspace-write",
       "timeoutSeconds": 3600,
@@ -37,9 +39,21 @@
       "type": "claude",
       "provider": "cloud",
       "command": "claude",
+      "model": "opus",
       "reasoningEffort": "high",
       "sandbox": "read-only",
       "timeoutSeconds": 1200,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "claude-fixer": {
+      "type": "claude",
+      "provider": "cloud",
+      "command": "claude",
+      "model": "sonnet",
+      "reasoningEffort": "medium",
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 3600,
       "passEnvironment": [],
       "extraArgs": []
     }
@@ -66,9 +80,7 @@
     ],
     "writeBack": "status",
     "candidateLimit": 50,
-    "assignOnClaim": true,
-    "trustedActors": [],
-    "claimLeaseHours": 24
+    "assignOnClaim": true
   },
   "workflow": {
     "maxFixAttempts": 2,

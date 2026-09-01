@@ -7,7 +7,8 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testScripts = @(
     'tests/run-tests.ps1',
     'tests/test-process-output.ps1',
-    'tests/test-cli.ps1'
+    'tests/test-cli.ps1',
+    'tests/test-claude-contract.ps1'
 )
 
 foreach ($relativePath in $testScripts) {
