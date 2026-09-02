@@ -315,6 +315,16 @@ codex plugin add hdo@hybrid-dev-orchestrator
 
 plugin 経由でも前提（Windows 11、`pwsh` 7.2+、`git`、`gh`、選択した runner CLI）は同じです。`$hdo-run` は明示した full run 以外では `-DryRun` を優先し、`$hdo-cleanup` は常に preview から始めます。
 
+## plugin version を更新する
+
+client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。
+
+`.github/workflows/plugin-version.yml` が pull request と `main` への push でこれを検査し、bump 漏れと version 不一致を失敗させます。手元で同じ検査を実行する場合は次のとおりです。
+
+```powershell
+pwsh -NoProfile -File tools/check-plugin-version.ps1 -BaseRef origin/main
+```
+
 ## 安全境界
 
 - implement/fix は現在の working tree ではなく専用 worktree だけを変更します。
