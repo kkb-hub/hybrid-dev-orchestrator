@@ -1,0 +1,74 @@
+name: plugin-version
+
+# HDO の配布面（hdo.ps1 / src / commands / skills / config / schemas）が変わったのに
+# Claude / Codex plugin manifest の version が据え置かれると、client repository は
+# 更新を検知できない。その状態を PR で落とし、main への直接 push でも検出する。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base-ref:
+        description: 比較対象の base ref（既定は default branch）
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: plugin-version-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve base ref
+        id: resolve
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_BRANCH: ${{ github.base_ref }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          DISPATCH_BASE_REF: ${{ inputs.base-ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          # base ref が解決できない場合は、原則 skip ではなく後続 step を失敗させる。
+          # push の before が all-zero（branch 新規作成）のときだけが唯一の正当な skip 理由。
+          # それ以外で解決できない場合（例: force push で before の履歴が失われた）は
+          # 検査を skip して green にするのではなく、check step 側の解決失敗として
+          # 明示的に fail させる。
+          $skip = $false
+          switch ($env:EVENT_NAME) {
+              'pull_request' { $baseRef = "origin/$env:PR_BASE_BRANCH" }
+              'push' {
+                  $baseRef = $env:PUSH_BEFORE_SHA
+                  if ([string]::IsNullOrWhiteSpace($baseRef) -or $baseRef -match '^0{40}$') {
+                      $skip = $true
+                  }
+              }
+              default {
+                  $baseRef = $(if ([string]::IsNullOrWhiteSpace($env:DISPATCH_BASE_REF)) { "origin/$env:DEFAULT_BRANCH" } else { $env:DISPATCH_BASE_REF })
+              }
+          }
+          "skip=$($skip.ToString().ToLowerInvariant())" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+          "base-ref=$baseRef" | Add-Content -LiteralPath $env:GITHUB_OUTPUT
+
+      - name: Check plugin version bump
+        if: steps.resolve.outputs.skip == 'false'
+        shell: pwsh
+        env:
+          BASE_REF: ${{ steps.resolve.outputs.base-ref }}
+        run: ./tools/check-plugin-version.ps1 -BaseRef $env:BASE_REF -HeadRef HEAD
+
+      - name: Run plugin manifest tests
+        shell: pwsh
+        run: ./tests/test-plugin.ps1
