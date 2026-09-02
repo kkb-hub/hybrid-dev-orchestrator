@@ -86,6 +86,11 @@ $validCases = @(
         SchemaPath = 'schemas/hdo-config.schema.json'
     },
     @{
+        Name = 'repository Ollama hybrid routing config'
+        JsonPath = 'config/examples/repository-ollama-hybrid.json'
+        SchemaPath = 'schemas/hdo-repository-config.schema.json'
+    },
+    @{
         Name = 'project contract'
         JsonPath = '.hdo/project.json'
         SchemaPath = 'schemas/project-contract.schema.json'
@@ -113,6 +118,16 @@ $validCases = @(
 )
 
 $invalidCases = @(
+    @{
+        Name = 'repository config rejects executable commands'
+        JsonPath = 'tests/fixtures/schema/repository-config.invalid-command.json'
+        SchemaPath = 'schemas/hdo-repository-config.schema.json'
+    },
+    @{
+        Name = 'repository config rejects environment forwarding'
+        JsonPath = 'tests/fixtures/schema/repository-config.invalid-environment.json'
+        SchemaPath = 'schemas/hdo-repository-config.schema.json'
+    },
     @{
         Name = 'request_changes rejects empty findings'
         JsonPath = 'tests/fixtures/schema/review.invalid-request-changes-empty.json'

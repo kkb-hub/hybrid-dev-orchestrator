@@ -22,11 +22,24 @@ try {
         }
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $missingRunnerConfig -Encoding utf8NoBOM
 
+    $firstConfig = Join-Path $temporaryRoot 'first.json'
+    $secondConfig = Join-Path $temporaryRoot 'second.json'
+    [ordered]@{ activeProfile = 'not-defined' } |
+        ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $firstConfig -Encoding utf8NoBOM
+    [ordered]@{ activeProfile = 'claude-only' } |
+        ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $secondConfig -Encoding utf8NoBOM
+
+    $nonGitDirectory = Join-Path ([IO.Path]::GetTempPath()) "hdo-cli-non-git-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $nonGitDirectory -Force | Out-Null
+
     $cases = @(
         [ordered]@{ name = 'help'; arguments = @('help'); expected = 0 },
         [ordered]@{ name = 'config'; arguments = @('config', '-Json'); expected = 0 },
+        [ordered]@{ name = 'config explicit ordered list'; arguments = @('config', '-Config', "$firstConfig,$secondConfig", '-Json'); expected = 0 },
+        [ordered]@{ name = 'config ignore repository default'; arguments = @('config', '-IgnoreRepositoryConfig', '-Json'); expected = 0 },
         [ordered]@{ name = 'conflicting run selection'; arguments = @('run', '-Issue', '1', '-Pick'); expected = 2 },
-        [ordered]@{ name = 'doctor preflight failure'; arguments = @('doctor', '-Config', $missingRunnerConfig, '-DryRun', '-Json'); expected = 3 }
+        [ordered]@{ name = 'doctor preflight failure'; arguments = @('doctor', '-Config', $missingRunnerConfig, '-DryRun', '-Json'); expected = 3 },
+        [ordered]@{ name = 'doctor outside a Git repository'; arguments = @('doctor', '-RepositoryPath', $nonGitDirectory, '-DryRun', '-Json'); expected = 3 }
     )
     foreach ($case in $cases) {
         $actual = Invoke-HdoCliTest @($case.arguments)
@@ -36,4 +49,5 @@ try {
 }
 finally {
     if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
+    if (Test-Path -LiteralPath $nonGitDirectory) { Remove-Item -LiteralPath $nonGitDirectory -Recurse -Force }
 }

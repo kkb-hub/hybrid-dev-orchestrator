@@ -11,9 +11,10 @@ param(
     [string]$Repository,
     [string]$RepositoryPath = (Get-Location).Path,
     [Alias('ConfigPath')]
-    [string]$Config,
+    [string[]]$Config,
     [string]$Profile,
     [string[]]$SetStep = @(),
+    [switch]$IgnoreRepositoryConfig,
     [switch]$DryRun,
     [switch]$NoWriteBack,
     [switch]$Apply,
@@ -33,7 +34,7 @@ function Write-HdoCliOutput {
 }
 
 function Get-HdoCliConfig {
-    return Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $Config -Profile $Profile
+    return Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $Config -Profile $Profile -IgnoreRepositoryConfig:$IgnoreRepositoryConfig
 }
 
 try {
@@ -42,17 +43,18 @@ try {
             @'
 Hybrid Dev Orchestrator
 
-  pwsh ./hdo.ps1 doctor  [-Profile <name>] [-DryRun] [-Json]
-  pwsh ./hdo.ps1 config  [-Config <path>] [-Profile <name>] [-Json]
+  pwsh ./hdo.ps1 doctor  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]
+  pwsh ./hdo.ps1 config  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-Json]
   pwsh ./hdo.ps1 issues  [-Repository owner/repo] [-Json]
   pwsh ./hdo.ps1 inspect -Issue <number> [-Repository owner/repo] [-Json]
-  pwsh ./hdo.ps1 run     (-Issue <number> | -Pick) [-Profile <name>] [-SetStep implement=<runner>] [-DryRun] [-NoWriteBack] [-Json]
+  pwsh ./hdo.ps1 run     (-Issue <number> | -Pick) [-Config <path>[,<path>...]] [-Profile <name>] [-SetStep implement=<runner>] [-IgnoreRepositoryConfig] [-DryRun] [-NoWriteBack] [-Json]
   pwsh ./hdo.ps1 status  -RunId <id> [-Json]
   pwsh ./hdo.ps1 cleanup -RunId <id> [-Force] [-WhatIf]
   pwsh ./hdo.ps1 labels  [-Repository owner/repo] [-Apply] [-WhatIf]
 
 DryRun performs GitHub reads, contract validation, configuration resolution, and a read-only preflight only.
 NoWriteBack runs the local cycle without changing GitHub labels or comments.
+Committed .hdo/config.json is loaded automatically unless IgnoreRepositoryConfig is set.
 '@
         }
         'doctor' {
@@ -67,6 +69,7 @@ NoWriteBack runs the local cycle without changing GitHub labels or comments.
             Write-HdoCliOutput ([ordered]@{
                 profile = $resolved.resolvedProfile
                 sources = $resolved.configSources
+                repositoryConfig = $resolved.repositoryConfig
                 warnings = $resolved.configurationWarnings
                 execution = Get-HdoExecutionPlan $resolved
             })
@@ -95,7 +98,8 @@ NoWriteBack runs the local cycle without changing GitHub labels or comments.
                 $stepOverrides[$override.Split('=')[0]] = $Matches.runner
             }
             $result = Invoke-HdoRun -IssueNumber $Issue -Pick:$Pick -RepositoryPath $RepositoryPath -Repository $Repository `
-                -ConfigPath $Config -Profile $Profile -StepOverrides $stepOverrides -DryRun:$DryRun -NoWriteBack:$NoWriteBack
+                -ConfigPath $Config -Profile $Profile -StepOverrides $stepOverrides -IgnoreRepositoryConfig:$IgnoreRepositoryConfig `
+                -DryRun:$DryRun -NoWriteBack:$NoWriteBack
             if ($Json -or $DryRun) { Write-HdoCliOutput $result }
             else {
                 $worktreePath = if ($result.worktree -and $result.worktree.path) { $result.worktree.path } else { $null }
@@ -120,7 +124,7 @@ NoWriteBack runs the local cycle without changing GitHub labels or comments.
         }
         'status' {
             if (-not $RunId) { throw 'status requires -RunId.' }
-            Write-HdoCliOutput (Get-HdoRun -RunId $RunId -RepositoryPath $RepositoryPath -ConfigPath $Config -Profile $Profile)
+            Write-HdoCliOutput (Get-HdoRun -RunId $RunId -RepositoryPath $RepositoryPath -ConfigPath $Config -Profile $Profile -IgnoreRepositoryConfig:$IgnoreRepositoryConfig)
         }
         'cleanup' {
             if (-not $RunId) { throw 'cleanup requires -RunId.' }
@@ -129,6 +133,7 @@ NoWriteBack runs the local cycle without changing GitHub labels or comments.
                 RepositoryPath = $RepositoryPath
                 ConfigPath = $Config
                 Profile = $Profile
+                IgnoreRepositoryConfig = $IgnoreRepositoryConfig
                 Force = $Force
                 Confirm = $false
                 WhatIf = $WhatIf

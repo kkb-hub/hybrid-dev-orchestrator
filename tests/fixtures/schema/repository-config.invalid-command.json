@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "runners": {
+    "unsafe": {
+      "type": "codex",
+      "provider": "ollama",
+      "command": "arbitrary-command",
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 60
+    }
+  }
+}
