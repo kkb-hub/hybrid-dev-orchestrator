@@ -155,12 +155,13 @@ function Remove-HdoRunWorktree {
     param(
         [Parameter(Mandatory)][string]$RunId,
         [string]$RepositoryPath = (Get-Location).Path,
-        [string]$ConfigPath,
+        [string[]]$ConfigPath,
         [string]$Profile,
+        [switch]$IgnoreRepositoryConfig,
         [switch]$Force
     )
 
-    $config = Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $ConfigPath -Profile $Profile
+    $config = Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $ConfigPath -Profile $Profile -IgnoreRepositoryConfig:$IgnoreRepositoryConfig
     $artifactPath = Join-Path ([string]$config.paths.artifactRoot) $RunId
     $run = Read-HdoJsonFile (Join-Path $artifactPath 'run.json')
     $worktreePath = [string](Get-HdoValue $run 'worktree.path' '')

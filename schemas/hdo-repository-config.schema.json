@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/hdo-repository-config.schema.json",
+  "title": "HDO trusted repository routing configuration",
+  "description": "A constrained, committed repository-owned overlay for role, provider, model, sandbox, and timeout routing. Executable commands, arguments, environment forwarding, paths, and fallback policy are intentionally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "minLength": 1
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "activeProfile": {
+      "$ref": "#/$defs/name"
+    },
+    "profiles": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/profile"
+      }
+    },
+    "runners": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/runner"
+      }
+    }
+  },
+  "$defs": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["steps"],
+      "properties": {
+        "steps": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["plan", "implement", "review", "fix"],
+          "properties": {
+            "plan": {
+              "$ref": "#/$defs/step"
+            },
+            "implement": {
+              "$ref": "#/$defs/requiredStep"
+            },
+            "review": {
+              "$ref": "#/$defs/requiredStep"
+            },
+            "fix": {
+              "$ref": "#/$defs/requiredStep"
+            }
+          }
+        }
+      }
+    },
+    "step": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled"],
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "runner": {
+              "$ref": "#/$defs/name"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": {
+                    "const": true
+                  }
+                },
+                "required": ["enabled"]
+              },
+              "then": {
+                "required": ["runner"]
+              },
+              "else": {
+                "not": {
+                  "required": ["runner"]
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "requiredStep": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/name"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "runner"],
+          "properties": {
+            "enabled": {
+              "const": true
+            },
+            "runner": {
+              "$ref": "#/$defs/name"
+            }
+          }
+        }
+      ]
+    },
+    "runner": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "type": {
+          "enum": ["codex", "claude"]
+        },
+        "provider": {
+          "enum": ["cloud", "ollama", "lmstudio"]
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reasoningEffort": {
+          "enum": ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+        },
+        "contextTokens": {
+          "type": "integer",
+          "minimum": 1024,
+          "maximum": 1048576
+        },
+        "sandbox": {
+          "enum": ["read-only", "workspace-write"]
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        }
+      }
+    }
+  }
+}

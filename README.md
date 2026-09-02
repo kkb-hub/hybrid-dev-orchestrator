@@ -2,7 +2,7 @@
 
 Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化し、専用 Git worktree で planning、implementation、validation、review、fix を有限回実行する Windows / PowerShell CLI です。
 
-各 AI step は runner として設定します。既定は Claude Code CLI を使う claude-only 構成で、Codex も Ollama も不要です。Codex CLI、Ollama hybrid、任意 command adapter は必要な場合だけ明示的に選択します。
+各 AI step は runner として設定します。既定は Claude Code CLI を使う claude-only 構成で、Codex も Ollama も不要です。対象 repository に commit した `.hdo/config.json` で、plan / implement / review / fix ごとの provider と model を既定化できます。
 
 ## 前提
 
@@ -11,6 +11,7 @@ Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化�
 - GitHub CLI `gh` と GitHub 認証
 - 既定構成では Claude Code CLI `claude` と、その認証（`claude` での OAuth login、または runner の `passEnvironment` に明示追加した `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）
 - 対象 repository に、レビュー済みの `.hdo/project.json`
+- repository 固有 routing を使う場合は、レビューして commit した `.hdo/config.json`
 - 対象 GitHub repository に HDO Issue Form と label
 
 Codex と Ollama は optional です。Codex は `config/examples/cloud-only.json` 等で選んだ場合だけ `codex` command と cloud 認証が、Ollama route を選んだ場合だけ `ollama` command、service、設定した model が必要になります。HDO は model を自動 pull しません。
@@ -138,11 +139,48 @@ pickup は eligible な Issue を priority、作成日時、Issue number の順�
 
 `-NoWriteBack` は dry-run ではありません。コードを変更する full cycle であり、専用 worktree に未 commit の変更を残します。
 
+## Repository ごとの model routing
+
+対象 repository の `HEAD` に `.hdo/config.json` があれば、HDO は通常の `config`、`doctor`、`run` で自動読込します。そのため plugin からの通常実行は次だけで構いません。
+
+```text
+/hdo:run -Issue 123
+```
+
+自動設定は制限付き schema で検査され、profile routing と built-in Codex/Claude runner の provider、model、sandbox、timeout 等だけを変更できます。任意 command、argument、environment、保存先、GitHub write-back、fallback policy は repository 設定から変更できません。working tree にだけ `.hdo/config.json` があり `HEAD` にない場合は、自動適用せず fail closed になります。file 自体が存在しない repository は従来どおり既定設定で動きます。
+
+実装担当だけを Ollama にする Codex 親向けの例は [config/examples/repository-ollama-hybrid.json](config/examples/repository-ollama-hybrid.json) です。対象 repository へ `.hdo/config.json` として配置して commit します。
+
+```powershell
+$hdoRoot = Split-Path -Parent $hdo
+New-Item -ItemType Directory (Join-Path $repoPath '.hdo') -Force | Out-Null
+Copy-Item (Join-Path $hdoRoot 'config/examples/repository-ollama-hybrid.json') `
+  (Join-Path $repoPath '.hdo/config.json')
+
+git -C $repoPath add .hdo/config.json
+git -C $repoPath commit -m 'Configure HDO Ollama implementation runner'
+
+pwsh -NoProfile -File $hdo config -RepositoryPath $repoPath -Json
+pwsh -NoProfile -File $hdo run -Issue $issue -RepositoryPath $repoPath -Repository $repo
+```
+
+この例は plan/review を現在の Codex cloud model、implement/fix を Ollama の `qwen3.8:27b-q4_K_M` へ割り当てます。Ollama が利用不能でも cloud へ fallback しません。
+
+別の設定を一時的に使う場合は `-Config` で明示できます。複数 file は comma 区切りで左から右へ merge し、後の file が勝ちます。relative path は対象 repository root 基準です。
+
+```text
+/hdo:run -Issue 123 -Config ./.hdo/alternate.json
+/hdo:run -Issue 123 -Config ./.hdo/base.json,./.hdo/local.json
+/hdo:run -Issue 123 -IgnoreRepositoryConfig -Config ./.hdo/alternate.json
+```
+
+`-IgnoreRepositoryConfig` は自動 `.hdo/config.json` だけを無効にします。明示 `-Config` は reviewed full configuration として、自動設定では禁止される user-authorized runner 設定も指定できます。
+
 ## Claude-only、Codex cloud、Ollama hybrid
 
 既定 [config/hdo.default.json](config/hdo.default.json) は全 step を Claude runner へ割り当て、Codex/Ollama を probe しません。Claude だけがインストールされた PC で完結します。model を明示したい場合は [config/examples/claude-only.json](config/examples/claude-only.json)（plan/review が `opus`、implement/fix が `sonnet`）を使えます。
 
-Codex を使う場合は [config/examples/cloud-only.json](config/examples/cloud-only.json) を明示します。
+一時的に Codex を使う場合は [config/examples/cloud-only.json](config/examples/cloud-only.json) を明示します。
 
 ```powershell
 $codexConfig = 'C:\src\hybrid-dev-orchestrator\config\examples\cloud-only.json'
@@ -152,7 +190,7 @@ pwsh -NoProfile -File $hdo doctor `
   -Profile cloud-only -DryRun
 ```
 
-Ollama hybrid の設定例では plan/review は cloud、implement/fix は Ollama です。
+明示読込用の Ollama hybrid 設定 [config/examples/ollama-hybrid.json](config/examples/ollama-hybrid.json) でも、plan/review は cloud、implement/fix は Ollama です。
 
 ```powershell
 $hybridConfig = 'C:\src\hybrid-dev-orchestrator\config\examples\ollama-hybrid.json'
@@ -176,6 +214,12 @@ pwsh -NoProfile -File $hdo run -Issue $issue `
 ```
 
 provider/model の暗黙 fallback はありません。選択した runner が使えない場合、別 runner へ切り替えず preflight または当該 step で停止します。
+
+Ollama 0.33.2以降と指定modelを導入済みのlocal hostでは、実providerへ1回だけ送るopt-in smokeも実行できます。通常のtest suite/CIからは実行されません。
+
+```powershell
+pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
+```
 
 ## CLI
 

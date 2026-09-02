@@ -1,14 +1,167 @@
+function Get-HdoRepositoryConfigSnapshot {
+    param(
+        [Parameter(Mandatory)][string]$RepositoryPath,
+        [string]$Revision = 'HEAD'
+    )
+
+    $repositoryRoot = Get-HdoRepositoryRoot $RepositoryPath
+    $relativePath = '.hdo/config.json'
+    $workingTreePath = Join-Path $repositoryRoot $relativePath
+    $commitResult = Invoke-HdoGit @('rev-parse', '--verify', "$Revision^{commit}") $repositoryRoot
+    if ($commitResult.exitCode -ne 0) {
+        if (Test-Path -LiteralPath $workingTreePath -PathType Leaf) {
+            throw "Repository configuration exists but '$Revision' is not a readable commit. Commit .hdo/config.json before HDO can trust it."
+        }
+        return [ordered]@{
+            loaded = $false
+            path = $workingTreePath
+            revision = $Revision
+            commit = $null
+            blob = $null
+            sha256 = $null
+            value = $null
+        }
+    }
+
+    $commit = $commitResult.stdout.Trim()
+    $objectName = "${commit}:$relativePath"
+    $blobResult = Invoke-HdoGit @('rev-parse', '--verify', $objectName) $repositoryRoot
+    if ($blobResult.exitCode -ne 0) {
+        if (Test-Path -LiteralPath $workingTreePath -PathType Leaf) {
+            throw 'Repository configuration must be committed before HDO can load it automatically: .hdo/config.json'
+        }
+        return [ordered]@{
+            loaded = $false
+            path = $workingTreePath
+            revision = $Revision
+            commit = $commit
+            blob = $null
+            sha256 = $null
+            value = $null
+        }
+    }
+
+    $contentResult = Invoke-HdoGit @('show', $objectName) $repositoryRoot -ThrowOnError
+    $content = [string]$contentResult.stdout
+    $schemaPath = Join-Path $script:HdoRepositoryRoot 'schemas/hdo-repository-config.schema.json'
+    $schemaValidation = Test-HdoJsonSchema $content $schemaPath
+    if (-not $schemaValidation.valid) {
+        throw "Repository configuration schema validation failed for '$workingTreePath' at $commit`: $($schemaValidation.error)"
+    }
+    try {
+        $value = ConvertTo-HdoHashtable ($content | ConvertFrom-Json -Depth 100)
+    }
+    catch {
+        throw "Invalid repository configuration JSON in '$workingTreePath' at $commit`: $($_.Exception.Message)"
+    }
+
+    return [ordered]@{
+        loaded = $true
+        path = $workingTreePath
+        revision = $Revision
+        commit = $commit
+        blob = $blobResult.stdout.Trim()
+        sha256 = Get-HdoSha256 $content
+        value = $value
+    }
+}
+
+function Merge-HdoRepositoryConfig {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Base,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$RepositoryConfig
+    )
+
+    $normalized = ConvertTo-HdoHashtable $RepositoryConfig
+    if ($normalized.Contains('$schema')) { [void]$normalized.Remove('$schema') }
+    if ($normalized.Contains('runners')) {
+        foreach ($runnerName in @($normalized.runners.Keys)) {
+            $repositoryRunner = $normalized.runners[$runnerName]
+            $baseRunner = if ($Base.Contains('runners') -and $Base.runners.Contains($runnerName)) { $Base.runners[$runnerName] } else { $null }
+            if ($null -eq $baseRunner -and -not $repositoryRunner.Contains('type')) {
+                throw "Repository runner '$runnerName' is new and must declare type."
+            }
+            $repositoryType = [string](Get-HdoValue $repositoryRunner 'type' '')
+            $baseType = if ($null -ne $baseRunner) { [string](Get-HdoValue $baseRunner 'type' '') } else { '' }
+            if ($null -ne $baseRunner -and $baseType -eq 'command') {
+                throw "Repository configuration cannot modify command runner '$runnerName'. Define or select command runners in user or explicit configuration."
+            }
+            if ($repositoryType -and $baseType -and $repositoryType -ne $baseType) {
+                throw "Repository configuration cannot change runner '$runnerName' from type '$baseType' to '$repositoryType'."
+            }
+            $effectiveType = if ($repositoryType) { $repositoryType } else { $baseType }
+            if ($effectiveType -notin @('codex', 'claude')) {
+                throw "Repository runner '$runnerName' must use a built-in codex or claude adapter."
+            }
+            if ($null -eq $baseRunner) {
+                $repositoryRunner['command'] = $effectiveType
+                $repositoryRunner['passEnvironment'] = @()
+                $repositoryRunner['extraArgs'] = @()
+            }
+        }
+    }
+    return Merge-HdoHashtable $Base $normalized
+}
+
+function Assert-HdoRepositoryRoutingSafety {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$RepositoryConfig
+    )
+
+    $profileNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    if ($RepositoryConfig.Contains('activeProfile')) { [void]$profileNames.Add([string]$RepositoryConfig.activeProfile) }
+    if ($RepositoryConfig.Contains('profiles')) {
+        foreach ($profileName in $RepositoryConfig.profiles.Keys) { [void]$profileNames.Add([string]$profileName) }
+    }
+    foreach ($profileName in $profileNames) {
+        if (-not $Config.profiles.Contains($profileName)) { continue }
+        foreach ($stepName in @('plan', 'implement', 'review', 'fix')) {
+            $binding = Get-HdoValue $Config.profiles[$profileName] "steps.$stepName"
+            if ($null -eq $binding) { continue }
+            $enabled = $true
+            $runnerName = if ($binding -is [string]) { [string]$binding } else {
+                $enabled = [bool](Get-HdoValue $binding 'enabled' $true)
+                [string](Get-HdoValue $binding 'runner' '')
+            }
+            if (-not $enabled -or -not $runnerName -or -not $Config.runners.Contains($runnerName)) { continue }
+            if ([string](Get-HdoValue $Config.runners[$runnerName] 'type' '') -eq 'command') {
+                throw "Repository configuration cannot route profile '$profileName' step '$stepName' to command runner '$runnerName'. Select command runners only with explicit configuration or -SetStep."
+            }
+        }
+    }
+}
+
+function Assert-HdoRepositoryConfigSnapshot {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
+        [Parameter(Mandatory)][string]$WorktreePath
+    )
+
+    $expected = Get-HdoValue $Config 'repositoryConfig'
+    if ($expected -isnot [System.Collections.IDictionary] -or [bool](Get-HdoValue $expected 'ignored' $false)) { return $true }
+    $actual = Get-HdoRepositoryConfigSnapshot -RepositoryPath $WorktreePath -Revision 'HEAD'
+    if ([bool]$expected.loaded -ne [bool]$actual.loaded) {
+        throw 'The repository configuration presence changed between configuration resolution and worktree creation.'
+    }
+    if ([bool]$expected.loaded -and ([string]$expected.blob -ne [string]$actual.blob -or [string]$expected.sha256 -ne [string]$actual.sha256)) {
+        throw 'The repository configuration in the fixed base commit differs from the configuration resolved before worktree creation. Retry from a stable HEAD.'
+    }
+    return $true
+}
+
 function Get-HdoConfig {
     [CmdletBinding()]
     param(
         [string]$RepositoryPath = (Get-Location).Path,
-        [string]$ConfigPath,
+        [string[]]$ConfigPath,
         [string]$Profile,
         [System.Collections.IDictionary]$Overrides = @{},
-        [System.Collections.IDictionary]$StepOverrides = @{}
+        [System.Collections.IDictionary]$StepOverrides = @{},
+        [switch]$IgnoreRepositoryConfig
     )
 
-    $repositoryPath = [System.IO.Path]::GetFullPath($RepositoryPath)
+    $repositoryPath = Get-HdoRepositoryRoot ([System.IO.Path]::GetFullPath($RepositoryPath))
     $defaultPath = Join-Path $script:HdoRepositoryRoot 'config/hdo.default.json'
     $config = Read-HdoJsonFile $defaultPath
     $sources = @($defaultPath)
@@ -21,8 +174,37 @@ function Get-HdoConfig {
         }
     }
 
-    if ($ConfigPath) {
-        $explicitPath = [System.IO.Path]::GetFullPath($ConfigPath)
+    if ($IgnoreRepositoryConfig) {
+        $repositoryConfig = [ordered]@{
+            loaded = $false
+            ignored = $true
+            path = Join-Path $repositoryPath '.hdo/config.json'
+            revision = 'HEAD'
+            commit = $null
+            blob = $null
+            sha256 = $null
+        }
+    }
+    else {
+        $repositoryConfig = Get-HdoRepositoryConfigSnapshot -RepositoryPath $repositoryPath
+        $repositoryConfig['ignored'] = $false
+        if ($repositoryConfig.loaded) {
+            $config = Merge-HdoRepositoryConfig $config $repositoryConfig.value
+            Assert-HdoRepositoryRoutingSafety $config $repositoryConfig.value
+            $sources += $repositoryConfig.path
+        }
+    }
+
+    $explicitConfigPaths = @(
+        foreach ($configuredValue in @($ConfigPath | Where-Object { $_ })) {
+            foreach ($configuredPath in @([string]$configuredValue -split ',' | Where-Object { $_ })) {
+                $trimmedPath = $configuredPath.Trim()
+                if ($trimmedPath) { $trimmedPath }
+            }
+        }
+    )
+    foreach ($configuredPath in $explicitConfigPaths) {
+        $explicitPath = Expand-HdoPath ([string]$configuredPath) $repositoryPath
         $config = Merge-HdoHashtable $config (Read-HdoJsonFile $explicitPath)
         $sources += $explicitPath
     }
@@ -52,6 +234,8 @@ function Get-HdoConfig {
     $config['resolvedProfile'] = $profileName
     $config['repositoryPath'] = $repositoryPath
     $config['configSources'] = @($sources)
+    [void]$repositoryConfig.Remove('value')
+    $config['repositoryConfig'] = $repositoryConfig
     if ($config.Contains('paths')) {
         foreach ($pathKey in @('worktreeRoot', 'artifactRoot')) {
             if ($config.paths.Contains($pathKey) -and $config.paths[$pathKey]) {

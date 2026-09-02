@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kkb-hub/hybrid-dev-orchestrator/main/schemas/hdo-repository-config.schema.json",
+  "schemaVersion": 1,
+  "activeProfile": "ollama-hybrid",
+  "profiles": {
+    "ollama-hybrid": {
+      "steps": {
+        "plan": "codex-cloud-planner",
+        "implement": "codex-ollama-implementer",
+        "review": "codex-cloud-reviewer",
+        "fix": "codex-ollama-implementer"
+      }
+    }
+  },
+  "runners": {
+    "codex-cloud-planner": {
+      "type": "codex",
+      "provider": "cloud",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 900
+    },
+    "codex-ollama-implementer": {
+      "type": "codex",
+      "provider": "ollama",
+      "model": "qwen3.8:27b-q4_K_M",
+      "reasoningEffort": "medium",
+      "contextTokens": 32768,
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 1800
+    },
+    "codex-cloud-reviewer": {
+      "type": "codex",
+      "provider": "cloud",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 1200
+    }
+  }
+}

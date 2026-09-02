@@ -22,9 +22,18 @@ try {
         }
     } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $missingRunnerConfig -Encoding utf8NoBOM
 
+    $firstConfig = Join-Path $temporaryRoot 'first.json'
+    $secondConfig = Join-Path $temporaryRoot 'second.json'
+    [ordered]@{ activeProfile = 'not-defined' } |
+        ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $firstConfig -Encoding utf8NoBOM
+    [ordered]@{ activeProfile = 'claude-only' } |
+        ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $secondConfig -Encoding utf8NoBOM
+
     $cases = @(
         [ordered]@{ name = 'help'; arguments = @('help'); expected = 0 },
         [ordered]@{ name = 'config'; arguments = @('config', '-Json'); expected = 0 },
+        [ordered]@{ name = 'config explicit ordered list'; arguments = @('config', '-Config', "$firstConfig,$secondConfig", '-Json'); expected = 0 },
+        [ordered]@{ name = 'config ignore repository default'; arguments = @('config', '-IgnoreRepositoryConfig', '-Json'); expected = 0 },
         [ordered]@{ name = 'conflicting run selection'; arguments = @('run', '-Issue', '1', '-Pick'); expected = 2 },
         [ordered]@{ name = 'doctor preflight failure'; arguments = @('doctor', '-Config', $missingRunnerConfig, '-DryRun', '-Json'); expected = 3 }
     )

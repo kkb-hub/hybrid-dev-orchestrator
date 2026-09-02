@@ -180,15 +180,16 @@ function Invoke-HdoRun {
         [switch]$Pick,
         [string]$RepositoryPath = (Get-Location).Path,
         [string]$Repository,
-        [string]$ConfigPath,
+        [string[]]$ConfigPath,
         [string]$Profile,
         [System.Collections.IDictionary]$StepOverrides = @{},
+        [switch]$IgnoreRepositoryConfig,
         [switch]$DryRun,
         [switch]$NoWriteBack
     )
 
     $repositoryRoot = Get-HdoRepositoryRoot $RepositoryPath
-    $config = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath $ConfigPath -Profile $Profile -StepOverrides $StepOverrides
+    $config = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath $ConfigPath -Profile $Profile -StepOverrides $StepOverrides -IgnoreRepositoryConfig:$IgnoreRepositoryConfig
     if (-not $Repository) { $Repository = Resolve-HdoRepositorySlug $config }
     if ($IssueNumber -le 0) {
         if (-not $Pick) { throw 'Specify -IssueNumber or -Pick.' }
@@ -201,7 +202,7 @@ function Invoke-HdoRun {
     if ([string]$issue.state -ne 'OPEN') { throw "Issue #$IssueNumber is not open." }
     $issueContract = ConvertTo-HdoIssueContract $issue
     if (-not $Profile -and [string]$issueContract.preferredExecution -and [string]$issueContract.preferredExecution -ne [string]$config.resolvedProfile) {
-        $config = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath $ConfigPath -Profile ([string]$issueContract.preferredExecution) -StepOverrides $StepOverrides
+        $config = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath $ConfigPath -Profile ([string]$issueContract.preferredExecution) -StepOverrides $StepOverrides -IgnoreRepositoryConfig:$IgnoreRepositoryConfig
     }
     $projectContract = Get-HdoProjectContract $config
     $projectContractHash = Get-HdoSha256 ($projectContract | ConvertTo-Json -Depth 100 -Compress)
@@ -289,6 +290,7 @@ function Invoke-HdoRun {
         Write-HdoJsonFile (Join-Path $artifactPath 'worktree.json') $worktree
         Save-HdoRun $run $artifactPath
         Set-HdoRunState $run 'WORKTREE_READY' $artifactPath 'Isolated Git worktree created.'
+        Assert-HdoRepositoryConfigSnapshot $config ([string]$worktree.path) | Out-Null
         $projectContract = Get-HdoWorktreeProjectContract $config ([string]$worktree.path)
         $worktreeProjectContractHash = Get-HdoSha256 ($projectContract | ConvertTo-Json -Depth 100 -Compress)
         if ($worktreeProjectContractHash -ne $projectContractHash) {

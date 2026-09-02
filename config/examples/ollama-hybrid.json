@@ -28,11 +28,11 @@
       "type": "codex",
       "provider": "ollama",
       "command": "codex",
-      "model": "qwen3.8:27b",
+      "model": "qwen3.8:27b-q4_K_M",
       "reasoningEffort": "medium",
       "contextTokens": 32768,
       "sandbox": "workspace-write",
-      "timeoutSeconds": 3600,
+      "timeoutSeconds": 1800,
       "passEnvironment": [],
       "extraArgs": []
     },

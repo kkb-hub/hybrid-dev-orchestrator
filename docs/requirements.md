@@ -108,13 +108,13 @@ root entrypoint は `hdo.ps1` とし、次の command を提供する。
 代表構文:
 
 ~~~powershell
-pwsh ./hdo.ps1 doctor [-RepositoryPath <path>] [-Config <path>] [-Profile <name>] [-DryRun] [-Json]
-pwsh ./hdo.ps1 config [-RepositoryPath <path>] [-Config <path>] [-Profile <name>] [-Json]
+pwsh ./hdo.ps1 doctor [-RepositoryPath <path>] [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]
+pwsh ./hdo.ps1 config [-RepositoryPath <path>] [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-Json]
 pwsh ./hdo.ps1 issues [-Repository owner/repo] [-Json]
 pwsh ./hdo.ps1 inspect -Issue <number> [-Repository owner/repo] [-Json]
 pwsh ./hdo.ps1 run (-Issue <number> | -Pick) [-Repository owner/repo] `
-  [-Config <path>] [-Profile <name>] [-SetStep <step=runner>] `
-  [-DryRun] [-NoWriteBack] [-Json]
+  [-Config <path>[,<path>...]] [-Profile <name>] [-SetStep <step=runner>] `
+  [-IgnoreRepositoryConfig] [-DryRun] [-NoWriteBack] [-Json]
 pwsh ./hdo.ps1 status -RunId <id> [-Json]
 pwsh ./hdo.ps1 cleanup -RunId <id> [-Force] [-WhatIf]
 pwsh ./hdo.ps1 labels [-Repository owner/repo] [-Apply] [-WhatIf]
@@ -145,11 +145,15 @@ exit code は次を使用する。
 
 1. `config/hdo.default.json`
 2. `%APPDATA%/hdo/config.json` が存在する場合
-3. 明示した `-Config <path>`
-4. `-Profile <name>`、または merge 後の `activeProfile`
-5. `run -SetStep <step=runner>`
+3. 対象 repository の commit 済み `HEAD:.hdo/config.json`
+4. 明示した `-Config <path>`（複数時は左から右、後勝ち）
+5. programmatic override
+6. `-Profile <name>`、Issue route、または merge 後の `activeProfile`
+7. `run -SetStep <step=runner>`
 
-対象 repository の `.hdo/config.json` は、branch 内の untrusted runner command/argument を暗黙実行しないため、自動読込しない。project-owned command は `.hdo/project.json` の validation gate に限定する。
+対象 repository の `.hdo/config.json` は制限付き repository schema に合格した commit 済み blob だけを自動読込する。profile routing と built-in Codex/Claude runner の provider/model/sandbox/timeout 等は指定できるが、任意 command/argument/environment、path、GitHub/workflow policy は指定できない。working tree にだけ存在する設定は拒否し、worktree 作成後に blob/hash を再照合する。`-IgnoreRepositoryConfig` で自動 source を無効化できる。
+
+明示 `-Config` は reviewed full config overlay として1個以上を受け付け、repository root 基準の relative path と comma-separated list をサポートする。
 
 profile は `plan`、`implement`、`review`、`fix` の binding を持つ。`plan` だけは明示的に disable でき、その場合は Issue contract から synthetic task contract を生成する。ほかの3 step は必須である。
 
@@ -170,7 +174,7 @@ plan/review runner は `read-only`、implement/fix runner は `workspace-write` 
 
 runner の fallback 宣言、および `workflow.implicitFallback=true` は禁止する。model/provider を変更するには、profile、Issue route hint、`-Profile`、または `-SetStep` による明示選択を必要とする。
 
-既定 `claude-only` profile は Codex/Ollama を一切参照しない。`config/examples/claude-only.json` は model を明示した Claude 構成、`config/examples/cloud-only.json` は Codex cloud 構成、`config/examples/ollama-hybrid.json` は plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
+既定 `claude-only` profile は Codex/Ollama を一切参照しない。`config/examples/claude-only.json` は model を明示した Claude 構成、`config/examples/cloud-only.json` は Codex cloud 構成、`config/examples/ollama-hybrid.json` は明示読込用、`config/examples/repository-ollama-hybrid.json` は自動読込用として plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
 
 ## 7. GitHub Issue 契約
 
@@ -395,7 +399,7 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 
 - AC-01 `hdo.ps1 help` が9 command の現行 usage を表示する。
 - AC-02 default config の execution plan が cloud runner だけを参照し、Ollama を probe しない。
-- AC-03 explicit hybrid config を選んだ場合だけ Ollama command/model を preflight する。
+- AC-03 repository または explicit hybrid config を選んだ場合だけ Ollama command/model を preflight する。
 - AC-04 plan/implement/review/fix を別 runner に割り当て、resolved plan を表示・保存できる。
 - AC-05 Issue Form の必須 section、priority、risk、gate ID を正規化できる。
 - AC-06 ready/skip/status の競合、同一 label axis の複数値、未知 gate を拒否する。
@@ -412,6 +416,9 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 - AC-17 claim 競合時に comment ID 最小の valid marker だけを勝者にする。
 - AC-18 cleanup が root 外 path、Git 管理外 worktree、非 Force の dirty worktree を拒否する。
 - AC-19 schema fixture、state transition、Issue normalization、default/hybrid routing、credential redaction、command adapter を GPU/Ollama 不要の test で検証できる。
+- AC-20 commit 済み `.hdo/config.json` を制限付き schema で自動読込し、未 commit file、command/environment 注入、worktree snapshot 不一致を fail closed で拒否する。
+- AC-21 明示 `-Config` の単一・複数 ordered overlay と `-IgnoreRepositoryConfig` を CLI から利用でき、既存 repository に設定がない場合の挙動を変えない。
+- AC-22 実Ollamaを通常CIから呼ばず、明示 `-Run` のlocal smokeでcloud parent routing、指定local modelへの実応答、隔離repositoryの無変更を確認できる。
 
 ## 16. Post-MVP
 

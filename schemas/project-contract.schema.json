@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kkb-hub/hybrid-dev-orchestrator/schemas/project-contract.schema.json",
   "title": "HDO project contract",
-  "description": "Trusted repository-owned instructions, validation gates, and safety/review policy. Runner/model routing, GitHub labels, workflow limits, and artifact/worktree roots remain in hdo-config.",
+  "description": "Trusted repository-owned instructions, validation gates, and safety/review policy. Constrained runner/model routing may be declared in .hdo/config.json; GitHub labels, workflow limits, and artifact/worktree roots remain in user or explicit hdo-config.",
   "type": "object",
   "additionalProperties": false,
   "required": [

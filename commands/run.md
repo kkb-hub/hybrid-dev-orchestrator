@@ -12,6 +12,6 @@ Before a full run, confirm intent with the user unless they explicitly asked for
 pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" run -Json $ARGUMENTS
 ```
 
-Pass all user-supplied arguments through unchanged (for example `-Issue`, `-Pick`, `-Repository`, `-Profile`, `-Config`, `-SetStep`, `-DryRun`, `-NoWriteBack`). Use a generous Bash timeout: a full cycle can run for the configured runner timeouts (up to hours). Exit codes: 3 preflight failed, 4 no eligible Issue, 5 FAILED, 6 ESCALATED.
+Pass all user-supplied arguments through unchanged (for example `-Issue`, `-Pick`, `-Repository`, `-Profile`, `-Config`, `-SetStep`, `-IgnoreRepositoryConfig`, `-DryRun`, `-NoWriteBack`). Do not add `-Config` just because `.hdo/config.json` exists: HDO automatically reads the committed `HEAD` version. An explicit `-Config` may contain one path or a comma-separated ordered list. Use a generous Bash timeout: a full cycle can run for the configured runner timeouts (up to hours). Exit codes: 3 preflight failed, 4 no eligible Issue, 5 FAILED, 6 ESCALATED.
 
 Afterwards, report the run ID, terminal state, iterations, worktree path, and artifact path. If the run ended in CHANGES_REQUESTED/ESCALATED/FAILED, summarize the last review findings or error. Do not commit, push, or apply the worktree changes anywhere; HDO intentionally leaves them uncommitted for human review.

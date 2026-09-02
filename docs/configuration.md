@@ -11,9 +11,11 @@ HDO は JSON object を deep merge し、後の source で同名値を上書き�
 
 1. HDO checkout の `config/hdo.default.json`
 2. `%APPDATA%/hdo/config.json` が存在する場合
-3. CLI で明示した `-Config <path>`
-4. CLI `-Profile`、または merge 後の `activeProfile`
-5. `run -SetStep <step=runner>`
+3. 対象 repository の `HEAD:.hdo/config.json` が存在する場合
+4. CLI で明示した1個以上の `-Config <path>`（左から右、後勝ち）
+5. programmatic override
+6. CLI `-Profile`、または Issue route / merge 後の `activeProfile`
+7. `run -SetStep <step=runner>`
 
 `-Config` は完全置換ではなく overlay である。読込 source と resolved execution plan は次で確認できる。
 
@@ -21,11 +23,35 @@ HDO は JSON object を deep merge し、後の source で同名値を上書き�
 pwsh ./hdo.ps1 config -RepositoryPath C:\src\owner\repo -Json
 pwsh ./hdo.ps1 config -RepositoryPath C:\src\owner\repo `
   -Config C:\configs\hdo-team.json -Profile cloud-only -Json
+pwsh ./hdo.ps1 config -RepositoryPath C:\src\owner\repo `
+  -Config ./.hdo/base.json,./.hdo/local.json -Json
 ~~~
 
-対象 repository の `.hdo/config.json` は **自動読込しない**。runner の `command`、`extraArgs`、environment、provider は code execution authority を持つため、checkout した branch の設定を暗黙適用しないためである。
+`-Config` は `-Config first.json,second.json` の comma-separated list、または PowerShell API の string array として複数指定できる。relative path は対象 repository root 基準で解決し、後の file が前の file を上書きする。path 自体に comma は使用できない。
 
-repository ごとの設定が必要な場合は、内容をレビューしたうえで `-Config` へ明示するか、user config から repository-independent profile を参照する。
+### 1.1 Repository config の自動読込
+
+`.hdo/config.json` が対象 repository の `HEAD` に commit されていれば、通常の `config`、`doctor`、`run` で自動読込する。working tree の未 commit file は実行権限を取得できず、次の扱いになる。
+
+- `HEAD` に file がなく working tree にだけある場合は、commit を要求して fail closed にする。
+- `HEAD` に file があり working tree で変更されている場合は、working tree の内容ではなく `HEAD` の blob を読む。
+- worktree 作成後に同じ blob と SHA-256 を再確認し、解決時の snapshot と異なれば runner を起動せず停止する。
+- `config -Json` の `repositoryConfig` に commit、blob、SHA-256、読込/無視状態を出す。
+
+自動読込には `schemas/hdo-repository-config.schema.json` の制限付き schema を使う。repository が指定できるのは profile/step routing と、built-in `codex` / `claude` runner の provider、model、reasoning、context、sandbox、timeout だけである。新規 runner の実行 command は type に応じて HDO が `codex` または `claude` に固定する。
+
+自動読込では次を指定できない。
+
+- `command` runner、任意 executable、`command`、`extraArgs`、`passEnvironment`
+- GitHub write-back、workflow/fallback、artifact/worktree path、project contract path
+- 既存 command runner の変更や、それを repository profile から選択する routing
+
+その run だけ自動読込を無効にする場合は `-IgnoreRepositoryConfig` を使う。別名設定や一時 override が必要な場合は `-Config` を併用でき、明示 file は自動設定より後に merge される。明示 `-Config` は利用者が指定した trusted input として通常の full config schema を受け付ける。
+
+~~~powershell
+pwsh ./hdo.ps1 run -Issue 123 -IgnoreRepositoryConfig `
+  -Config ./.hdo/alternate.json
+~~~
 
 一方、対象 repository の `.hdo/project.json` は trusted project contract として自動読込する。validation command を含むため、こちらも実行前にレビューし、base commit へ commit しておく必要がある。
 
@@ -220,7 +246,7 @@ model を明示したい場合は `config/examples/claude-only.json`（plan/revi
 
 ### 5.1 Codex cloud profile
 
-Codex を使う構成は `config/examples/cloud-only.json` を明示的に選択する。
+Codex を使う一時的な構成は `config/examples/cloud-only.json` を明示的に選択する。repository の既定にする場合は、制限付き repository schema に合わせた file を `.hdo/config.json` として commit する。
 
 ~~~powershell
 pwsh ./hdo.ps1 doctor `
@@ -232,7 +258,7 @@ Codex CLI の authentication/configuration は事前に完了しておく。
 
 ## 6. Ollama hybrid profile
 
-`config/examples/ollama-hybrid.json` は明示的に選択する example である。
+`config/examples/ollama-hybrid.json` は明示 `-Config` 用の full config example、`config/examples/repository-ollama-hybrid.json` は自動読込用の制限付き example である。後者を対象 repository の `.hdo/config.json` として commit すれば、実行時の `-Config` / `-Profile` は不要になる。
 
 | Step | Runner | Provider |
 |---|---|---|
@@ -246,6 +272,37 @@ pwsh ./hdo.ps1 doctor `
   -Config ./config/examples/ollama-hybrid.json `
   -Profile ollama-hybrid -DryRun
 ~~~
+
+repository の既定にする例:
+
+~~~powershell
+New-Item -ItemType Directory ./.hdo -Force | Out-Null
+Copy-Item ./config/examples/repository-ollama-hybrid.json ./.hdo/config.json
+git add .hdo/config.json
+git commit -m "Configure HDO Ollama implementation runner"
+
+pwsh ./hdo.ps1 config -Json
+pwsh ./hdo.ps1 run -Issue 123
+~~~
+
+Ollama route を使う host では、Ollama 0.33.2 以降、tool calling 対応 model、Codex CLI の local provider 対応が必要である。HDO は service 起動や model pull を行わないため、事前に次を実行する。
+
+~~~powershell
+ollama --version
+ollama serve
+ollama pull qwen3.8:27b-q4_K_M
+ollama list
+~~~
+
+`ollama serve` は foreground process なので、すでに service として起動している場合は重ねて起動しない。
+
+実providerを通常のCIから呼ばない opt-in smoke は次で実行する。隔離した一時Git repositoryを作り、plan/reviewがcloudのまま、implement/fixだけがOllamaであることを検査してから、HDOと同じ `UseShellExecute=false` / argument arrayのprocess runnerで指定modelへ実リクエストを送る。一時directoryは成功・失敗のどちらでも削除する。
+
+~~~powershell
+pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
+~~~
+
+2026-09-02の実測では Ollama 0.33.2 と `qwen3.8:27b-q4_K_M` で成功した。Codex CLIはこのlocal modelについてfallback metadata、model list response、telemetry tagのwarningを出す場合があるが、smokeはexit code、最終応答、変更なし、`ollama ps`の実modelを別々に検証する。warningが将来errorになる場合はCodex/Ollamaの互換性を再確認する。
 
 この profile を選んだときだけ HDO は次を検査する。
 
@@ -456,6 +513,8 @@ secret は user config にも保存しない。runner が authentication を必�
 | 症状 | 確認箇所 |
 |---|---|
 | profile がない | `config -Json` の `sources` と `profile` |
+| repository config が読まれない | `.hdo/config.json` が `HEAD` に commit 済みか。`config -Json` の `repositoryConfig` |
+| 別の repository config を使いたい | `-Config ./.hdo/alternate.json`。複数なら comma 区切り、後勝ち |
 | runner が undefined | profile の step 名と `runners` key |
 | review/plan sandbox error | runner を `read-only` にする |
 | implement/fix sandbox error | runner を `workspace-write` にする |

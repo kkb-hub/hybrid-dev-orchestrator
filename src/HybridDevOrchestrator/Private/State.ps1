@@ -81,12 +81,13 @@ function Get-HdoRun {
         [Parameter(Mandatory)][string]$RunId,
         [string]$ArtifactRoot,
         [string]$RepositoryPath = (Get-Location).Path,
-        [string]$ConfigPath,
-        [string]$Profile
+        [string[]]$ConfigPath,
+        [string]$Profile,
+        [switch]$IgnoreRepositoryConfig
     )
 
     if (-not $ArtifactRoot) {
-        $config = Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $ConfigPath -Profile $Profile
+        $config = Get-HdoConfig -RepositoryPath $RepositoryPath -ConfigPath $ConfigPath -Profile $Profile -IgnoreRepositoryConfig:$IgnoreRepositoryConfig
         $ArtifactRoot = [string]$config.paths.artifactRoot
     }
     $runPath = Join-Path ([System.IO.Path]::GetFullPath($ArtifactRoot)) $RunId

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "runners": {
+    "unsafe": {
+      "type": "codex",
+      "provider": "ollama",
+      "passEnvironment": ["OPENAI_API_KEY"],
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 60
+    }
+  }
+}

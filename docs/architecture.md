@@ -75,13 +75,16 @@ resume、cancel、daemon polling、PR/merge command は MVP に含まれない�
 ~~~text
 config/hdo.default.json
   < %APPDATA%/hdo/config.json
-  < explicit -Config
+  < committed HEAD:.hdo/config.json
+  < explicit -Config file(s), left to right
   < programmatic Overrides
   < -Profile / Issue Route Hint
   < -SetStep / StepOverrides
 ~~~
 
-対象 repository の `.hdo/config.json` は code execution authority を持つため自動読込しない。`.hdo/project.json` だけを repository-owned trusted contract として読む。
+対象 repository の `.hdo/config.json` は `HEAD` に commit 済みの blob だけを自動読込する。専用の制限付き schema は profile routing と built-in Codex/Claude runner の provider/model/sandbox/timeout 等だけを許可し、任意 command、argument、environment、path、GitHub/workflow policy は許可しない。新規 runner の command は adapter type から HDO が固定し、既存 command runner の変更・自動 routing も拒否する。worktree 作成後に blob ID と SHA-256 を再照合する。
+
+明示 `-Config` は利用者が承認した full configuration overlay として扱い、複数 file を左から右へ merge できる。`-IgnoreRepositoryConfig` は自動 repository source だけを除外する。
 
 source merge 後の configuration は `hdo-config.schema.json`、route 解決後は `Test-HdoConfiguration` で検査する。主な cross-field rule:
 
@@ -309,6 +312,8 @@ MVP の境界:
 
 ## 15. Test
 
-`tests/test-suite.ps1` は runtime unit/integration test、bounded process-output stress test、CLI exit-code test をまとめて実行する。GPU/Ollama/GitHub success を必要とせず、configuration merge、routing、state、Issue normalization、schema runtime、credential redaction、review continuity、untracked diff、generic command adapter、stdout/stderr 上限、CLI success/argument/preflight code を検査する。
+`tests/test-suite.ps1` は runtime unit/integration test、bounded process-output stress test、CLI exit-code test をまとめて実行する。GPU/Ollama/GitHub success を必要とせず、configuration merge、commit 済み repository config と snapshot binding、複数 explicit overlay、role routing、state、Issue normalization、schema runtime、credential redaction、review continuity、untracked diff、generic command adapter、stdout/stderr 上限、CLI success/argument/preflight code を検査する。
 
 `tests/test-schemas.ps1` は bundled config/project/Issue/task/worker/review fixture と fail-safe negative fixture を検査する。実 provider/GitHub cycle は credential を持つ integration environment で別途行う。
+
+`tests/test-ollama-smoke.ps1` は `-Run` を付けた場合だけ実Ollamaを呼ぶ。通常のsuite/CIには含めず、隔離repository、実model応答、変更なし、cloud parent routingの不変をlocal hostで確認する。

@@ -60,6 +60,7 @@ try {
     New-Item -ItemType Directory -Path $userConfigDirectory -Force | Out-Null
     $userConfigPath = Join-Path $userConfigDirectory 'config.json'
     $explicitConfigPath = Join-Path $testAppData 'explicit.json'
+    $secondExplicitConfigPath = Join-Path $testAppData 'explicit-second.json'
     [ordered]@{
         workflow = [ordered]@{ maxFixAttempts = 1 }
         github = [ordered]@{ priorityOrder = @('hdo:priority/p3') }
@@ -68,16 +69,129 @@ try {
         workflow = [ordered]@{ maxFixAttempts = 3 }
         github = [ordered]@{ priorityOrder = @('hdo:priority/p2', 'hdo:priority/p1') }
     } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $explicitConfigPath -Encoding utf8NoBOM
+    [ordered]@{
+        workflow = [ordered]@{ maxFixAttempts = 4 }
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $secondExplicitConfigPath -Encoding utf8NoBOM
     $precedenceConfig = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath $explicitConfigPath
     Assert-Hdo ($precedenceConfig.workflow.maxFixAttempts -eq 3) 'explicit config overrides user config and distribution defaults'
     Assert-Hdo ($precedenceConfig.github.priorityOrder.Count -eq 2 -and $precedenceConfig.github.priorityOrder[0] -eq 'hdo:priority/p2') 'configuration arrays replace instead of concatenate during merge'
-    Remove-Item -LiteralPath $userConfigPath, $explicitConfigPath -Force
+    $multipleExplicitConfig = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath @($explicitConfigPath, $secondExplicitConfigPath)
+    Assert-Hdo ($multipleExplicitConfig.workflow.maxFixAttempts -eq 4) 'multiple explicit configs are merged in the supplied order with the later file winning'
+    Assert-Hdo ($multipleExplicitConfig.configSources[-2] -eq $explicitConfigPath -and $multipleExplicitConfig.configSources[-1] -eq $secondExplicitConfigPath) 'multiple explicit config sources preserve their supplied order'
+    Remove-Item -LiteralPath $userConfigPath, $explicitConfigPath, $secondExplicitConfigPath -Force
 
     $otherRepository = Join-Path $testAppData 'target-repository'
     New-Item -ItemType Directory -Path (Join-Path $otherRepository '.hdo') -Force | Out-Null
-    '{"activeProfile":"must-not-load"}' | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
+    & git -C $otherRepository init --quiet
+    & git -C $otherRepository config user.email 'hdo-tests@example.invalid'
+    & git -C $otherRepository config user.name 'HDO Tests'
+    & git -C $otherRepository config commit.gpgSign false
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'config/examples/repository-ollama-hybrid.json') -Destination (Join-Path $otherRepository '.hdo/config.json')
+    Set-Content -LiteralPath (Join-Path $otherRepository 'README.md') -Value 'repository config test' -Encoding utf8NoBOM
+    & git -C $otherRepository add -- .hdo/config.json README.md
+    & git -C $otherRepository commit --quiet -m baseline
     $repositoryConfig = Get-HdoConfig -RepositoryPath $otherRepository
-    Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'claude-only') 'repository .hdo/config.json is not loaded implicitly'
+    Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'ollama-hybrid') 'committed repository .hdo/config.json is loaded automatically'
+    Assert-Hdo ($repositoryConfig.repositoryConfig.loaded -and $repositoryConfig.repositoryConfig.blob -and $repositoryConfig.repositoryConfig.sha256) 'repository config records its fixed commit, blob, and SHA-256 identity'
+    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].command -eq 'codex') 'new repository runners receive the fixed built-in adapter command'
+    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['codex-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
+    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
+    $repositoryExecution = Get-HdoExecutionPlan $repositoryConfig
+    Assert-Hdo ($repositoryExecution.steps.plan.provider -eq 'cloud' -and $repositoryExecution.steps.review.provider -eq 'cloud' -and
+        $repositoryExecution.steps.implement.provider -eq 'ollama' -and $repositoryExecution.steps.fix.provider -eq 'ollama') 'repository routing sends only implementation and fix roles to Ollama'
+    Assert-Hdo ($config.resolvedProfile -eq 'claude-only' -and $config.steps.implement -eq 'claude-implementer') 'loading repository routing does not mutate an already resolved parent configuration'
+
+    '{"schemaVersion":1,"activeProfile":"must-not-load"}' | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
+    $headPinnedConfig = Get-HdoConfig -RepositoryPath $otherRepository
+    Assert-Hdo ($headPinnedConfig.resolvedProfile -eq 'ollama-hybrid') 'automatic repository configuration is read from fixed HEAD rather than uncommitted working-tree content'
+    & git -C $otherRepository restore -- .hdo/config.json
+
+    $ignoredRepositoryConfig = Get-HdoConfig -RepositoryPath $otherRepository -IgnoreRepositoryConfig
+    Assert-Hdo ($ignoredRepositoryConfig.resolvedProfile -eq 'claude-only' -and $ignoredRepositoryConfig.repositoryConfig.ignored) 'IgnoreRepositoryConfig restores distribution and user defaults'
+
+    $alternativeConfigPath = Join-Path $otherRepository '.hdo/config.alternative.json'
+    '{"activeProfile":"claude-only"}' | Set-Content -LiteralPath $alternativeConfigPath -Encoding utf8NoBOM
+    $alternativeConfig = Get-HdoConfig -RepositoryPath $otherRepository -ConfigPath '.hdo/config.alternative.json'
+    Assert-Hdo ($alternativeConfig.resolvedProfile -eq 'claude-only') 'an explicitly selected repository-relative config overrides automatic repository routing'
+    Assert-Hdo ($alternativeConfig.configSources[-1] -eq $alternativeConfigPath) 'explicit repository-relative config records its resolved source path'
+
+    $snapshotMatches = & $module { param($Config, $Repository) Assert-HdoRepositoryConfigSnapshot $Config $Repository } $repositoryConfig $otherRepository
+    Assert-Hdo $snapshotMatches 'repository configuration snapshot matches the fixed HEAD used by the worktree'
+    $mismatchedSnapshotConfig = Copy-HdoObject $repositoryConfig
+    $mismatchedSnapshotConfig.repositoryConfig.sha256 = '0' * 64
+    $snapshotMismatchRejected = $false
+    try { $null = & $module { param($Config, $Repository) Assert-HdoRepositoryConfigSnapshot $Config $Repository } $mismatchedSnapshotConfig $otherRepository }
+    catch { $snapshotMismatchRejected = $true }
+    Assert-Hdo $snapshotMismatchRejected 'repository configuration snapshot mismatch fails closed'
+
+    [ordered]@{
+        runners = [ordered]@{
+            'user-command-implementer' = [ordered]@{
+                type = 'command'
+                provider = 'custom'
+                command = 'pwsh'
+                sandbox = 'workspace-write'
+                timeoutSeconds = 60
+                passEnvironment = @()
+                extraArgs = @()
+            }
+        }
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $userConfigPath -Encoding utf8NoBOM
+    $explicitCommandOverridePath = Join-Path $otherRepository '.hdo/config.command-override.json'
+    [ordered]@{
+        profiles = [ordered]@{
+            'ollama-hybrid' = [ordered]@{
+                steps = [ordered]@{
+                    plan = 'codex-cloud-planner'
+                    implement = 'user-command-implementer'
+                    review = 'codex-cloud-reviewer'
+                    fix = 'user-command-implementer'
+                }
+            }
+        }
+    } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $explicitCommandOverridePath -Encoding utf8NoBOM
+    $explicitCommandConfig = Get-HdoConfig -RepositoryPath $otherRepository -ConfigPath $explicitCommandOverridePath
+    Assert-Hdo ($explicitCommandConfig.steps.implement -eq 'user-command-implementer') 'explicit trusted configuration may intentionally select a user-defined command runner'
+
+    $repositoryCommandRoute = Get-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $repositoryCommandRoute.profiles['ollama-hybrid'].steps.implement = 'user-command-implementer'
+    $repositoryCommandRoute.profiles['ollama-hybrid'].steps.fix = 'user-command-implementer'
+    $repositoryCommandRoute | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
+    & git -C $otherRepository add -- .hdo/config.json
+    & git -C $otherRepository commit --quiet -m 'unsafe repository command route'
+    $repositoryCommandRouteRejected = $false
+    try { $null = Get-HdoConfig -RepositoryPath $otherRepository }
+    catch { $repositoryCommandRouteRejected = $_.Exception.Message -like 'Repository configuration cannot route*command runner*' }
+    Assert-Hdo $repositoryCommandRouteRejected 'automatic repository routing cannot select a user-defined command runner'
+
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'config/examples/repository-ollama-hybrid.json') -Destination (Join-Path $otherRepository '.hdo/config.json') -Force
+    & git -C $otherRepository add -- .hdo/config.json
+    & git -C $otherRepository commit --quiet -m 'restore safe repository config'
+    Remove-Item -LiteralPath $userConfigPath -Force
+
+    $forbiddenRepositoryConfig = Get-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+    $forbiddenRepositoryConfig.runners['codex-ollama-implementer']['command'] = 'arbitrary-command'
+    $forbiddenRepositoryConfig | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
+    & git -C $otherRepository add -- .hdo/config.json
+    & git -C $otherRepository commit --quiet -m 'forbidden repository config'
+    $forbiddenRepositoryConfigRejected = $false
+    try { $null = Get-HdoConfig -RepositoryPath $otherRepository }
+    catch { $forbiddenRepositoryConfigRejected = $_.Exception.Message -like 'Repository configuration schema validation failed*' }
+    Assert-Hdo $forbiddenRepositoryConfigRejected 'repository config rejects executable command injection'
+
+    $uncommittedRepository = Join-Path $testAppData 'uncommitted-repository-config'
+    New-Item -ItemType Directory -Path (Join-Path $uncommittedRepository '.hdo') -Force | Out-Null
+    & git -C $uncommittedRepository init --quiet
+    & git -C $uncommittedRepository config user.email 'hdo-tests@example.invalid'
+    & git -C $uncommittedRepository config user.name 'HDO Tests'
+    Set-Content -LiteralPath (Join-Path $uncommittedRepository 'README.md') -Value 'baseline' -Encoding utf8NoBOM
+    & git -C $uncommittedRepository add -- README.md
+    & git -C $uncommittedRepository -c commit.gpgSign=false commit --quiet -m baseline
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'config/examples/repository-ollama-hybrid.json') -Destination (Join-Path $uncommittedRepository '.hdo/config.json')
+    $uncommittedRepositoryConfigRejected = $false
+    try { $null = Get-HdoConfig -RepositoryPath $uncommittedRepository }
+    catch { $uncommittedRepositoryConfigRejected = $_.Exception.Message -like 'Repository configuration must be committed*' }
+    Assert-Hdo $uncommittedRepositoryConfigRejected 'uncommitted automatic repository config is rejected instead of executed'
 
     $invalidOverrideRejected = $false
     try { $null = Get-HdoConfig -RepositoryPath $repositoryRoot -Overrides @{ unknownRootProperty = $true } }
@@ -347,7 +461,7 @@ Keep the cycle bounded.
 
     $hybrid = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath (Join-Path $repositoryRoot 'config/examples/ollama-hybrid.json')
     $hybridPlan = Get-HdoExecutionPlan $hybrid
-    Assert-Hdo (@($hybridPlan.runners.Values | Where-Object provider -eq 'ollama').Count -eq 1) 'hybrid profile selects Ollama only through explicit configuration'
+    Assert-Hdo (@($hybridPlan.runners.Values | Where-Object provider -eq 'ollama').Count -eq 1) 'explicit hybrid configuration remains supported alongside automatic repository routing'
 
     $redacted = & $module { Protect-HdoText 'token=ghp_abcdefghijklmnopqrstuvwxyz123456 password=secret-value' }
     Assert-Hdo ($redacted -notmatch 'ghp_|secret-value') 'known credential forms are redacted'
