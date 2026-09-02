@@ -240,6 +240,37 @@ claude plugin install hdo@hybrid-dev-orchestrator
 
 ローカル checkout を試す場合は `claude --plugin-dir C:\src\hybrid-dev-orchestrator` でも読み込めます。plugin 経由でも前提（`pwsh` 7.2+、`git`、`gh`、runner CLI）は同じです。
 
+## Codex plugin として使う
+
+同じ repository を Codex plugin marketplace として追加できます。Codex 側は `.codex-plugin/plugin.json` と `skills/` を読み込み、Claude Code 用の `commands/` と同じ `hdo.ps1` を呼び出します。
+
+```text
+codex plugin marketplace add kkb-hub/hybrid-dev-orchestrator --ref main
+codex plugin add hdo@hybrid-dev-orchestrator
+```
+
+インストール後は新しい Codex session を開始し、対象 repository を作業ディレクトリとして開きます。自然言語で依頼するか、次の skill を明示的に指定できます。
+
+| Skill | 内容 |
+|---|---|
+| `$hdo-doctor` | preflight 検査 |
+| `$hdo-config` | 解決済み設定と execution plan |
+| `$hdo-issues` | pickup 候補一覧 |
+| `$hdo-inspect` | Issue と正規化契約の検査 |
+| `$hdo-run` | dry-run / full cycle の実行 |
+| `$hdo-status` | run の状態表示 |
+| `$hdo-cleanup` | run worktree の除去（preview 既定） |
+| `$hdo-labels` | label catalog の差分・同期 |
+
+ローカル checkout を検証する場合は、最初の command の source に checkout path を渡します。
+
+```text
+codex plugin marketplace add C:\src\hybrid-dev-orchestrator
+codex plugin add hdo@hybrid-dev-orchestrator
+```
+
+plugin 経由でも前提（Windows 11、`pwsh` 7.2+、`git`、`gh`、選択した runner CLI）は同じです。`$hdo-run` は明示した full run 以外では `-DryRun` を優先し、`$hdo-cleanup` は常に preview から始めます。
+
 ## 安全境界
 
 - implement/fix は現在の working tree ではなく専用 worktree だけを変更します。

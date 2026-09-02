@@ -1,0 +1,33 @@
+{
+  "name": "hdo",
+  "version": "0.2.0",
+  "description": "Run bounded, issue-driven implement, validate, review, and fix cycles with Hybrid Dev Orchestrator.",
+  "author": {
+    "name": "kkb-hub"
+  },
+  "homepage": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
+  "repository": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
+  "keywords": [
+    "orchestrator",
+    "github-issues",
+    "review",
+    "powershell"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Hybrid Dev Orchestrator",
+    "shortDescription": "Run bounded development cycles from GitHub Issues.",
+    "longDescription": "Inspect, plan, implement, validate, review, and fix GitHub Issue work through the local Hybrid Dev Orchestrator CLI.",
+    "developerName": "kkb-hub",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Run the HDO preflight for this repository.",
+      "Inspect an Issue with HDO before running it.",
+      "Preview an HDO implementation cycle."
+    ]
+  }
+}
