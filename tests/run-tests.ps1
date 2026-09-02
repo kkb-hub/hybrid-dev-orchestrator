@@ -193,6 +193,26 @@ try {
     catch { $uncommittedRepositoryConfigRejected = $_.Exception.Message -like 'Repository configuration must be committed*' }
     Assert-Hdo $uncommittedRepositoryConfigRejected 'uncommitted automatic repository config is rejected instead of executed'
 
+    $nonGitDirectory = Join-Path $testAppData 'non-git-directory'
+    New-Item -ItemType Directory -Path $nonGitDirectory -Force | Out-Null
+    $nonGitConfig = Get-HdoConfig -RepositoryPath $nonGitDirectory
+    Assert-Hdo ($nonGitConfig.resolvedProfile -eq 'claude-only' -and -not $nonGitConfig.repositoryConfig.loaded -and -not $nonGitConfig.repositoryConfig.ignored) 'configuration resolution outside a Git repository falls back instead of throwing'
+
+    $newRunnerMissingFieldsRepository = Join-Path $testAppData 'new-runner-missing-fields'
+    New-Item -ItemType Directory -Path (Join-Path $newRunnerMissingFieldsRepository '.hdo') -Force | Out-Null
+    & git -C $newRunnerMissingFieldsRepository init --quiet
+    & git -C $newRunnerMissingFieldsRepository config user.email 'hdo-tests@example.invalid'
+    & git -C $newRunnerMissingFieldsRepository config user.name 'HDO Tests'
+    '{"schemaVersion":1,"activeProfile":"p","profiles":{"p":{"steps":{"plan":"r","implement":"r","review":"r","fix":"r"}}},"runners":{"r":{"type":"codex","model":"m"}}}' |
+        Set-Content -LiteralPath (Join-Path $newRunnerMissingFieldsRepository '.hdo/config.json') -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $newRunnerMissingFieldsRepository 'README.md') -Value 'baseline' -Encoding utf8NoBOM
+    & git -C $newRunnerMissingFieldsRepository add -- '.hdo/config.json' 'README.md'
+    & git -C $newRunnerMissingFieldsRepository -c commit.gpgSign=false commit --quiet -m baseline
+    $newRunnerMissingFieldsMessage = $null
+    try { $null = Get-HdoConfig -RepositoryPath $newRunnerMissingFieldsRepository }
+    catch { $newRunnerMissingFieldsMessage = $_.Exception.Message }
+    Assert-Hdo ($newRunnerMissingFieldsMessage -eq "Repository runner 'r' is new and must declare provider, sandbox, timeoutSeconds in .hdo/config.json.") 'a new repository runner missing required fields reports which fields are missing'
+
     $invalidOverrideRejected = $false
     try { $null = Get-HdoConfig -RepositoryPath $repositoryRoot -Overrides @{ unknownRootProperty = $true } }
     catch { $invalidOverrideRejected = $true }

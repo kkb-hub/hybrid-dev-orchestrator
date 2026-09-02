@@ -78,8 +78,11 @@ function Merge-HdoRepositoryConfig {
         foreach ($runnerName in @($normalized.runners.Keys)) {
             $repositoryRunner = $normalized.runners[$runnerName]
             $baseRunner = if ($Base.Contains('runners') -and $Base.runners.Contains($runnerName)) { $Base.runners[$runnerName] } else { $null }
-            if ($null -eq $baseRunner -and -not $repositoryRunner.Contains('type')) {
-                throw "Repository runner '$runnerName' is new and must declare type."
+            if ($null -eq $baseRunner) {
+                $missingRunnerKeys = @(@('type', 'provider', 'sandbox', 'timeoutSeconds') | Where-Object { -not $repositoryRunner.Contains($_) })
+                if ($missingRunnerKeys.Count -gt 0) {
+                    throw "Repository runner '$runnerName' is new and must declare $($missingRunnerKeys -join ', ') in .hdo/config.json."
+                }
             }
             $repositoryType = [string](Get-HdoValue $repositoryRunner 'type' '')
             $baseType = if ($null -ne $baseRunner) { [string](Get-HdoValue $baseRunner 'type' '') } else { '' }
@@ -161,7 +164,14 @@ function Get-HdoConfig {
         [switch]$IgnoreRepositoryConfig
     )
 
-    $repositoryPath = Get-HdoRepositoryRoot ([System.IO.Path]::GetFullPath($RepositoryPath))
+    $repositoryPath = [System.IO.Path]::GetFullPath($RepositoryPath)
+    $isGitRepository = $true
+    try {
+        $repositoryPath = Get-HdoRepositoryRoot $repositoryPath
+    }
+    catch {
+        $isGitRepository = $false
+    }
     $defaultPath = Join-Path $script:HdoRepositoryRoot 'config/hdo.default.json'
     $config = Read-HdoJsonFile $defaultPath
     $sources = @($defaultPath)
@@ -174,10 +184,10 @@ function Get-HdoConfig {
         }
     }
 
-    if ($IgnoreRepositoryConfig) {
+    if ($IgnoreRepositoryConfig -or -not $isGitRepository) {
         $repositoryConfig = [ordered]@{
             loaded = $false
-            ignored = $true
+            ignored = [bool]$IgnoreRepositoryConfig
             path = Join-Path $repositoryPath '.hdo/config.json'
             revision = 'HEAD'
             commit = $null
