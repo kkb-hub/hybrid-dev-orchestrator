@@ -4,13 +4,13 @@
     "name": "kkb-hub"
   },
   "metadata": {
-    "description": "Marketplace for the Hybrid Dev Orchestrator (HDO) Claude Code plugin."
+    "description": "Marketplace for the Hybrid Dev Orchestrator (HDO) Claude Code and Codex plugin."
   },
   "plugins": [
     {
       "name": "hdo",
       "source": "./",
-      "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles, invoked from Claude Code as thin wrappers around hdo.ps1."
+      "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles with thin Claude Code and Codex wrappers around hdo.ps1."
     }
   ]
 }

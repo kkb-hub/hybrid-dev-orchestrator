@@ -5,6 +5,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $testScripts = @(
+    'tests/test-plugin.ps1',
     'tests/run-tests.ps1',
     'tests/test-process-output.ps1',
     'tests/test-cli.ps1',
