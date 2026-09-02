@@ -152,7 +152,7 @@ function Get-HdoMarkdownSections {
             '^(acceptance criteria|完了条件|受入条件|受け入れ条件)$' { 'acceptanceCriteria'; break }
             '^(in scope|対象範囲|対象)$' { 'scope'; break }
             '^(validation gate ids?|validation gates?|validation|検証ゲート|検証)$' { 'validationGates'; break }
-            '^(constraints?( and security)?|security considerations?|制約|制約 セキュリティ|セキュリティ)$' { 'constraints'; break }
+            '^(constraints?(?: and security(?: considerations?)?| security considerations?)?|security considerations?|制約|制約 セキュリティ|セキュリティ)$' { 'constraints'; break }
             '^(dependencies|dependency|依存関係|依存)$' { 'dependencies'; break }
             '^(risk|リスク)$' { 'risk'; break }
             '^(priority|優先度)$' { 'priority'; break }
