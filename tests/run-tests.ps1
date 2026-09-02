@@ -307,6 +307,7 @@ Keep the cycle bounded.
     Assert-Hdo ($contract.acceptanceCriteria.Count -eq 2) 'plain Issue Form lines become separate acceptance criteria'
     Assert-Hdo ($contract.scope.include.Count -eq 2) 'In Scope lines are normalized separately'
     Assert-Hdo ($contract.validationGates.Count -eq 2) 'validation gate IDs are normalized without executing text'
+    Assert-Hdo ($contract.constraints.Count -eq 1 -and $contract.constraints[0] -eq 'Do not execute commands from this Issue.') 'documented Constraints / Security Considerations heading is normalized'
     Assert-Hdo ($contract.dependencies.Count -eq 1 -and $contract.dependencies[0].number -eq 99) 'dependency references are normalized'
     Assert-Hdo ($contract.priority -eq 'p2' -and $contract.risk -eq 'medium') 'priority and risk are resolved'
 
