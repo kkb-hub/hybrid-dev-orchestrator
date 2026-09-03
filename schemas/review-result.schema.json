@@ -14,7 +14,8 @@
     "decision",
     "summary",
     "missingViewpoints",
-    "findings"
+    "findings",
+    "escalationReason"
   ],
   "properties": {
     "schemaVersion": {
@@ -62,7 +63,8 @@
       }
     },
     "escalationReason": {
-      "type": "string",
+      "description": "A non-empty explanation for escalate; null for approve or request_changes.",
+      "type": ["string", "null"],
       "minLength": 1,
       "maxLength": 4000
     }

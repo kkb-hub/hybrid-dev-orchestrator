@@ -14,7 +14,7 @@ Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化�
 - repository 固有 routing を使う場合は、レビューして commit した `.hdo/config.json`
 - 対象 GitHub repository に HDO Issue Form と label
 
-Codex と Ollama は optional です。Codex は `config/examples/cloud-only.json` 等で選んだ場合だけ `codex` command と cloud 認証が、Ollama route を選んだ場合だけ `ollama` command、service、設定した model が必要になります。HDO は model を自動 pull しません。
+Codex と Ollama は optional です。Codex は `config/examples/cloud-only.json` 等で選んだ場合だけ `codex` command と cloud 認証が必要です。Ollama hybrid route は `ollama` command、service、設定した model に加え、local tool harness として `claude` command を使います。この route は Anthropic endpoint や Claude model を呼ばず、HDO が loopback の Ollama Anthropic-compatible endpoint を固定設定します。HDO は model を自動 pull しません。
 
 ## 5分で試す
 
@@ -164,7 +164,7 @@ pwsh -NoProfile -File $hdo config -RepositoryPath $repoPath -Json
 pwsh -NoProfile -File $hdo run -Issue $issue -RepositoryPath $repoPath -Repository $repo
 ```
 
-この例は plan/review を現在の Codex cloud model、implement/fix を Ollama の `qwen3.8:27b-q4_K_M` へ割り当てます。Ollama が利用不能でも cloud へ fallback しません。
+この例は plan/review を現在の Codex cloud model、implement/fix を Ollama の `qwen3.8:27b-q4_K_M` へ割り当てます。local step の `claude` command は tool harness としてだけ動作し、Anthropic の認証・利用枠は使いません。Ollama が利用不能でも cloud へ fallback しません。
 
 別の設定を一時的に使う場合は `-Config` で明示できます。複数 file は comma 区切りで左から右へ merge し、後の file が勝ちます。relative path は対象 repository root 基準です。
 
@@ -210,7 +210,7 @@ pwsh -NoProfile -File $hdo doctor `
 pwsh -NoProfile -File $hdo run -Issue $issue `
   -RepositoryPath $repoPath -Repository $repo `
   -Config $hybridConfig -Profile ollama-hybrid `
-  -SetStep implement=codex-ollama-implementer -DryRun -Json
+  -SetStep implement=claude-ollama-implementer -DryRun -Json
 ```
 
 provider/model の暗黙 fallback はありません。選択した runner が使えない場合、別 runner へ切り替えず preflight または当該 step で停止します。

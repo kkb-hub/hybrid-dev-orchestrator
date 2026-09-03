@@ -107,7 +107,7 @@ Issue Form は ready label を自動付与しない。`labels -Apply` は config
 
 dependency の取得失敗や未知 state は解決済みに丸めず、unresolved として停止する。`-NoWriteBack` でも dependency と active claim の読み取り検査は省略しない。
 
-HDO は paginated Issue event から最新の ready label event を取り、Issue の `updatedAt` が event 時刻より後なら再レビューと ready の再付与を要求する。`github.trustedActors` が空の場合、ready label を付けられる repository permission を authorization boundary とする。allowlist がある場合は event actor も allowlist と照合する。GitHub timestamp は秒精度のため、同一秒内の更新順までは識別できない既知の制約がある。
+HDO は paginated Issue event から最新の ready label event を取り、GitHub GraphQL の Issue `lastEditedAt` が event 時刻より後なら再レビューと ready の再付与を要求する。label 自体の操作でも進む `updatedAt` はこの比較に使わない。`github.trustedActors` が空の場合、ready label を付けられる repository permission を authorization boundary とする。allowlist がある場合は event actor も allowlist と照合する。GitHub timestamp は秒精度のため、同一秒内の編集順までは識別できない既知の制約がある。
 
 ## 7. 自動 pickup
 

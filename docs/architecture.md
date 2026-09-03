@@ -181,7 +181,7 @@ cleanup は run artifact の path が configured root 内で、`git worktree lis
 Codex adapter は非対話 `codex exec` を使う。
 
 ~~~text
-codex exec --ephemeral --json --color never
+codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
   --sandbox <mode> --cd <worktree>
   [--oss --local-provider ollama|lmstudio]
   [--model <id>]
@@ -194,6 +194,8 @@ codex exec --ephemeral --json --color never
 
 prompt は stdin、event stream は raw events/stdout log、last message は schema-validated JSON として保存する。process exit 0、final file、JSON parse、schema validation のすべてを成功条件にする。
 
+個人の Codex `config.toml` と execpolicy rules は読み込まず、HDO の runner contract で provider、model、sandbox、schema を決める。Codex 組み込みおよび repository の instruction はこの隔離の対象外である。
+
 ### 9.2 Claude
 
 Claude adapter は非対話 print mode を使う。
@@ -201,15 +203,17 @@ Claude adapter は非対話 print mode を使う。
 ~~~text
 claude -p --output-format json --no-session-persistence --safe-mode
   --permission-mode <plan|acceptEdits>
-  --json-schema <normalized schema JSON>
+  [--json-schema <normalized schema JSON>]
   [--model <id>] [--effort <level>] [--allowedTools <names>]
 ~~~
 
 prompt は stdin、stdout の単一 result envelope は `envelope.json` として保存する（Codex の `events.jsonl` に相当する artifact slot）。envelope の `structured_output`（なければ `result`）を final JSON として取り出し、正規 schema で再検証する。
 
-`--json-schema` へは、CLI の Ajv strict mode が受理できるよう正規化した transport copy を渡す（`$schema` と既定値 `minContains: 1` の除去、array keyword を持つ subschema への `type: "array"` 補完）。`schemas/` の canonical file が唯一の編集元であり、出力の再検証は正規 schema で行う。
+cloud providerの `--json-schema` へは、CLI の Ajv strict mode が受理できるよう正規化した transport copy を渡す（`$schema` と既定値 `minContains: 1` の除去、array keyword を持つ subschema への `type: "array"` 補完）。Ollama providerではClaude CLIのSDKが任意model IDを拒否するため、同じtransport schemaをpromptへ付加する。`schemas/` の canonical file が唯一の編集元であり、どちらも出力の再検証は正規 schema で行う。
 
 `--safe-mode` により利用者の CLAUDE.md、plugin、hook、MCP server、skill は agent run に載らない。`read-only` は `--permission-mode plan`、`workspace-write` は `--permission-mode acceptEdits` に対応するが、これは permission mode であって OS-level sandbox ではない（`sandbox` field の保証は command adapter と同様に host policy へ依存する）。
+
+`provider: ollama` の Claude adapter は `ANTHROPIC_BASE_URL=http://127.0.0.1:11434`、非secretの local token、空の API key、nonessential traffic 無効化を process environment へ adapter 内部で設定する。endpoint は repository config から変更できない。これにより Claude CLI は tool harness としてのみ働き、model inference は指定した Ollama model が行う。
 
 ### 9.3 Command
 

@@ -89,12 +89,59 @@ function Get-HdoIssue {
     return $issue
 }
 
+function Get-HdoIssueLastEditedAt {
+    param(
+        [Parameter(Mandatory)][string]$Repository,
+        [Parameter(Mandatory)][int]$IssueNumber,
+        [Parameter(Mandatory)][string]$WorkingDirectory
+    )
+
+    if ($Repository -notmatch '^(?<owner>[^/]+)/(?<name>[^/]+)$') {
+        throw "Invalid GitHub repository slug '$Repository'."
+    }
+    $owner = $Matches.owner
+    $name = $Matches.name
+    $query = 'query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){issue(number:$number){lastEditedAt}}}'
+    $response = Invoke-HdoGhJson @(
+        'api', 'graphql',
+        '-f', "query=$query",
+        '-F', "owner=$owner",
+        '-F', "name=$name",
+        '-F', "number=$IssueNumber"
+    ) $WorkingDirectory
+    $issue = Get-HdoValue $response 'data.repository.issue' $null
+    if ($null -eq $issue) { throw "GitHub Issue $Repository#$IssueNumber was not found while checking ready authorization." }
+    return [string](Get-HdoValue $issue 'lastEditedAt' '')
+}
+
+function Test-HdoReadyContentFreshness {
+    param(
+        [Parameter(Mandatory)][string]$ReadyAt,
+        [AllowEmptyString()][string]$LastEditedAt
+    )
+
+    $readyTimestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($ReadyAt, [ref]$readyTimestamp)) {
+        return [ordered]@{ fresh = $false; reason = 'Ready timestamp could not be parsed.' }
+    }
+    if (-not $LastEditedAt) {
+        return [ordered]@{ fresh = $true; reason = 'Issue content has not been edited since creation.' }
+    }
+    $editedTimestamp = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($LastEditedAt, [ref]$editedTimestamp)) {
+        return [ordered]@{ fresh = $false; reason = 'Issue content edit timestamp could not be parsed.' }
+    }
+    if ($editedTimestamp -gt $readyTimestamp) {
+        return [ordered]@{ fresh = $false; reason = "Issue content changed after the ready label was applied; re-review it and re-apply the ready label." }
+    }
+    return [ordered]@{ fresh = $true; reason = 'Ready label covers the latest Issue content edit.' }
+}
+
 function Test-HdoReadyLabelAuthorization {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
         [Parameter(Mandatory)][string]$Repository,
-        [Parameter(Mandatory)][int]$IssueNumber,
-        [string]$IssueUpdatedAt
+        [Parameter(Mandatory)][int]$IssueNumber
     )
 
     $trustedActors = @(Get-HdoValue $Config 'github.trustedActors' @())
@@ -108,24 +155,24 @@ function Test-HdoReadyLabelAuthorization {
     }
     $actor = [string](Get-HdoValue $labelEvents[0] 'actor.login' '')
     $readyAtText = [string](Get-HdoValue $labelEvents[0] 'created_at' '')
-    if ($IssueUpdatedAt) {
-        $readyAt = [DateTimeOffset]::MinValue
-        $updatedAt = [DateTimeOffset]::MinValue
-        if (-not [DateTimeOffset]::TryParse($readyAtText, [ref]$readyAt) -or -not [DateTimeOffset]::TryParse($IssueUpdatedAt, [ref]$updatedAt)) {
-            return [ordered]@{ authorized = $false; enforced = $true; actor = $actor; readyAt = $readyAtText; reason = 'Ready or Issue update timestamp could not be parsed.' }
-        }
-        if ($updatedAt -gt $readyAt) {
-            return [ordered]@{ authorized = $false; enforced = $true; actor = $actor; readyAt = $readyAtText; reason = "Issue changed after '$readyLabel' was applied; re-review it and re-apply the ready label." }
-        }
+    # Issue.updatedAt also advances when the ready label itself changes. GitHub can expose
+    # that timestamp one second after the corresponding label event, so comparing those
+    # two fields rejects a freshly approved Issue. GraphQL lastEditedAt is limited to Issue
+    # content edits and preserves the intended boundary: title/body edits after ready fail.
+    $lastEditedAt = Get-HdoIssueLastEditedAt $Repository $IssueNumber ([string]$Config.repositoryPath)
+    $freshness = Test-HdoReadyContentFreshness $readyAtText $lastEditedAt
+    if (-not $freshness.fresh) {
+        return [ordered]@{ authorized = $false; enforced = $true; actor = $actor; readyAt = $readyAtText; lastEditedAt = $lastEditedAt; reason = $freshness.reason }
     }
     if ($trustedActors.Count -eq 0) {
-        return [ordered]@{ authorized = $true; enforced = $false; actor = $actor; readyAt = $readyAtText; reason = 'Ready event is fresh; repository label permissions are the actor trust boundary.' }
+        return [ordered]@{ authorized = $true; enforced = $false; actor = $actor; readyAt = $readyAtText; lastEditedAt = $lastEditedAt; reason = 'Ready event covers the latest content edit; repository label permissions are the actor trust boundary.' }
     }
     return [ordered]@{
         authorized = $actor -in $trustedActors
         enforced = $true
         actor = $actor
         readyAt = $readyAtText
+        lastEditedAt = $lastEditedAt
         reason = if ($actor -in $trustedActors) { "Ready label was applied by trusted actor '$actor'." } else { "Ready label actor '$actor' is not trusted." }
     }
 }
@@ -373,7 +420,7 @@ function Get-HdoIssueCandidate {
         $contract = ConvertTo-HdoIssueContract $issue
         $contractValidation = Test-HdoIssueContract -Contract $contract -Config $Config -ProjectContract $projectContract -RequireReady
         if (-not $contractValidation.valid) { continue }
-        $readyAuthorization = Test-HdoReadyLabelAuthorization $Config $Repository ([int]$issue.number) ([string]$issue.updatedAt)
+        $readyAuthorization = Test-HdoReadyLabelAuthorization $Config $Repository ([int]$issue.number)
         if (-not $readyAuthorization.authorized) { continue }
         $dependencyValidation = Test-HdoIssueDependencies $Config $contract
         if (-not $dependencyValidation.resolved) { continue }

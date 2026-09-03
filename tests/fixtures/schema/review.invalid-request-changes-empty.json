@@ -7,5 +7,6 @@
   "decision": "request_changes",
   "summary": "Changes are requested without an actionable finding.",
   "missingViewpoints": [],
+  "escalationReason": null,
   "findings": []
 }

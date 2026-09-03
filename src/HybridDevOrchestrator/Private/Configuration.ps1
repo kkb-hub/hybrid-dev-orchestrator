@@ -411,8 +411,8 @@ function Test-HdoConfiguration {
         if ($type -eq 'codex' -and $provider -notin @('cloud', 'ollama', 'lmstudio')) {
             $errors.Add("Codex runner '$runnerName' cannot use provider '$provider'.")
         }
-        if ($type -eq 'claude' -and $provider -ne 'cloud') {
-            $errors.Add("Claude runner '$runnerName' must use provider 'cloud'.")
+        if ($type -eq 'claude' -and $provider -notin @('cloud', 'ollama')) {
+            $errors.Add("Claude runner '$runnerName' cannot use provider '$provider'.")
         }
         if ($type -eq 'claude' -and (Get-HdoValue $runner 'contextTokens')) {
             $errors.Add("Claude runner '$runnerName' cannot set contextTokens because the Claude adapter does not expose a context-window argument.")
@@ -420,6 +420,9 @@ function Test-HdoConfiguration {
         $reasoningEffort = [string](Get-HdoValue $runner 'reasoningEffort' '')
         if ($type -eq 'claude' -and $reasoningEffort -and $reasoningEffort -notin @('low', 'medium', 'high', 'xhigh', 'max')) {
             $errors.Add("Claude runner '$runnerName' reasoningEffort '$reasoningEffort' is not supported; the Claude CLI --effort accepts low, medium, high, xhigh, or max and silently ignores other values.")
+        }
+        if ($type -eq 'claude' -and $provider -eq 'ollama' -and $reasoningEffort) {
+            $errors.Add("Claude/Ollama runner '$runnerName' cannot set reasoningEffort because Claude CLI validates --effort against its cloud model catalog.")
         }
         if ($provider -in @('ollama', 'lmstudio') -and -not (Get-HdoValue $runner 'model' '')) {
             $errors.Add("Local runner '$runnerName' must define model.")

@@ -13,7 +13,7 @@ if (-not $Run) {
     exit 0
 }
 
-foreach ($commandName in @('git', 'codex', 'ollama')) {
+foreach ($commandName in @('git', 'codex', 'claude', 'ollama')) {
     if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
         throw "Required command was not found: $commandName"
     }
@@ -62,37 +62,51 @@ try {
         throw "The smoke profile selected '$($plan.steps.implement.model)' instead of '$Model'."
     }
 
-    $lastMessagePath = Join-Path $artifactDirectory 'last-message.txt'
-    $stdoutPath = Join-Path $artifactDirectory 'stdout.jsonl'
+    $stdoutPath = Join-Path $artifactDirectory 'envelope.json'
     $stderrPath = Join-Path $artifactDirectory 'stderr.log'
-    $arguments = @(
-        'exec', '--ephemeral', '--json', '--color', 'never',
-        '--sandbox', 'workspace-write', '--cd', $smokeRepository,
-        '--oss', '--local-provider', 'ollama', '--model', $Model,
-        '--output-last-message', $lastMessagePath,
-        'Do not modify files or run tools. Reply with exactly: HDO_OLLAMA_SMOKE_OK'
-    )
-    $environment = & $module { Get-HdoSafeEnvironment }
+    $runner = $config.runners[[string]$config.steps.implement]
+    $schemaPath = Join-Path $repositoryRoot 'schemas/worker-result.schema.json'
+    $schemaJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } $schemaPath
+    $arguments = & $module {
+        param($Runner, $SchemaJson)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson $SchemaJson
+    } $runner $schemaJson
+    $environment = & $module { param($Runner) Get-HdoRunnerEnvironment -Runner $Runner } $runner
+    $prompt = @'
+Create exactly one file named hdo-ollama-smoke.txt containing exactly HDO_OLLAMA_SMOKE_OK followed by a single LF newline. Verify its exact bytes. Then return the required structured worker result with that file in changedFiles, the byte verification in tests, empty notes, and empty blockers.
+'@
+    $inputText = & $module {
+        param($Runner, $Prompt, $SchemaJson)
+        Get-HdoClaudeInputText -Runner $Runner -Prompt $Prompt -SchemaJson $SchemaJson
+    } $runner $prompt $schemaJson
     $result = & $module {
-        param($Arguments, $WorkingDirectory, $Environment, $StdoutPath, $StderrPath)
-        Invoke-HdoProcess -Command 'codex' -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
-            -TimeoutSeconds 600 -Environment $Environment -StandardOutputPath $StdoutPath `
+        param($Arguments, $WorkingDirectory, $Environment, $StdoutPath, $StderrPath, $Prompt)
+        Invoke-HdoProcess -Command 'claude' -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
+            -InputText $Prompt -TimeoutSeconds 600 -Environment $Environment -StandardOutputPath $StdoutPath `
             -StandardErrorPath $StderrPath -MaximumOutputBytes 33554432
-    } $arguments $smokeRepository $environment $stdoutPath $stderrPath
+    } $arguments $smokeRepository $environment $stdoutPath $stderrPath $inputText
 
     if ($result.exitCode -ne 0) {
-        throw "Codex/Ollama smoke failed with exit code $($result.exitCode): $($result.stderr.Trim())"
+        throw "Claude-harness/Ollama smoke failed with exit code $($result.exitCode): $($result.stderr.Trim())"
     }
-    if (-not (Test-Path -LiteralPath $lastMessagePath -PathType Leaf)) {
-        throw 'Codex/Ollama smoke did not produce a final message.'
+    $smokeFile = Join-Path $smokeRepository 'hdo-ollama-smoke.txt'
+    if (-not (Test-Path -LiteralPath $smokeFile -PathType Leaf)) {
+        throw 'Claude-harness/Ollama smoke did not create the requested file.'
     }
-    $lastMessage = (Get-Content -LiteralPath $lastMessagePath -Raw).Trim()
-    if ($lastMessage -ne 'HDO_OLLAMA_SMOKE_OK') {
-        throw "Unexpected Codex/Ollama smoke response: $lastMessage"
+    $actualBytes = [IO.File]::ReadAllBytes($smokeFile)
+    $expectedBytes = [Text.Encoding]::ASCII.GetBytes("HDO_OLLAMA_SMOKE_OK`n")
+    if (-not [Linq.Enumerable]::SequenceEqual[byte]($actualBytes, $expectedBytes)) {
+        throw "Claude-harness/Ollama smoke created unexpected bytes: $([Convert]::ToHexString($actualBytes))"
     }
-    $status = @(& git -C $smokeRepository status --porcelain)
-    if ($LASTEXITCODE -ne 0 -or $status.Count -ne 0) {
-        throw "The local smoke modified its isolated repository: $($status -join ', ')"
+    $envelope = Get-Content -LiteralPath $stdoutPath -Raw
+    $finalJson = & $module { param($Output) ConvertFrom-HdoClaudeOutput $Output } $envelope
+    $schemaValidation = & $module { param($Json, $Schema) Test-HdoJsonSchema $Json $Schema } $finalJson $schemaPath
+    if (-not $schemaValidation.valid) {
+        throw "Claude-harness/Ollama smoke returned invalid structured output: $($schemaValidation.error)"
+    }
+    $workerResult = $finalJson | ConvertFrom-Json -AsHashtable -Depth 100
+    if ($workerResult.changedFiles -notcontains 'hdo-ollama-smoke.txt' -or $workerResult.blockers.Count -ne 0) {
+        throw "Claude-harness/Ollama smoke returned an unexpected worker result: $finalJson"
     }
 
     $runningModels = (& ollama ps 2>&1 | Out-String)
@@ -100,7 +114,7 @@ try {
         throw "The request completed but Ollama did not report the selected model as loaded: $runningModels"
     }
 
-    Write-Host "PASS: parent plan/review stayed cloud; implement/fix used Ollama model $Model and returned HDO_OLLAMA_SMOKE_OK."
+    Write-Host "PASS: parent plan/review stayed on Codex cloud; Claude CLI used Ollama model $Model locally, edited a file, verified exact bytes, and returned a valid worker result."
 }
 finally {
     $resolvedSmokeRoot = [IO.Path]::GetFullPath($smokeRoot)

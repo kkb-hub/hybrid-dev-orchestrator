@@ -93,9 +93,9 @@ try {
     $repositoryConfig = Get-HdoConfig -RepositoryPath $otherRepository
     Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'ollama-hybrid') 'committed repository .hdo/config.json is loaded automatically'
     Assert-Hdo ($repositoryConfig.repositoryConfig.loaded -and $repositoryConfig.repositoryConfig.blob -and $repositoryConfig.repositoryConfig.sha256) 'repository config records its fixed commit, blob, and SHA-256 identity'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].command -eq 'codex') 'new repository runners receive the fixed built-in adapter command'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['codex-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].command -eq 'claude') 'new repository runners receive the fixed built-in adapter command'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['claude-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
     $repositoryExecution = Get-HdoExecutionPlan $repositoryConfig
     Assert-Hdo ($repositoryExecution.steps.plan.provider -eq 'cloud' -and $repositoryExecution.steps.review.provider -eq 'cloud' -and
         $repositoryExecution.steps.implement.provider -eq 'ollama' -and $repositoryExecution.steps.fix.provider -eq 'ollama') 'repository routing sends only implementation and fix roles to Ollama'
@@ -170,7 +170,7 @@ try {
     Remove-Item -LiteralPath $userConfigPath -Force
 
     $forbiddenRepositoryConfig = Get-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 100
-    $forbiddenRepositoryConfig.runners['codex-ollama-implementer']['command'] = 'arbitrary-command'
+    $forbiddenRepositoryConfig.runners['claude-ollama-implementer']['command'] = 'arbitrary-command'
     $forbiddenRepositoryConfig | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
     & git -C $otherRepository add -- .hdo/config.json
     & git -C $otherRepository commit --quiet -m 'forbidden repository config'
@@ -327,6 +327,23 @@ Keep the cycle bounded.
     $emptyRequiredResult = Test-HdoIssueContract -Contract $emptyRequiredContract -Config $config -ProjectContract $projectContract -RequireReady
     Assert-Hdo (-not $emptyRequiredResult.valid) 'Issue contract rejects empty required AC and gate sections'
 
+    $neverEditedFreshness = & $module {
+        Test-HdoReadyContentFreshness '2026-09-03T01:43:07Z' ''
+    }
+    Assert-Hdo $neverEditedFreshness.fresh 'a never-edited Issue is not rejected when ready labeling advances updatedAt'
+    $reviewedEditFreshness = & $module {
+        Test-HdoReadyContentFreshness '2026-09-03T01:43:07Z' '2026-09-03T01:43:07Z'
+    }
+    Assert-Hdo $reviewedEditFreshness.fresh 'an Issue content edit at or before ready remains authorized'
+    $staleReadyFreshness = & $module {
+        Test-HdoReadyContentFreshness '2026-09-03T01:43:07Z' '2026-09-03T01:43:08Z'
+    }
+    Assert-Hdo (-not $staleReadyFreshness.fresh) 'an Issue content edit after ready requires re-authorization'
+    $invalidEditFreshness = & $module {
+        Test-HdoReadyContentFreshness '2026-09-03T01:43:07Z' 'not-a-timestamp'
+    }
+    Assert-Hdo (-not $invalidEditFreshness.fresh) 'an invalid Issue content edit timestamp fails closed'
+
     $duplicateAcceptance = Copy-HdoObject $contract
     $duplicateAcceptance.acceptanceCriteria += [ordered]@{ id = 'AC-01'; text = 'A conflicting duplicate id.' }
     $duplicateAcceptanceResult = Test-HdoIssueContract -Contract $duplicateAcceptance -Config $config -ProjectContract $projectContract -RequireReady
@@ -374,6 +391,27 @@ Keep the cycle bounded.
     $allowedToolsIndex = [Array]::IndexOf($claudeWriteArguments, '--allowedTools')
     Assert-Hdo ($allowedToolsIndex -ge 0 -and $claudeWriteArguments[$allowedToolsIndex + 1] -eq 'Read,Bash') 'allowedTools is passed as the --allowedTools permission allowlist, not --tools'
     Assert-Hdo ($claudeWriteArguments -notcontains '--tools') 'Claude adapter does not use the ambiguous --tools flag'
+    $ollamaClaudeArguments = & $module {
+        param($Runner)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{"type":"object"}'
+    } ([ordered]@{ sandbox = 'workspace-write'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; reasoningEffort = 'medium'; extraArgs = @() })
+    Assert-Hdo ($ollamaClaudeArguments -notcontains '--json-schema' -and $ollamaClaudeArguments -notcontains '--effort') 'Claude/Ollama route avoids SDK options that reject arbitrary local model IDs'
+    $ollamaClaudeInput = & $module {
+        param($Runner)
+        Get-HdoClaudeInputText -Runner $Runner -Prompt 'work' -SchemaJson '{"type":"object"}'
+    } ([ordered]@{ provider = 'ollama' })
+    Assert-Hdo ($ollamaClaudeInput -match 'work' -and $ollamaClaudeInput -match 'Return only one JSON object' -and $ollamaClaudeInput -match '"type":"object"') 'Claude/Ollama route embeds the transport schema into the local prompt'
+    $ollamaClaudeEnvironment = & $module {
+        param($Runner)
+        Get-HdoRunnerEnvironment -Runner $Runner
+    } ([ordered]@{
+        type = 'claude'
+        provider = 'ollama'
+        passEnvironment = @()
+    })
+    Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_BASE_URL -eq 'http://127.0.0.1:11434') 'Claude/Ollama route is pinned to the loopback Ollama Anthropic endpoint'
+    Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_AUTH_TOKEN -eq 'ollama' -and $ollamaClaudeEnvironment.ANTHROPIC_API_KEY -eq '') 'Claude/Ollama route uses local non-secret authentication instead of Anthropic credentials'
+    Assert-Hdo ($ollamaClaudeEnvironment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -eq '1') 'Claude/Ollama route disables nonessential Claude CLI traffic'
     $claudeReadArguments = & $module {
         param($Runner)
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
@@ -381,6 +419,13 @@ Keep the cycle bounded.
     $readPermissionIndex = [Array]::IndexOf($claudeReadArguments, '--permission-mode')
     Assert-Hdo ($readPermissionIndex -ge 0 -and $claudeReadArguments[$readPermissionIndex + 1] -eq 'plan') 'read-only maps to the plan permission mode'
     Assert-Hdo ($claudeReadArguments -notcontains '--injected-extra-argument') 'the Claude adapter never forwards extraArgs, even from an unvalidated runner'
+
+    $ollamaClaudeEffortConfig = Copy-HdoObject $config
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].provider = 'ollama'
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].model = 'qwen3.8:27b-q4_K_M'
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].reasoningEffort = 'medium'
+    $ollamaClaudeEffortResult = Test-HdoConfiguration $ollamaClaudeEffortConfig
+    Assert-Hdo (-not $ollamaClaudeEffortResult.valid) 'Claude/Ollama runner rejects cloud-only reasoningEffort configuration'
 
     $normalizedReviewJson = ''
     foreach ($claudeSchemaName in @('task-contract', 'worker-result', 'review-result')) {
@@ -414,6 +459,61 @@ Keep the cycle bounded.
     $enumLiteral = $normalizedDataKeyword.properties.x.enum[0]
     Assert-Hdo ([string]$enumLiteral['$schema'] -eq 'literal' -and [int]$enumLiteral.minItems -eq 1 -and -not $enumLiteral.Contains('type')) 'Claude schema normalization leaves enum data values untouched'
     Assert-Hdo ([int]$normalizedDataKeyword.properties.x.default.minContains -eq 1 -and -not $normalizedDataKeyword.properties.x.default.Contains('type')) 'Claude schema normalization leaves default data values untouched'
+
+    $codexSchemas = @{}
+    foreach ($codexSchemaName in @('task-contract', 'worker-result', 'review-result')) {
+        $normalizedSchemaJson = & $module { param($Path) ConvertTo-HdoCodexJsonSchema $Path } (Join-Path $repositoryRoot "schemas/$codexSchemaName.schema.json")
+        $codexSchemas[$codexSchemaName] = $normalizedSchemaJson | ConvertFrom-Json -AsHashtable -Depth 100
+        Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"|"allOf"|"if"|"then"|"contains"') "Codex-normalized $codexSchemaName schema drops unsupported Structured Outputs keywords"
+        Assert-Hdo ([string]$codexSchemas[$codexSchemaName].properties.schemaVersion.type -eq 'integer') "Codex-normalized $codexSchemaName schema infers the integer const type"
+    }
+    Assert-Hdo ([string]$codexSchemas['review-result'].properties.decision.type -eq 'string') 'Codex schema normalization infers string enum types'
+    Assert-Hdo ($codexSchemas['review-result'].required -contains 'escalationReason') 'Codex review schema requires every root property'
+    Assert-Hdo (@($codexSchemas['review-result'].properties.escalationReason.type) -contains 'null') 'Codex review schema represents the non-escalate reason as null'
+    $codexReviewSchemaPath = Join-Path $testAppData 'codex-review-result.schema.json'
+    $codexSchemas['review-result'] | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $codexReviewSchemaPath -Encoding utf8NoBOM
+    Assert-Hdo ([bool]($validReviewJson | Test-Json -SchemaFile $codexReviewSchemaPath -ErrorAction SilentlyContinue)) 'valid review fixture passes the Codex transport schema'
+
+    $optionalSchemaPath = Join-Path $testAppData 'codex-optional-property.schema.json'
+    '{"type":"object","additionalProperties":false,"properties":{"requiredValue":{"type":"string"},"optionalValue":{"type":"string"}},"required":["requiredValue"]}' |
+        Set-Content -LiteralPath $optionalSchemaPath -Encoding utf8NoBOM
+    $optionalSchemaRejected = $false
+    try { $null = & $module { param($Path) ConvertTo-HdoCodexJsonSchema $Path } $optionalSchemaPath }
+    catch { $optionalSchemaRejected = $_.Exception.Message -match 'requires every object property' }
+    Assert-Hdo $optionalSchemaRejected 'Codex schema normalization fails locally when a property is optional'
+
+    $codexArgumentRunner = [ordered]@{
+        sandbox = 'workspace-write'
+        provider = 'ollama'
+        model = 'local-model'
+        reasoningEffort = 'medium'
+        contextTokens = 32768
+        extraArgs = @()
+    }
+    $codexArguments = @(& $module {
+        param($Runner, $WorkingDirectory, $SchemaPath, $FinalPath)
+        Get-HdoCodexArguments -Runner $Runner -WorkingDirectory $WorkingDirectory -SchemaPath $SchemaPath -FinalPath $FinalPath
+    } $codexArgumentRunner 'C:\worktree' 'C:\artifacts\schema.json' 'C:\artifacts\final.json')
+    Assert-Hdo ($codexArguments -contains '--ignore-user-config' -and $codexArguments -contains '--ignore-rules') 'Codex runner excludes personal configuration and execpolicy rules from unattended runs'
+    Assert-Hdo (($codexArguments -join ' ') -match '--oss --local-provider ollama' -and ($codexArguments -join ' ') -match '--model local-model') 'Codex runner preserves explicit local provider and model routing'
+
+    $codexFailureJsonl = @'
+{"type":"thread.started","thread_id":"test"}
+{"type":"error","message":"{\"error\":{\"code\":\"invalid_json_schema\",\"message\":\"Invalid schema for response_format: schema must have a type key.\"},\"status\":400}"}
+{"type":"turn.failed","error":{"message":"{\"error\":{\"code\":\"invalid_json_schema\",\"message\":\"Invalid schema for response_format: schema must have a type key.\"},\"status\":400}"}}
+'@
+    $codexFailureDetail = & $module {
+        param($Output)
+        Get-HdoCodexFailureDetail $Output 'unrelated warning on stderr'
+    } $codexFailureJsonl
+    Assert-Hdo ($codexFailureDetail -eq 'Invalid schema for response_format: schema must have a type key.') 'Codex failures surface the de-duplicated JSONL error instead of unrelated stderr warnings'
+    $codexToolFailure = & $module {
+        param($Output, $ErrorOutput)
+        Get-HdoCodexFailureDetail $Output $ErrorOutput
+    } '{"type":"turn.failed","error":{"message":"stream disconnected before completion: no user query found in messages"}}' '2026-09-03 ERROR codex_core::tools::router: error=unsupported call: bash'
+    Assert-Hdo ($codexToolFailure -like 'Codex tool router rejected an unsupported call: bash*') 'Codex failures preserve the tool-router root cause before downstream stream errors'
+    $codexFailureFallback = & $module { Get-HdoCodexFailureDetail '' 'plain stderr failure' }
+    Assert-Hdo ($codexFailureFallback -eq 'plain stderr failure') 'Codex failure reporting falls back to stderr when no JSONL error event exists'
 
     $claudeExampleConfig = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath (Join-Path $repositoryRoot 'config/examples/claude-only.json')
     Assert-Hdo ($claudeExampleConfig.resolvedProfile -eq 'claude-only' -and [string]$claudeExampleConfig.steps.fix -eq 'claude-fixer') 'claude-only example overlays the default config into a valid merged configuration'
@@ -462,6 +562,21 @@ Keep the cycle bounded.
     $normalizedRoot = & $module { param($Path) Get-HdoNormalizedFullPath $Path } $fileSystemRoot
     Assert-Hdo ($normalizedRoot -eq [System.IO.Path]::GetFullPath($fileSystemRoot)) 'path normalization preserves a filesystem root separator'
 
+    if ($IsWindows) {
+        $physicalRoot = & $module {
+            param($Path)
+            [HybridDevOrchestrator.Internal.FinalPathResolver]::Resolve($Path)
+        } $repositoryRoot
+        $aliasComparable = & $module { param($Path) Get-HdoComparableFullPath $Path } $repositoryRoot
+        $physicalComparable = & $module { param($Path) Get-HdoComparableFullPath $Path } $physicalRoot
+        Assert-Hdo ($aliasComparable -eq $physicalComparable) 'path comparison treats a Windows path alias and its physical path as identical'
+        $missingAlias = Join-Path $repositoryRoot 'future/child'
+        $missingPhysical = Join-Path $physicalRoot 'future/child'
+        $missingAliasComparable = & $module { param($Path) Get-HdoComparableFullPath $Path } $missingAlias
+        $missingPhysicalComparable = & $module { param($Path) Get-HdoComparableFullPath $Path } $missingPhysical
+        Assert-Hdo ($missingAliasComparable -eq $missingPhysicalComparable) 'path comparison canonicalizes missing descendants through their nearest existing ancestor'
+    }
+
     $reparseRoot = Join-Path $testAppData 'reparse-root'
     $reparseTarget = Join-Path $testAppData 'reparse-target'
     $reparseLink = Join-Path $reparseRoot 'linked-working-directory'
@@ -486,6 +601,10 @@ Keep the cycle bounded.
 
     $redacted = & $module { Protect-HdoText 'token=ghp_abcdefghijklmnopqrstuvwxyz123456 password=secret-value' }
     Assert-Hdo ($redacted -notmatch 'ghp_|secret-value') 'known credential forms are redacted'
+    $emptyRedacted = & $module { Protect-HdoText '' }
+    Assert-Hdo ($emptyRedacted -eq '') 'empty runner output remains a valid redaction input'
+    $emptyHash = & $module { Get-HdoSha256 '' }
+    Assert-Hdo ($emptyHash -eq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') 'an unchanged worktree can hash an empty diff'
 
     $redactedJson = & $module { Protect-HdoText '{"password":"json-secret","api_key":"opaque-value","token":"plain-token"}' }
     Assert-Hdo ($redactedJson -notmatch 'json-secret|opaque-value|plain-token') 'quoted JSON credential values are redacted'

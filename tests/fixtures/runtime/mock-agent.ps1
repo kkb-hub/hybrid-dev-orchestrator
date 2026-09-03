@@ -41,6 +41,7 @@ $result = switch ($schemaName) {
             decision = 'approve'
             summary = 'Mock review approved.'
             missingViewpoints = @()
+            escalationReason = $null
             findings = @()
         }
     }
