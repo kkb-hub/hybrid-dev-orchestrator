@@ -210,7 +210,7 @@ function Invoke-HdoRun {
     if (-not $contractValidation.valid) {
         throw "Issue #$IssueNumber does not satisfy the HDO contract:`n - $($contractValidation.errors -join "`n - ")"
     }
-    $readyAuthorization = Test-HdoReadyLabelAuthorization $config $Repository $IssueNumber ([string]$issue.updatedAt)
+    $readyAuthorization = Test-HdoReadyLabelAuthorization $config $Repository $IssueNumber
     if (-not $readyAuthorization.authorized) { throw "Issue #$IssueNumber ready authorization failed: $($readyAuthorization.reason)" }
     $dependencyValidation = Test-HdoIssueDependencies $config $issueContract
     if (-not $dependencyValidation.resolved) {

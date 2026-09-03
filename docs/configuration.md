@@ -155,7 +155,7 @@ pwsh ./hdo.ps1 run -Issue 123 `
 Codex runner は概ね次を組み立てる。
 
 ~~~text
-codex exec --ephemeral --json --color never
+codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
   --sandbox <sandbox> --cd <worktree>
   [--model <model>]
   [--config model_reasoning_effort="..."]
@@ -166,6 +166,8 @@ codex exec --ephemeral --json --color never
 ~~~
 
 `provider` が `ollama` または `lmstudio` の場合は `--oss --local-provider <provider>` を加える。prompt は stdin で渡す。
+
+HDO が model、provider、sandbox、schema を含む実行契約を組み立てるため、個人の `config.toml` と execpolicy rules は読み込まない。Codex 組み込みおよび repository の instruction は引き続き読み込まれる。
 
 Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter は対応する context-window argument がないため、`contextTokens` を設定すると configuration error になる。MVP の preflight は provider が実際に適用した context 長を照会・保証しないため、provider/CLI が unsupported とした場合は step failure として扱う。
 

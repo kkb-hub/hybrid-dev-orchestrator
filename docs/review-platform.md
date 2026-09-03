@@ -50,6 +50,8 @@ Codex adapter は `--output-schema`、Claude adapter は JSON Schema output、co
 
 Claude adapter は CLI の strict-mode 制約のため、`--json-schema` へ渡す直前に in-memory の transport copy を正規化する（`$schema` / 既定値 `minContains` の除去、`type: "array"` 補完）。これは実行時変換であり、編集可能な copy を生成しない。出力の再検証は canonical schema で行う。
 
+Codex adapter も OpenAI Structured Outputs が受理する JSON Schema subset へ実行時の transport copy を正規化する。型を省略した `const` / `enum` には型を補完し、非対応の composition keyword は transport copy から除く。すべての object field が required であることと `additionalProperties: false` をローカルで確認し、返却後は composition rule を含む canonical schema で再検証する。
+
 同梱した thin-wrapper plugin は schema copy を持たず、repository の `schemas/` を直接参照する。将来 plugin へ schema を同梱する場合も、この source から生成し、version/hash を CI で照合する。配布物の copy は編集元にしない。
 
 ### 3.2 Review input
@@ -81,7 +83,7 @@ root field:
 | `summary` | 空でない summary |
 | `missingViewpoints` | 常に存在する配列 |
 | `findings` | finding 配列 |
-| `escalationReason` | escalate 時に必須 |
+| `escalationReason` | 常に存在し、escalate 時は空でない文字列、それ以外は null |
 
 finding field:
 
@@ -111,7 +113,7 @@ JSON Schema と runtime semantic validation は次を拒否する。
 - indeterminate finding があるのに escalate でない
 - `missingViewpoints` がない
 - missing viewpoint があるのに escalate でない
-- escalate に `escalationReason` がない
+- escalate の `escalationReason` が空または null
 - actionable finding に `requiredAction` がない
 - `runId`、`baseCommit`、`diffHash`、`reviewRound` が orchestrator の期待値と一致しない
 - previous review に存在した finding ID が次 round から消える
@@ -266,6 +268,7 @@ token 削減率だけで成功を判定しない。quality gate が同等以上�
 - request_changes が bounded fix loop へ接続される。
 - fix 上限後に自動継続しない。
 - 同じ review schema を Codex / Claude / command adapter が利用できる。
+- Codex adapter へ渡す schema は Structured Outputs subset 向けの一時 transport copy であり、canonical schema による出力再検証を持つ。
 - Claude adapter へ渡す schema は strict-mode 向けに正規化した transport copy であり、canonical schema による出力再検証と、Claude CLI が正規化済み schema を受理する契約テスト（`tests/test-claude-contract.ps1`）を持つ。
 - `hdo.ps1` を包む薄い Claude Code plugin から各 command を起動できる。
 

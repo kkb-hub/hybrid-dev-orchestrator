@@ -66,7 +66,7 @@ try {
     $stdoutPath = Join-Path $artifactDirectory 'stdout.jsonl'
     $stderrPath = Join-Path $artifactDirectory 'stderr.log'
     $arguments = @(
-        'exec', '--ephemeral', '--json', '--color', 'never',
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules', '--json', '--color', 'never',
         '--sandbox', 'workspace-write', '--cd', $smokeRepository,
         '--oss', '--local-provider', 'ollama', '--model', $Model,
         '--output-last-message', $lastMessagePath,

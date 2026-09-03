@@ -181,7 +181,7 @@ cleanup は run artifact の path が configured root 内で、`git worktree lis
 Codex adapter は非対話 `codex exec` を使う。
 
 ~~~text
-codex exec --ephemeral --json --color never
+codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
   --sandbox <mode> --cd <worktree>
   [--oss --local-provider ollama|lmstudio]
   [--model <id>]
@@ -193,6 +193,8 @@ codex exec --ephemeral --json --color never
 ~~~
 
 prompt は stdin、event stream は raw events/stdout log、last message は schema-validated JSON として保存する。process exit 0、final file、JSON parse、schema validation のすべてを成功条件にする。
+
+個人の Codex `config.toml` と execpolicy rules は読み込まず、HDO の runner contract で provider、model、sandbox、schema を決める。Codex 組み込みおよび repository の instruction はこの隔離の対象外である。
 
 ### 9.2 Claude
 

@@ -160,7 +160,7 @@ profile は `plan`、`implement`、`review`、`fix` の binding を持つ。`pla
 runner type:
 
 - `claude`: 既定。print mode、`--safe-mode`、strict-mode 向けに正規化した JSON Schema output を使用する。
-- `codex`: `codex exec` を非対話実行し、output schema と last message file を使用する。
+- `codex`: `codex exec` を非対話実行し、個人の Codex 設定と execpolicy rules を読み込まず、OpenAI Structured Outputs subset へ正規化した一時 output schema と last message file を使用する。返却後は canonical schema で再検証する。
 - `command`: argument template と stdin/file transport を利用する adapter。stable config として利用する場合は schema と policy の両方を満たす必要がある。
 
 provider:
@@ -213,7 +213,7 @@ Issue、comment、添付、外部リンクは untrusted input である。Issue 
 
 `hdo:ready` と `hdo:skip`、および `hdo:ready` と任意の `hdo:status/*` は同居できない。未知の reserved `hdo:` label は拒否する。
 
-Issue Form は `hdo:ready` を自動付与しない。HDO は最新の ready label event と Issue の `updatedAt` を比較し、ready 付与後に更新された Issue を拒否する。`github.trustedActors` が空の場合、repository の label write permission を trust boundary とする。値がある場合は、最新の ready label actor を allowlist と照合する。
+Issue Form は `hdo:ready` を自動付与しない。HDO は最新の ready label event と GitHub GraphQL の Issue `lastEditedAt` を比較し、ready 付与後にタイトルまたは本文が編集された Issue を拒否する。label 操作でも進む `updatedAt` は承認 freshness の判定に使わない。`github.trustedActors` が空の場合、repository の label write permission を trust boundary とする。値がある場合は、最新の ready label actor を allowlist と照合する。
 
 route label/section は provider や model ID ではなく profile 名を表す。CLI の `-Profile` は Issue route hint より優先する。
 
@@ -340,7 +340,7 @@ fail-safe rule:
 - open blocker/should を含む approve を禁止する。
 - indeterminate finding は escalate を必要とする。
 - `missingViewpoints` は常に存在し、非空なら escalate を必要とする。
-- escalate は `escalationReason` を必要とする。
+- `escalationReason` は常に存在し、escalate では空でない文字列、それ以外では null とする。
 - finding ID は大文字小文字を区別せず各 result 内で一意であり、previous review の ID は解消済みでも次 round へ明示的に持ち越す。消失または改名は拒否する。
 
 `maxFixAttempts` は初回 implement の後に許可する fix 実行回数である。既定値2は、最大で「初回 implement + fix 2回」の3 implementation/review iteration を意味する。上限で open finding が残る場合は `workflow.onMaxFixAttempts` に従って ESCALATED または FAILED とする。

@@ -93,6 +93,160 @@ function ConvertTo-HdoClaudeJsonSchema {
     return ($normalized | ConvertTo-Json -Depth 100 -Compress)
 }
 
+function Get-HdoJsonSchemaValueType {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [bool]) { return 'boolean' }
+    if ($Value -is [byte] -or $Value -is [sbyte] -or $Value -is [int16] -or
+        $Value -is [uint16] -or $Value -is [int32] -or $Value -is [uint32] -or
+        $Value -is [int64] -or $Value -is [uint64]) { return 'integer' }
+    if ($Value -is [single] -or $Value -is [double] -or $Value -is [decimal]) { return 'number' }
+    if ($Value -is [string]) { return 'string' }
+    if ($Value -is [System.Collections.IDictionary]) { return 'object' }
+    if ($Value -is [System.Collections.IEnumerable]) { return 'array' }
+    return $null
+}
+
+function Convert-HdoCodexSchemaNode {
+    param(
+        [AllowNull()]$Node,
+        [bool]$IsSchema = $true
+    )
+
+    if ($Node -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        if (-not $IsSchema) {
+            foreach ($key in $Node.Keys) { $result[[string]$key] = Convert-HdoCodexSchemaNode $Node[$key] $true }
+            return $result
+        }
+
+        # Codex --output-schema uses OpenAI Structured Outputs. Keep only the supported
+        # transport subset here; the unmodified canonical schema is applied again after
+        # generation, so review-only composition rules are not weakened at the boundary.
+        $unsupportedKeywords = @(
+            '$schema', '$id', 'title', 'default', 'examples',
+            'allOf', 'not', 'dependentRequired', 'dependentSchemas', 'if', 'then', 'else',
+            'contains', 'minContains', 'maxContains', 'uniqueItems'
+        )
+        $mapKeywords = @('properties', '$defs', 'definitions')
+        $dataKeywords = @('const', 'enum')
+        foreach ($key in $Node.Keys) {
+            $name = [string]$key
+            if ($name -in $unsupportedKeywords) { continue }
+            $value = $Node[$key]
+            if ($name -in $dataKeywords) { $result[$name] = $value }
+            elseif ($name -in $mapKeywords) { $result[$name] = Convert-HdoCodexSchemaNode $value $false }
+            else { $result[$name] = Convert-HdoCodexSchemaNode $value $true }
+        }
+
+        if (-not $result.Contains('type') -and $result.Contains('const')) {
+            $inferredType = Get-HdoJsonSchemaValueType $result.const
+            if ($inferredType) { $result['type'] = $inferredType }
+        }
+        if (-not $result.Contains('type') -and $result.Contains('enum')) {
+            $enumTypes = @($result.enum | ForEach-Object { Get-HdoJsonSchemaValueType $_ } | Sort-Object -Unique)
+            if ($enumTypes.Count -eq 1 -and $enumTypes[0]) { $result['type'] = $enumTypes[0] }
+        }
+
+        if ([string](Get-HdoValue $result 'type' '') -eq 'object') {
+            if (-not $result.Contains('additionalProperties') -or [bool]$result.additionalProperties) {
+                throw 'Codex structured output object schemas must set additionalProperties to false.'
+            }
+            $propertyNames = if ($result.Contains('properties')) { @($result.properties.Keys) } else { @() }
+            $requiredNames = if ($result.Contains('required')) { @($result.required) } else { @() }
+            $optionalNames = @($propertyNames | Where-Object { $_ -notin $requiredNames })
+            if ($optionalNames.Count -gt 0) {
+                throw "Codex structured output requires every object property: $($optionalNames -join ', ')."
+            }
+        }
+        return $result
+    }
+    if ($Node -is [System.Collections.IEnumerable] -and $Node -isnot [string]) {
+        $items = [object[]]@($Node | ForEach-Object { Convert-HdoCodexSchemaNode $_ $IsSchema })
+        Write-Output -NoEnumerate $items
+        return
+    }
+    return $Node
+}
+
+function ConvertTo-HdoCodexJsonSchema {
+    param([Parameter(Mandatory)][string]$SchemaPath)
+
+    $schema = Read-HdoJsonFile $SchemaPath
+    $normalized = Convert-HdoCodexSchemaNode $schema
+    return ($normalized | ConvertTo-Json -Depth 100 -Compress)
+}
+
+function Get-HdoCodexArguments {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Runner,
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][string]$SchemaPath,
+        [Parameter(Mandatory)][string]$FinalPath
+    )
+
+    # HDO supplies the execution contract. Personal config.toml and execpolicy rules
+    # could otherwise override provider, sandbox, feature, or approval behavior in an
+    # unattended run. Codex still loads its built-in and repository instructions.
+    $arguments = @(
+        'exec', '--ephemeral', '--ignore-user-config', '--ignore-rules',
+        '--json', '--color', 'never', '--sandbox', [string]$Runner.sandbox,
+        '--cd', $WorkingDirectory
+    )
+    $provider = [string](Get-HdoValue $Runner 'provider' 'cloud')
+    if ($provider -in @('ollama', 'lmstudio')) { $arguments += @('--oss', '--local-provider', $provider) }
+    if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
+    if (Get-HdoValue $Runner 'reasoningEffort' '') {
+        $arguments += @('--config', "model_reasoning_effort=`"$([string]$Runner.reasoningEffort)`"")
+    }
+    if (Get-HdoValue $Runner 'contextTokens') {
+        $arguments += @('--config', "model_context_window=$([int]$Runner.contextTokens)")
+    }
+    $arguments += @('--output-schema', $SchemaPath, '--output-last-message', $FinalPath)
+    foreach ($extraArgument in @(Get-HdoValue $Runner 'extraArgs' @())) { $arguments += [string]$extraArgument }
+    $arguments += '-'
+    return $arguments
+}
+
+function Get-HdoCodexFailureDetail {
+    param(
+        [AllowEmptyString()][string]$StandardOutput,
+        [AllowEmptyString()][string]$StandardError
+    )
+
+    $details = [Collections.Generic.List[string]]::new()
+    foreach ($line in @($StandardError -split "`r?`n" | Where-Object { $_.Trim() })) {
+        if ($line -notmatch '(?i)\berror=unsupported call:\s*(?<call>.+?)\s*$') { continue }
+        $message = "Codex tool router rejected an unsupported call: $($Matches.call)"
+        $message = (Protect-HdoText $message).Trim()
+        if ($message -and -not $details.Contains($message)) { $details.Add($message) }
+    }
+    foreach ($line in @($StandardOutput -split "`r?`n" | Where-Object { $_.Trim() })) {
+        try { $event = $line | ConvertFrom-Json -AsHashtable -Depth 50 }
+        catch { continue }
+        $message = if ([string](Get-HdoValue $event 'type' '') -eq 'turn.failed') {
+            [string](Get-HdoValue $event 'error.message' '')
+        }
+        elseif ([string](Get-HdoValue $event 'type' '') -eq 'error') {
+            [string](Get-HdoValue $event 'message' '')
+        }
+        else { '' }
+        if (-not $message) { continue }
+        try {
+            $nested = $message | ConvertFrom-Json -AsHashtable -Depth 20
+            $nestedMessage = [string](Get-HdoValue $nested 'error.message' '')
+            if ($nestedMessage) { $message = $nestedMessage }
+        }
+        catch { }
+        $message = (Protect-HdoText $message).Trim()
+        if ($message -and -not $details.Contains($message)) { $details.Add($message) }
+    }
+    $detail = if ($details.Count -gt 0) { $details -join ' | ' } else { (Protect-HdoText $StandardError).Trim() }
+    if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + '...[truncated]' }
+    return $detail
+}
+
 function Get-HdoClaudeArguments {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Runner,
@@ -149,6 +303,7 @@ function Invoke-HdoAgentStep {
     if (-not $binding.enabled) { throw "Step '$Step' is disabled." }
     $runner = $binding.runner
     $type = [string]$runner.type
+    $agentWorkingDirectory = Get-HdoComparableFullPath $WorkingDirectory
     New-Item -ItemType Directory -Path $ArtifactDirectory -Force | Out-Null
     $promptPath = Join-Path $ArtifactDirectory 'prompt.md'
     # Codex emits a JSONL event stream on stdout; Claude's --output-format json emits a
@@ -167,7 +322,7 @@ function Invoke-HdoAgentStep {
         promptFile = $promptPath
         outputFile = $finalPath
         schemaFile = $schemaPath
-        workingDirectory = $WorkingDirectory
+        workingDirectory = $agentWorkingDirectory
         model = [string](Get-HdoValue $runner 'model' '')
         contextTokens = [string](Get-HdoValue $runner 'contextTokens' '')
         step = $Step
@@ -176,19 +331,10 @@ function Invoke-HdoAgentStep {
     }
 
     if ($type -eq 'codex') {
-        $arguments = @('exec', '--ephemeral', '--json', '--color', 'never', '--sandbox', [string]$runner.sandbox, '--cd', $WorkingDirectory)
-        $provider = [string](Get-HdoValue $runner 'provider' 'cloud')
-        if ($provider -in @('ollama', 'lmstudio')) { $arguments += @('--oss', '--local-provider', $provider) }
-        if (Get-HdoValue $runner 'model' '') { $arguments += @('--model', [string]$runner.model) }
-        if (Get-HdoValue $runner 'reasoningEffort' '') {
-            $arguments += @('--config', "model_reasoning_effort=`"$([string]$runner.reasoningEffort)`"")
-        }
-        if (Get-HdoValue $runner 'contextTokens') {
-            $arguments += @('--config', "model_context_window=$([int]$runner.contextTokens)")
-        }
-        $arguments += @('--output-schema', $schemaPath, '--output-last-message', $finalPath)
-        foreach ($extraArgument in @(Get-HdoValue $runner 'extraArgs' @())) { $arguments += [string]$extraArgument }
-        $arguments += '-'
+        $codexSchemaPath = Join-Path $ArtifactDirectory 'output.schema.json'
+        Set-Content -LiteralPath $codexSchemaPath -Value (ConvertTo-HdoCodexJsonSchema $schemaPath) -Encoding utf8NoBOM
+        $arguments = Get-HdoCodexArguments -Runner $runner -WorkingDirectory $agentWorkingDirectory `
+            -SchemaPath $codexSchemaPath -FinalPath $finalPath
     }
     elseif ($type -eq 'claude') {
         $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson (ConvertTo-HdoClaudeJsonSchema $schemaPath)
@@ -207,7 +353,7 @@ function Invoke-HdoAgentStep {
 
     $environment = Get-HdoSafeEnvironment @(Get-HdoValue $runner 'passEnvironment' @())
     $maximumOutputBytes = 33554432
-    $result = Invoke-HdoProcess -Command $command -Arguments $arguments -WorkingDirectory $WorkingDirectory `
+    $result = Invoke-HdoProcess -Command $command -Arguments $arguments -WorkingDirectory $agentWorkingDirectory `
         -InputText $inputText -TimeoutSeconds ([int]$runner.timeoutSeconds) -Environment $environment `
         -StandardOutputPath $stdoutPath -StandardErrorPath $stderrPath -MaximumOutputBytes $maximumOutputBytes
     Protect-HdoLogFile $stdoutPath $maximumOutputBytes
@@ -216,7 +362,8 @@ function Invoke-HdoAgentStep {
 
     if ($result.exitCode -ne 0) {
         $kind = if ($result.timedOut) { 'timed_out' } else { 'failed' }
-        throw "Agent step '$Step' $kind with exit code $($result.exitCode). $($result.stderr.Trim())"
+        $failureDetail = if ($type -eq 'codex') { Get-HdoCodexFailureDetail $result.stdout $result.stderr } else { $result.stderr.Trim() }
+        throw "Agent step '$Step' $kind with exit code $($result.exitCode). $failureDetail"
     }
 
     # Codex and file-transport command adapters write this file directly. Redact it

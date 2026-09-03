@@ -30,6 +30,32 @@ function Get-HdoNormalizedFullPath {
     return $fullPath
 }
 
+function Get-HdoComparableFullPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $fullPath = Get-HdoNormalizedFullPath $Path
+    if (-not $IsWindows) { return $fullPath }
+
+    # Packaged Windows apps can transparently redirect LocalAppData into the package's
+    # LocalCache. Resolve the nearest existing ancestor by file handle so the configured
+    # alias and Git's physical --show-toplevel path compare as the same location. Missing
+    # descendants are appended without creating anything during configuration checks.
+    $existingPath = $fullPath
+    $missingSegments = [Collections.Generic.List[string]]::new()
+    while (-not (Test-Path -LiteralPath $existingPath)) {
+        $leaf = [IO.Path]::GetFileName($existingPath)
+        $parent = [IO.Path]::GetDirectoryName($existingPath)
+        if (-not $leaf -or -not $parent -or $parent -eq $existingPath) { break }
+        $missingSegments.Insert(0, $leaf)
+        $existingPath = $parent
+    }
+    if (-not (Test-Path -LiteralPath $existingPath)) { return $fullPath }
+    try { $resolvedPath = [HybridDevOrchestrator.Internal.FinalPathResolver]::Resolve($existingPath) }
+    catch { return $fullPath }
+    foreach ($segment in $missingSegments) { $resolvedPath = Join-Path $resolvedPath $segment }
+    return Get-HdoNormalizedFullPath $resolvedPath
+}
+
 function Get-HdoBaseCommit {
     param(
         [Parameter(Mandatory)][string]$RepositoryPath,
@@ -47,8 +73,8 @@ function Assert-HdoWorktreeIntegrity {
     )
 
     $actualRoot = Get-HdoRepositoryRoot $WorktreePath
-    $expectedRoot = Get-HdoNormalizedFullPath $WorktreePath
-    if ((Get-HdoNormalizedFullPath $actualRoot) -ne $expectedRoot) {
+    $expectedRoot = Get-HdoComparableFullPath $WorktreePath
+    if ((Get-HdoComparableFullPath $actualRoot) -ne $expectedRoot) {
         throw "Agent working directory no longer resolves to the expected worktree: $actualRoot"
     }
     $head = Get-HdoBaseCommit $WorktreePath 'HEAD'
@@ -144,8 +170,8 @@ function Test-HdoPathWithinRoot {
         [Parameter(Mandatory)][string]$Root
     )
 
-    $fullPath = Get-HdoNormalizedFullPath $Path
-    $fullRoot = Get-HdoNormalizedFullPath $Root
+    $fullPath = Get-HdoComparableFullPath $Path
+    $fullRoot = Get-HdoComparableFullPath $Root
     $comparison = if ($IsWindows) { [StringComparison]::OrdinalIgnoreCase } else { [StringComparison]::Ordinal }
     return $fullPath.StartsWith($fullRoot + [System.IO.Path]::DirectorySeparatorChar, $comparison)
 }
@@ -174,8 +200,11 @@ function Remove-HdoRunWorktree {
     }
 
     $listed = Invoke-HdoGit @('worktree', 'list', '--porcelain') ([string]$config.repositoryPath) -ThrowOnError
-    $escaped = [regex]::Escape(([System.IO.Path]::GetFullPath($worktreePath) -replace '\\', '/'))
-    if (($listed.stdout -replace '\\', '/') -notmatch "(?m)^worktree $escaped$") {
+    $listedWorktreePath = @($listed.stdout -split "`r?`n" | Where-Object { $_ -like 'worktree *' } |
+        ForEach-Object { $_.Substring('worktree '.Length) } |
+        Where-Object { (Get-HdoComparableFullPath $_) -eq (Get-HdoComparableFullPath $worktreePath) } |
+        Select-Object -First 1)
+    if ($listedWorktreePath.Count -eq 0) {
         throw "Refusing cleanup because Git does not list the target as a worktree: $worktreePath"
     }
     $dirty = Invoke-HdoGit @('status', '--porcelain=v1', '--untracked-files=all') $worktreePath -ThrowOnError
@@ -186,7 +215,7 @@ function Remove-HdoRunWorktree {
     if ($PSCmdlet.ShouldProcess($worktreePath, 'Remove HDO Git worktree')) {
         $arguments = @('worktree', 'remove')
         if ($Force) { $arguments += '--force' }
-        $arguments += $worktreePath
+        $arguments += $listedWorktreePath[0]
         Invoke-HdoGit $arguments ([string]$config.repositoryPath) -TimeoutSeconds 300 -ThrowOnError | Out-Null
         $run['cleanup'] = [ordered]@{ worktreeRemoved = $true; removedAt = Get-HdoUtcTimestamp; forced = [bool]$Force }
         Save-HdoRun $run $artifactPath

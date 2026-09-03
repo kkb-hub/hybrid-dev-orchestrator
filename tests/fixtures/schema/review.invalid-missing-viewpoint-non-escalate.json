@@ -9,6 +9,7 @@
   "missingViewpoints": [
     "security"
   ],
+  "escalationReason": null,
   "findings": [
     {
       "id": "R1-F1",

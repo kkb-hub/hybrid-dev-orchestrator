@@ -7,6 +7,7 @@
   "decision": "approve",
   "summary": "This approval incorrectly leaves a blocker open.",
   "missingViewpoints": [],
+  "escalationReason": null,
   "findings": [
     {
       "id": "R1-F1",

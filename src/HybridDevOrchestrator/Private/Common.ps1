@@ -10,6 +10,47 @@ using System.Threading.Tasks;
 
 namespace HybridDevOrchestrator.Internal
 {
+    public static class FinalPathResolver
+    {
+        private const uint FileFlagBackupSemantics = 0x02000000;
+        private const uint OpenExisting = 3;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(
+            Microsoft.Win32.SafeHandles.SafeFileHandle handle,
+            StringBuilder path,
+            uint pathLength,
+            uint flags);
+
+        public static string Resolve(string path)
+        {
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) return Path.GetFullPath(path);
+            using (Microsoft.Win32.SafeHandles.SafeFileHandle handle = CreateFileW(
+                path, 0, 7, IntPtr.Zero, OpenExisting, FileFlagBackupSemantics, IntPtr.Zero))
+            {
+                if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                StringBuilder buffer = new StringBuilder(32768);
+                uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+                if (length == 0 || length >= buffer.Capacity)
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                string result = buffer.ToString();
+                if (result.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase)) return @"\\" + result.Substring(8);
+                if (result.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase)) return result.Substring(4);
+                return result;
+            }
+        }
+    }
+
     public sealed class StreamCaptureResult
     {
         public long TotalBytes { get; set; }
@@ -550,7 +591,7 @@ function Expand-HdoPath {
 }
 
 function Protect-HdoText {
-    param([AllowNull()][string]$Text)
+    param([AllowNull()][AllowEmptyString()][string]$Text)
 
     if ($null -eq $Text) { return $null }
     $redacted = $Text
@@ -602,7 +643,7 @@ function Protect-HdoObject {
 }
 
 function Get-HdoSha256 {
-    param([Parameter(Mandatory)][string]$Text)
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
 
     $bytes = [Text.Encoding]::UTF8.GetBytes($Text)
     $hash = [Security.Cryptography.SHA256]::HashData($bytes)
