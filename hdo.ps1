@@ -97,9 +97,13 @@ Committed .hdo/config.json is loaded automatically unless IgnoreRepositoryConfig
                 }
                 $stepOverrides[$override.Split('=')[0]] = $Matches.runner
             }
+            $progressAction = {
+                param($Progress)
+                [Console]::Error.WriteLine("HDO_PROGRESS $($Progress | ConvertTo-Json -Compress -Depth 20)")
+            }
             $result = Invoke-HdoRun -IssueNumber $Issue -Pick:$Pick -RepositoryPath $RepositoryPath -Repository $Repository `
                 -ConfigPath $Config -Profile $Profile -StepOverrides $stepOverrides -IgnoreRepositoryConfig:$IgnoreRepositoryConfig `
-                -DryRun:$DryRun -NoWriteBack:$NoWriteBack
+                -DryRun:$DryRun -NoWriteBack:$NoWriteBack -ActivityCallback $progressAction
             if ($Json -or $DryRun) { Write-HdoCliOutput $result }
             else {
                 $worktreePath = if ($result.worktree -and $result.worktree.path) { $result.worktree.path } else { $null }

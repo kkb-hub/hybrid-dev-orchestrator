@@ -10,4 +10,4 @@ Show the stored state of a Hybrid Dev Orchestrator run. The run ID is required; 
 pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" status -RunId <run-id> -Json $ARGUMENTS
 ```
 
-Afterwards, summarize the state, current iteration, the latest review decision and open findings, validation gate results, and the artifact and worktree paths.
+Afterwards, summarize the state, current iteration, the active agent step and last heartbeat when `activity` is present, the latest review decision and open findings, validation gate results, and the artifact and worktree paths.

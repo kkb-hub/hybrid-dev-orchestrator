@@ -41,6 +41,43 @@ try {
         }
     }
 
+    $heartbeatProbe = & $module {
+        param($Root)
+        $events = [Collections.Generic.List[object]]::new()
+        $result = Invoke-HdoProcess -Command 'pwsh' -Arguments @(
+            '-NoProfile',
+            '-File',
+            (Join-Path $Root 'tests/fixtures/runtime/delayed-output.ps1')
+        ) -WorkingDirectory $Root -TimeoutSeconds 10 -ProgressIntervalSeconds 1 -ActivityCallback {
+            param($Event)
+            $events.Add($Event)
+        }
+        return [pscustomobject]@{ result = $result; events = [object[]]$events }
+    } $repositoryRoot
+    if ($heartbeatProbe.result.exitCode -ne 0 -or $heartbeatProbe.result.stdout -ne '{"status":"ok"}') {
+        throw "Expected the delayed process to succeed, got: $($heartbeatProbe.result | ConvertTo-Json -Compress -Depth 10)"
+    }
+    if ($heartbeatProbe.events.Count -lt 1 -or $heartbeatProbe.events[0].type -ne 'process.heartbeat' -or $heartbeatProbe.events[0].elapsedSeconds -lt 1) {
+        throw "Expected at least one bounded process heartbeat, got: $($heartbeatProbe.events | ConvertTo-Json -Compress -Depth 10)"
+    }
+    if ($heartbeatProbe.events[0].Contains('command') -or $heartbeatProbe.events[0].Contains('arguments') -or $heartbeatProbe.events[0].Contains('inputText')) {
+        throw 'Process heartbeat exposed command, argument, or prompt content.'
+    }
+    $closedProgressProbe = & $module {
+        param($Root)
+        Invoke-HdoProcess -Command 'pwsh' -Arguments @(
+            '-NoProfile',
+            '-File',
+            (Join-Path $Root 'tests/fixtures/runtime/delayed-output.ps1')
+        ) -WorkingDirectory $Root -TimeoutSeconds 10 -ProgressIntervalSeconds 1 -ActivityCallback {
+            'callback output must not pollute the process result'
+            throw 'simulated closed progress stream'
+        }
+    } $repositoryRoot
+    if ($closedProgressProbe -isnot [System.Collections.IDictionary] -or $closedProgressProbe.exitCode -ne 0 -or $closedProgressProbe.stdout -ne '{"status":"ok"}') {
+        throw "A failed progress callback changed a successful process result: $($closedProgressProbe | ConvertTo-Json -Compress -Depth 10)"
+    }
+
     $childPidPath = Join-Path $temporaryRoot 'detached-child.pid'
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     $detachedResult = & $module {
@@ -129,7 +166,7 @@ try {
         throw "Expected aggregate untracked diff output to be capped, got: $aggregateError"
     }
 
-    Write-Host 'PASS: stdout/stderr limits and drain timeout bound artifacts, memory, and process lifetime.'
+    Write-Host 'PASS: stdout/stderr limits, progress heartbeat, and drain timeout bound artifacts, memory, and process lifetime.'
 }
 finally {
     $childPidPath = Join-Path $temporaryRoot 'detached-child.pid'

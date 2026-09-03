@@ -1,10 +1,12 @@
 param(
     [Parameter(Mandatory)][string]$SchemaFile,
     [Parameter(Mandatory)][string]$OutputFile,
-    [switch]$InvalidOutput
+    [switch]$InvalidOutput,
+    [ValidateRange(0, 10000)][int]$DelayMilliseconds = 0
 )
 
 $null = [Console]::In.ReadToEnd()
+if ($DelayMilliseconds -gt 0) { Start-Sleep -Milliseconds $DelayMilliseconds }
 if ($InvalidOutput) {
     '{}' | Set-Content -LiteralPath $OutputFile -Encoding utf8NoBOM
     '{}'

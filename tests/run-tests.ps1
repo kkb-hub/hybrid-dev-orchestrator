@@ -396,11 +396,20 @@ Keep the cycle bounded.
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{"type":"object"}'
     } ([ordered]@{ sandbox = 'workspace-write'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; reasoningEffort = 'medium'; extraArgs = @() })
     Assert-Hdo ($ollamaClaudeArguments -notcontains '--json-schema' -and $ollamaClaudeArguments -notcontains '--effort') 'Claude/Ollama route avoids SDK options that reject arbitrary local model IDs'
+    $ollamaToolsIndex = [Array]::IndexOf($ollamaClaudeArguments, '--tools')
+    Assert-Hdo ($ollamaToolsIndex -ge 0 -and $ollamaClaudeArguments[$ollamaToolsIndex + 1] -eq 'Read,Write,Edit,Glob,Grep') 'Claude/Ollama implementation exposes only bounded file tools and structurally removes shell execution'
+    $ollamaReadOnlyArguments = & $module {
+        param($Runner)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{"type":"object"}'
+    } ([ordered]@{ sandbox = 'read-only'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; extraArgs = @() })
+    $ollamaReadOnlyToolsIndex = [Array]::IndexOf($ollamaReadOnlyArguments, '--tools')
+    Assert-Hdo ($ollamaReadOnlyToolsIndex -ge 0 -and $ollamaReadOnlyArguments[$ollamaReadOnlyToolsIndex + 1] -eq 'Read,Glob,Grep') 'Claude/Ollama read-only runner does not expose file-editing tools'
     $ollamaClaudeInput = & $module {
         param($Runner)
         Get-HdoClaudeInputText -Runner $Runner -Prompt 'work' -SchemaJson '{"type":"object"}'
     } ([ordered]@{ provider = 'ollama' })
     Assert-Hdo ($ollamaClaudeInput -match 'work' -and $ollamaClaudeInput -match 'Return only one JSON object' -and $ollamaClaudeInput -match '"type":"object"') 'Claude/Ollama route embeds the transport schema into the local prompt'
+    Assert-Hdo ($ollamaClaudeInput -match 'Do not use a shell' -and $ollamaClaudeInput -match 'HDO runs trusted validation gates') 'Claude/Ollama prompt keeps shell and validation work in the orchestrator'
     $ollamaClaudeEnvironment = & $module {
         param($Runner)
         Get-HdoRunnerEnvironment -Runner $Runner
@@ -523,6 +532,19 @@ Keep the cycle bounded.
     Assert-Hdo ($plainResultText -eq 'plain text') 'Claude envelope conversion returns string results as-is'
     $structuredResultText = & $module { ConvertFrom-HdoClaudeOutput '{"type":"result","result":"ignored","structured_output":{"schemaVersion":1}}' }
     Assert-Hdo (($structuredResultText | ConvertFrom-Json).schemaVersion -eq 1) 'Claude envelope conversion prefers structured_output over result'
+
+    $claudeFailureEnvelope = @'
+{"is_error":true,"terminal_reason":"api_error","result":"API Error: response exceeded the output token maximum.","permission_denials":[{"tool_name":"Bash"},{"tool_name":"Bash"}]}
+'@
+    $claudeFailureDetail = & $module {
+        param($Output, $ErrorOutput)
+        Get-HdoClaudeFailureDetail $Output $ErrorOutput
+    } $claudeFailureEnvelope '[claude-code:unrecognized_model] local-model'
+    Assert-Hdo ($claudeFailureDetail -like 'API Error: response exceeded*') 'Claude failures prefer the result envelope root cause over a misleading stderr warning'
+    Assert-Hdo ($claudeFailureDetail -match 'terminal_reason: api_error' -and $claudeFailureDetail -match '2 permission denial\(s\): Bash') 'Claude failures retain terminal reason and permission-denial context'
+    Assert-Hdo ($claudeFailureDetail -match 'stderr: \[claude-code:unrecognized_model\]') 'Claude failures retain stderr as secondary diagnostic context'
+    $claudeFailureFallback = & $module { Get-HdoClaudeFailureDetail '' 'plain stderr failure' }
+    Assert-Hdo ($claudeFailureFallback -eq 'stderr: plain stderr failure') 'Claude failure reporting falls back to stderr when no envelope is available'
 
     $contextTokenExpansion = & $module {
         Expand-HdoArgumentTemplate '--context={contextTokens}' ([ordered]@{ contextTokens = 8192 })
@@ -718,7 +740,9 @@ Keep the cycle bounded.
             '-SchemaFile',
             '{schemaFile}',
             '-OutputFile',
-            '{outputFile}'
+            '{outputFile}',
+            '-DelayMilliseconds',
+            '1500'
         )
     }
     $runnerConfig = Copy-HdoObject $config
@@ -727,13 +751,31 @@ Keep the cycle bounded.
     $tempRoot = Join-Path $repositoryRoot "test-results/runtime-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
     try {
-        $run = [ordered]@{ id = 'test-run'; state = 'PLANNING'; iteration = 0 }
-        $agentResult = & $module {
+        $run = [ordered]@{
+            schemaVersion = 1
+            id = 'test-run'
+            state = 'PLANNING'
+            iteration = 0
+            createdAt = '2026-09-04T00:00:00.0000000+00:00'
+            updatedAt = '2026-09-04T00:00:00.0000000+00:00'
+            artifactPath = $tempRoot
+        }
+        $trackedAgent = & $module {
             param($RunnerConfig, $Run, $WorkingDirectory, $ArtifactDirectory)
-            Invoke-HdoAgentStep $RunnerConfig $Run 'plan' 0 $WorkingDirectory 'mock prompt' $ArtifactDirectory 'task-contract'
+            $events = [Collections.Generic.List[object]]::new()
+            $result = Invoke-HdoAgentStep $RunnerConfig $Run 'plan' 0 $WorkingDirectory 'mock prompt' $ArtifactDirectory 'task-contract' -ProgressIntervalSeconds 1 -ActivityCallback {
+                param($Event)
+                $events.Add($Event)
+            }
+            return [pscustomobject]@{ result = $result; events = [object[]]$events; activity = $Run.activity }
         } $runnerConfig $run $repositoryRoot $tempRoot
+        $agentResult = $trackedAgent.result
         Assert-Hdo ($agentResult.status -eq 'succeeded') 'generic command runner accepts prompt on stdin and returns structured output'
         Assert-Hdo ($agentResult.output.schemaVersion -eq 1) 'generic command runner output is schema validated'
+        Assert-Hdo ($trackedAgent.events.Count -ge 1 -and $trackedAgent.events[0].type -eq 'agent.progress' -and $trackedAgent.events[0].phase -eq 'started' -and $trackedAgent.events[0].runId -eq 'test-run') 'agent progress exposes the run ID before the process completes'
+        Assert-Hdo (@($trackedAgent.events | Where-Object phase -eq 'heartbeat').Count -ge 1) 'agent progress persists and emits a heartbeat while the process is running'
+        $storedRun = Get-Content -LiteralPath (Join-Path $tempRoot 'run.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 100
+        Assert-Hdo ($null -eq $trackedAgent.activity -and $null -eq $storedRun.activity) 'agent activity is cleared from memory and durable run state after process completion'
 
         $invalidRunner = Copy-HdoObject $mockRunner
         $invalidRunner.extraArgs += '-InvalidOutput'
@@ -772,6 +814,23 @@ Keep the cycle bounded.
         Assert-Hdo ($claudeStepResult.output.objective -eq 'Implement the normalized issue delivery cycle.') 'Claude adapter final output comes from structured_output'
         $claudeEnvelopeArtifact = [string]$claudeStepResult.artifacts.events
         Assert-Hdo (([IO.Path]::GetFileName($claudeEnvelopeArtifact) -eq 'envelope.json') -and (Test-Path -LiteralPath $claudeEnvelopeArtifact -PathType Leaf)) 'Claude adapter stores its single JSON envelope as envelope.json instead of events.jsonl'
+
+        $claudeFailureRunner = Copy-HdoObject $claudeMockRunner
+        $claudeFailureRunner.command = Join-Path $repositoryRoot 'tests/fixtures/runtime/mock-claude-failure.cmd'
+        $claudeFailureRunnerConfig = Copy-HdoObject $claudeRunnerConfig
+        $claudeFailureRunnerConfig.runners['mock-claude-failure'] = $claudeFailureRunner
+        $claudeFailureRunnerConfig.steps.plan = 'mock-claude-failure'
+        $claudeFailureArtifact = Join-Path $tempRoot 'claude-failure'
+        $claudeFailureMessage = ''
+        try {
+            $null = & $module {
+                param($RunnerConfig, $Run, $WorkingDirectory, $ArtifactDirectory)
+                Invoke-HdoAgentStep $RunnerConfig $Run 'plan' 0 $WorkingDirectory 'mock prompt' $ArtifactDirectory 'task-contract'
+            } $claudeFailureRunnerConfig $run $repositoryRoot $claudeFailureArtifact
+        }
+        catch { $claudeFailureMessage = $_.Exception.Message }
+        Assert-Hdo ($claudeFailureMessage -match 'API Error: response exceeded the output token maximum\..*terminal_reason: api_error.*stderr: \[claude-code:unrecognized_model\]') 'Claude adapter reports the envelope root cause before secondary stderr on a failed process'
+        Assert-Hdo (Test-Path -LiteralPath (Join-Path $claudeFailureArtifact 'envelope.json') -PathType Leaf) 'Claude adapter preserves the failure envelope artifact before throwing'
     }
     finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }

@@ -196,6 +196,8 @@ prompt は stdin で渡す。stdout の result envelope（単一 JSON object）�
 - **`allowedTools`**: permission allowlist（`--allowedTools`）として渡す。利用可能な組み込み tool 集合の限定（`--tools`）ではない。
 - **認証**: HDO は runner process から `ANTHROPIC_API_KEY` と、名前が `TOKEN` / `SECRET` / `PASSWORD` / `API_KEY` で終わる環境変数（`CLAUDE_CODE_OAUTH_TOKEN` を含む）を既定で除外する。`claude` の OAuth login（`~/.claude` の credential store）はそのまま動作する。環境変数で認証する場合は、当該 runner の `passEnvironment` へ `ANTHROPIC_API_KEY` または `CLAUDE_CODE_OAUTH_TOKEN` を明示追加する（sensitive 名として warning が出る）。
 - **Ollama route**: `provider: ollama` では adapter が `ANTHROPIC_BASE_URL` を loopback の `http://127.0.0.1:11434` に固定し、非secretの local token、空の API key、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を設定する。Anthropic endpoint、OAuth login、Claude 利用枠は使用しない。repository config から endpoint や環境変数を差し替えることはできない。
+- **Ollama tool boundary**: local worker には `Read` / `Write` / `Edit` / `Glob` / `Grep`（read-only runner は読み取り3種）だけを `--tools` で公開する。shell、git、npm、validation gate は worker に実行させず、trusted project contract を持つ HDO 本体が実行する。これにより、local model が plan 中の検査手順を反復して unattended permission denial と token 消費を起こす経路を閉じる。
+- **失敗 envelope**: Claude が非ゼロ終了しても stdout の JSON envelope を解析し、`result`、`terminal_reason`、permission denial を一次診断として保持する。stderr は二次情報として併記し、model warning が実際の API error を覆い隠さないようにする。
 - `contextTokens` は設定できず、configuration error になる。
 - **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
 
@@ -299,7 +301,7 @@ ollama list
 
 `ollama serve` は foreground process なので、すでに service として起動している場合は重ねて起動しない。
 
-実providerを通常のCIから呼ばない opt-in smoke は次で実行する。隔離した一時Git repositoryを作り、plan/reviewがCodex cloudのまま、implement/fixだけがClaude CLI harness経由のOllamaであることを検査してから、指定modelにファイル作成、byte単位の検証、構造化worker resultの返却まで実行する。一時directoryは成功・失敗のどちらでも削除する。
+実providerを通常のCIから呼ばない opt-in smoke は次で実行する。隔離した一時Git repositoryを作り、plan/reviewがCodex cloudのまま、implement/fixだけがClaude CLI harness経由のOllamaであることを検査してから、指定modelにファイル作成、byte単位の検証、構造化worker resultの返却まで実行する。`test-results/ollama-smoke-last-result.json` にはrunning heartbeat、process exit、検証結果、終了時刻をatomicに保存するため、親のIPC切断後も結果を判定できる。一時directoryは成功・失敗のどちらでも削除し、raw artifactも必要な調査では明示的に `-KeepArtifacts` を付ける。receiptの保存先は `-ResultPath` で変更できる。
 
 ~~~powershell
 pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run

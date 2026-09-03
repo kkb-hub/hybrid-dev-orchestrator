@@ -264,6 +264,14 @@ function Get-HdoClaudeArguments {
     # Ollama model IDs before inference. Local output is constrained in the prompt and
     # revalidated against the same canonical schema after the process returns.
     if ($provider -ne 'ollama') { $arguments += @('--json-schema', $SchemaJson) }
+    if ($provider -eq 'ollama') {
+        # Local models are more likely to follow an over-broad task plan literally and
+        # retry shell probes that an unattended acceptEdits session cannot approve.
+        # HDO owns git inspection and validation gates, so the local worker needs only
+        # bounded repository-reading and file-editing tools.
+        $localTools = if ($Runner.sandbox -eq 'read-only') { @('Read', 'Glob', 'Grep') } else { @('Read', 'Write', 'Edit', 'Glob', 'Grep') }
+        $arguments += @('--tools', ($localTools -join ','))
+    }
     if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
     # The CLI matches --effort values case-sensitively and silently falls back on a
     # mismatch, so pass the canonical lowercase form regardless of config casing.
@@ -286,7 +294,12 @@ function Get-HdoClaudeInputText {
     )
 
     if ([string](Get-HdoValue $Runner 'provider' 'cloud') -ne 'ollama') { return $Prompt }
-    return "$Prompt`n`nReturn only one JSON object matching this JSON Schema. Do not wrap it in markdown fences or add prose:`n$SchemaJson"
+    $localConstraints = @(
+        'Local Ollama worker constraints:',
+        '- Do not use a shell or attempt git, npm, build, or validation commands. HDO runs trusted validation gates after this step.',
+        '- Use only the available file-reading and file-editing tools, make the requested repository changes directly, and stop when they are complete.'
+    ) -join "`n"
+    return "$Prompt`n`n$localConstraints`n`nReturn only one JSON object matching this JSON Schema. Do not wrap it in markdown fences or add prose:`n$SchemaJson"
 }
 
 function Get-HdoRunnerEnvironment {
@@ -322,6 +335,42 @@ function ConvertFrom-HdoClaudeOutput {
     return ($envelope | ConvertTo-Json -Depth 100 -Compress)
 }
 
+function Get-HdoClaudeFailureDetail {
+    param(
+        [AllowEmptyString()][string]$StandardOutput,
+        [AllowEmptyString()][string]$StandardError
+    )
+
+    $details = [Collections.Generic.List[string]]::new()
+    if ($StandardOutput.Trim()) {
+        try {
+            $envelope = $StandardOutput | ConvertFrom-Json -AsHashtable -Depth 100
+            $resultValue = Get-HdoValue $envelope 'result'
+            if ($null -ne $resultValue) {
+                $resultText = if ($resultValue -is [string]) { $resultValue } else { $resultValue | ConvertTo-Json -Compress -Depth 50 }
+                $resultText = (Protect-HdoText $resultText).Trim()
+                if ($resultText) { $details.Add($resultText) }
+            }
+            $terminalReason = [string](Get-HdoValue $envelope 'terminal_reason' '')
+            if ($terminalReason) { $details.Add("terminal_reason: $((Protect-HdoText $terminalReason).Trim())") }
+            $permissionDenials = @(Get-HdoValue $envelope 'permission_denials' @())
+            if ($permissionDenials.Count -gt 0) {
+                $deniedTools = @($permissionDenials | ForEach-Object { [string](Get-HdoValue $_ 'tool_name' '') } | Where-Object { $_ } | Select-Object -Unique)
+                $denialDetail = "$($permissionDenials.Count) permission denial(s)"
+                if ($deniedTools.Count -gt 0) { $denialDetail += ": $($deniedTools -join ', ')" }
+                $details.Add($denialDetail)
+            }
+        }
+        catch { }
+    }
+
+    $stderrDetail = (Protect-HdoText $StandardError).Trim()
+    if ($stderrDetail) { $details.Add("stderr: $stderrDetail") }
+    $detail = if ($details.Count -gt 0) { $details -join ' | ' } else { 'Claude returned no failure detail.' }
+    if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + '...[truncated]' }
+    return $detail
+}
+
 function Invoke-HdoAgentStep {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Config,
@@ -331,7 +380,9 @@ function Invoke-HdoAgentStep {
         [Parameter(Mandatory)][string]$WorkingDirectory,
         [Parameter(Mandatory)][string]$Prompt,
         [Parameter(Mandatory)][string]$ArtifactDirectory,
-        [Parameter(Mandatory)][string]$OutputSchema
+        [Parameter(Mandatory)][string]$OutputSchema,
+        [scriptblock]$ActivityCallback,
+        [ValidateRange(1, 3600)][int]$ProgressIntervalSeconds = 30
     )
 
     $binding = Get-HdoStepBinding $Config $Step
@@ -390,16 +441,85 @@ function Invoke-HdoAgentStep {
 
     $environment = Get-HdoRunnerEnvironment -Runner $runner
     $maximumOutputBytes = 33554432
-    $result = Invoke-HdoProcess -Command $command -Arguments $arguments -WorkingDirectory $agentWorkingDirectory `
-        -InputText $inputText -TimeoutSeconds ([int]$runner.timeoutSeconds) -Environment $environment `
-        -StandardOutputPath $stdoutPath -StandardErrorPath $stderrPath -MaximumOutputBytes $maximumOutputBytes
+    $activityArtifactPath = [string](Get-HdoValue $Run 'artifactPath' '')
+    $activityStartedAt = [DateTimeOffset]::UtcNow
+    $Run['activity'] = [ordered]@{
+        kind = 'agent'
+        state = [string]$Run.state
+        step = $Step
+        iteration = $Iteration
+        runner = [string]$binding.runnerName
+        provider = [string](Get-HdoValue $runner 'provider' 'cloud')
+        startedAt = $activityStartedAt.ToString('o')
+        lastHeartbeatAt = $activityStartedAt.ToString('o')
+        elapsedSeconds = 0
+    }
+    if ($activityArtifactPath -and (Test-Path -LiteralPath $activityArtifactPath -PathType Container)) {
+        Save-HdoRun $Run $activityArtifactPath
+    }
+    Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
+        type = 'agent.progress'
+        phase = 'started'
+        at = $activityStartedAt.ToString('o')
+        runId = [string]$Run.id
+        state = [string]$Run.state
+        step = $Step
+        iteration = $Iteration
+        runner = [string]$binding.runnerName
+        artifactPath = $activityArtifactPath
+        elapsedSeconds = 0
+    })
+    # Keep the outer callback under a distinct name. Invoke-HdoProcess also has an
+    # ActivityCallback parameter; resolving that name dynamically from this nested
+    # scriptblock would call the process callback recursively.
+    $agentActivityCallback = $ActivityCallback
+    $processProgressAction = {
+        param($ProcessProgress)
+        $heartbeatAt = [string]$ProcessProgress.at
+        $elapsedSeconds = [int]$ProcessProgress.elapsedSeconds
+        $Run['activity']['lastHeartbeatAt'] = $heartbeatAt
+        $Run['activity']['elapsedSeconds'] = $elapsedSeconds
+        if ($activityArtifactPath -and (Test-Path -LiteralPath $activityArtifactPath -PathType Container)) {
+            Save-HdoRun $Run $activityArtifactPath
+        }
+        Invoke-HdoProgressAction $agentActivityCallback ([ordered]@{
+            type = 'agent.progress'
+            phase = 'heartbeat'
+            at = $heartbeatAt
+            runId = [string]$Run.id
+            state = [string]$Run.state
+            step = $Step
+            iteration = $Iteration
+            runner = [string]$binding.runnerName
+            artifactPath = $activityArtifactPath
+            elapsedSeconds = $elapsedSeconds
+        })
+    }
+    try {
+        $result = Invoke-HdoProcess -Command $command -Arguments $arguments -WorkingDirectory $agentWorkingDirectory `
+            -InputText $inputText -TimeoutSeconds ([int]$runner.timeoutSeconds) -Environment $environment `
+            -StandardOutputPath $stdoutPath -StandardErrorPath $stderrPath -MaximumOutputBytes $maximumOutputBytes `
+            -ActivityCallback $processProgressAction -ProgressIntervalSeconds $ProgressIntervalSeconds
+    }
+    finally {
+        $Run['activity'] = $null
+        if ($activityArtifactPath -and (Test-Path -LiteralPath $activityArtifactPath -PathType Container)) {
+            Save-HdoRun $Run $activityArtifactPath
+        }
+    }
     Protect-HdoLogFile $stdoutPath $maximumOutputBytes
     Protect-HdoLogFile $stderrPath $maximumOutputBytes
     [IO.File]::Copy($stdoutPath, $eventsPath, $true)
 
     if ($result.exitCode -ne 0) {
         $kind = if ($result.timedOut) { 'timed_out' } else { 'failed' }
-        $failureDetail = if ($type -eq 'codex') { Get-HdoCodexFailureDetail $result.stdout $result.stderr } else { $result.stderr.Trim() }
+        $failureDetail = if ($type -eq 'codex') {
+            Get-HdoCodexFailureDetail $result.stdout $result.stderr
+        }
+        elseif ($type -eq 'claude') {
+            Get-HdoClaudeFailureDetail (Read-HdoBoundedTextFile $stdoutPath $maximumOutputBytes) $result.stderr
+        }
+        else { $result.stderr.Trim() }
         throw "Agent step '$Step' $kind with exit code $($result.exitCode). $failureDetail"
     }
 

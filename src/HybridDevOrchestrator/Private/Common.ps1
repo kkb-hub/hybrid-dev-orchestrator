@@ -683,6 +683,20 @@ function Get-HdoSafeEnvironment {
     return $environment
 }
 
+function Invoke-HdoProgressAction {
+    param(
+        [AllowNull()][scriptblock]$Action,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Event
+    )
+
+    if (-not $Action) { return }
+    try { $null = & $Action (Protect-HdoObject $Event) }
+    catch {
+        # Progress is an observability channel. A closed parent stream must not turn a
+        # process that is still producing durable artifacts into a failed HDO run.
+    }
+}
+
 function Invoke-HdoProcess {
     param(
         [Parameter(Mandatory)][string]$Command,
@@ -696,6 +710,8 @@ function Invoke-HdoProcess {
         [ValidateRange(1024, 1073741824)][long]$MaximumOutputBytes = 33554432,
         [ValidateRange(1024, 1048576)][int]$OutputTailBytes = 65536,
         [ValidateRange(1, 60)][int]$OutputDrainSeconds = 2,
+        [ValidateRange(0, 3600)][int]$ProgressIntervalSeconds = 30,
+        [scriptblock]$ActivityCallback,
         [switch]$ThrowOnError
     )
 
@@ -725,7 +741,7 @@ function Invoke-HdoProcess {
     if (-not $process.Start()) { throw "Failed to start command: $Command" }
 
     try {
-        $capture = [HybridDevOrchestrator.Internal.BoundedProcessCapture]::CaptureAsync(
+        $captureTask = [HybridDevOrchestrator.Internal.BoundedProcessCapture]::CaptureAsync(
             $process,
             $InputText,
             $(if ($StandardOutputPath) { [IO.Path]::GetFullPath($StandardOutputPath) } else { $null }),
@@ -734,7 +750,22 @@ function Invoke-HdoProcess {
             $OutputTailBytes,
             $TimeoutSeconds,
             $OutputDrainSeconds
-        ).GetAwaiter().GetResult()
+        )
+        if ($ActivityCallback -and $ProgressIntervalSeconds -gt 0) {
+            while (-not $captureTask.IsCompleted) {
+                try { $completed = $captureTask.Wait([TimeSpan]::FromSeconds($ProgressIntervalSeconds)) }
+                catch { break }
+                if ($completed) { break }
+                $now = [DateTimeOffset]::UtcNow
+                Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
+                    type = 'process.heartbeat'
+                    at = $now.ToString('o')
+                    startedAt = $startedAt.ToString('o')
+                    elapsedSeconds = [int][Math]::Floor(($now - $startedAt).TotalSeconds)
+                })
+            }
+        }
+        $capture = $captureTask.GetAwaiter().GetResult()
     }
     finally { $process.Dispose() }
 

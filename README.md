@@ -215,11 +215,13 @@ pwsh -NoProfile -File $hdo run -Issue $issue `
 
 provider/model の暗黙 fallback はありません。選択した runner が使えない場合、別 runner へ切り替えず preflight または当該 step で停止します。
 
-Ollama 0.33.2以降と指定modelを導入済みのlocal hostでは、実providerへ1回だけ送るopt-in smokeも実行できます。通常のtest suite/CIからは実行されません。
+Ollama 0.33.2以降と指定modelを導入済みのlocal hostでは、実providerへ1回だけ送るopt-in smokeも実行できます。通常のtest suite/CIからは実行されません。実行状態と最終結果は `test-results/ollama-smoke-last-result.json` にatomicに保存されるため、呼び出し元のIPCや待機turnが先に終了しても成否を回収できます。
 
 ```powershell
 pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
 ```
+
+一時repositoryとraw envelopeも診断用に残す場合は `-KeepArtifacts` を付けます。保存先receiptを変える場合は `-ResultPath <path>` を指定します。
 
 ## CLI
 
@@ -248,7 +250,7 @@ pwsh -NoProfile -File $hdo help
 - worktree: `%LOCALAPPDATA%\hdo\worktrees\<run-id>`
 - artifact: `%LOCALAPPDATA%\hdo\runs\<run-id>`
 
-run ID は実行結果に表示されます。
+full run は作成直後に `HDO_PROGRESS` JSONをstderrへ出し、run ID とartifact pathを表示します。agent subprocessの待機中も30秒ごとに同じchannelへheartbeatを出します。最終 `-Json` resultはstdoutだけへ出すため、機械的なJSON consumerを壊しません。呼び出し元のIPCや待機turnが途中で失われた場合は、同じIssueを再実行せず、最初のprogress recordのrun IDで保存済みstateを確認します。
 
 ```powershell
 pwsh -NoProfile -File $hdo status -RunId '<run-id>' `

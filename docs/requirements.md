@@ -120,6 +120,8 @@ pwsh ./hdo.ps1 cleanup -RunId <id> [-Force] [-WhatIf]
 pwsh ./hdo.ps1 labels [-Repository owner/repo] [-Apply] [-WhatIf]
 ~~~
 
+full `run` はartifact作成直後にrun IDとartifact pathを、agent process待機中は30秒間隔のheartbeatをstderrの `HDO_PROGRESS` JSON recordとして出す。`-Json` の最終resultはstdoutに限定する。progress channelの切断はrunの失敗条件にせず、呼び出し元は取得済みrun IDで `status` から保存済みstateを回収できなければならない。
+
 ### 5.1 Claude Code plugin
 
 本 repository は Claude Code plugin としても利用できる。`.claude-plugin/plugin.json` と `commands/` は `hdo.ps1` の各 command を包む薄い層であり、orchestration logic を複製しない。plugin から実行しても、設定・schema・validation の正典は本 repository の CLI 実装のままである。schema を含む配布物は repository の `schemas/` を single source とし、編集元となる copy を作らない。
@@ -374,7 +376,7 @@ final artifact:
 - `final/diff.patch`
 - `final/summary.json`
 
-FAILED でも作成済み artifact と `run.json` の error を保存する。prompt/log/output には Issue や source diff が含まれるため、artifact root の access control は利用者の責任で設定する。
+FAILED でも作成済み artifact と `run.json` の error を保存する。agent processの実行中は `run.json.activity` にcontent-freeなstep、iteration、runner、開始時刻、最終heartbeat、経過秒を保存し、process終了後はnullに戻す。prompt/log/output には Issue や source diff が含まれるため、artifact root の access control は利用者の責任で設定する。
 
 ## 14. Security / privacy
 
@@ -390,6 +392,7 @@ HDO は次を実装する。
 - worktree path と cleanup target を configured root に制限する。
 - validation working directory の junction/symbolic-link boundary を拒否する。
 - dangerous bypass argument を拒否する。
+- progress/heartbeatへcommand argument、prompt、stdout、stderrを含めない。
 
 ただし、`workerPolicy.networkAccess`、forbidden command、protected path は project policy と prompt の一部であり、HDO の process layer 自体が全 adapter または validation command に OS-level firewall、filesystem isolation、syscall interception を提供するわけではない。validation cwd の reparse-point 検査は process start 前の point-in-time check で、gate が引数や source 内の別 path を辿ることまでは制約しない。実効的な強制は Codex/Claude の sandbox と、low-privilege account、VM/container、firewall 等の host policy にも依存する。
 
@@ -419,6 +422,8 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 - AC-20 commit 済み `.hdo/config.json` を制限付き schema で自動読込し、未 commit file、command/environment 注入、worktree snapshot 不一致を fail closed で拒否する。
 - AC-21 明示 `-Config` の単一・複数 ordered overlay と `-IgnoreRepositoryConfig` を CLI から利用でき、既存 repository に設定がない場合の挙動を変えない。
 - AC-22 実Ollamaを通常CIから呼ばず、明示 `-Run` のlocal smokeでcloud parent routing、指定local modelへの実応答、隔離repositoryの無変更を確認できる。
+- AC-23 full runがrun IDをprocess待機前に通知し、content-free heartbeatとatomicな `run.json.activity` を更新し、親のprogress channel切断をrun失敗へ変換しない。
+- AC-24 Ollama smokeが親の待機turnと独立したreceiptへprocess exitと最終検証結果を保存する。
 
 ## 16. Post-MVP
 

@@ -185,7 +185,8 @@ function Invoke-HdoRun {
         [System.Collections.IDictionary]$StepOverrides = @{},
         [switch]$IgnoreRepositoryConfig,
         [switch]$DryRun,
-        [switch]$NoWriteBack
+        [switch]$NoWriteBack,
+        [scriptblock]$ActivityCallback
     )
 
     $repositoryRoot = Get-HdoRepositoryRoot $RepositoryPath
@@ -263,6 +264,13 @@ function Invoke-HdoRun {
     }
     Save-HdoRun $run $artifactPath
     Add-HdoRunEvent $artifactPath ([ordered]@{ type = 'run.created'; runId = $runId })
+    Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
+        type = 'run.created'
+        at = Get-HdoUtcTimestamp
+        runId = $runId
+        state = [string]$run.state
+        artifactPath = $artifactPath
+    })
     Write-HdoJsonFile (Join-Path $artifactPath 'issue.raw.json') $issue
     Write-HdoJsonFile (Join-Path $artifactPath 'issue.contract.json') $issueContract
     Write-HdoJsonFile (Join-Path $artifactPath 'execution-plan.json') $executionPlan
@@ -302,7 +310,7 @@ function Invoke-HdoRun {
         if ($planBinding.enabled) {
             Set-HdoRunState $run 'PLANNING' $artifactPath 'Read-only planning step started.'
             $planStep = Invoke-HdoAgentStep $config $run 'plan' 0 ([string]$worktree.path) `
-                (New-HdoPlanPrompt $issueContract $projectContract) (Join-Path $artifactPath 'plan') 'task-contract'
+                (New-HdoPlanPrompt $issueContract $projectContract) (Join-Path $artifactPath 'plan') 'task-contract' -ActivityCallback $ActivityCallback
             $taskContract = $planStep.output
             Assert-HdoWorktreeIntegrity ([string]$worktree.path) ([string]$worktree.baseCommit) | Out-Null
             $planningDiff = Get-HdoDiff ([string]$worktree.path) ([string]$worktree.baseCommit)
@@ -330,11 +338,11 @@ function Invoke-HdoRun {
 
             if ($run.iteration -eq 1) {
                 $workerStep = Invoke-HdoAgentStep $config $run 'implement' $run.iteration ([string]$worktree.path) `
-                    (New-HdoImplementationPrompt $issueContract $taskContract $projectContract $run.iteration) (Join-Path $iterationPath 'implement') 'worker-result'
+                    (New-HdoImplementationPrompt $issueContract $taskContract $projectContract $run.iteration) (Join-Path $iterationPath 'implement') 'worker-result' -ActivityCallback $ActivityCallback
             }
             else {
                 $workerStep = Invoke-HdoAgentStep $config $run 'fix' $run.iteration ([string]$worktree.path) `
-                    (New-HdoFixPrompt $issueContract $taskContract $projectContract $previousReview $previousValidation $run.iteration) (Join-Path $iterationPath 'fix') 'worker-result'
+                    (New-HdoFixPrompt $issueContract $taskContract $projectContract $previousReview $previousValidation $run.iteration) (Join-Path $iterationPath 'fix') 'worker-result' -ActivityCallback $ActivityCallback
             }
 
             Assert-HdoWorktreeIntegrity ([string]$worktree.path) ([string]$worktree.baseCommit) | Out-Null
@@ -380,7 +388,7 @@ function Invoke-HdoRun {
             Set-HdoRunState $run 'REVIEWING' $artifactPath 'Read-only structured review started.'
             if ($writeBack) { Set-HdoIssuePhaseBestEffort $config $run 'github.labels.review' 'hdo:status/review' $artifactPath }
             $reviewStep = Invoke-HdoAgentStep $config $run 'review' $run.iteration ([string]$worktree.path) `
-                (New-HdoReviewPrompt $issueContract $taskContract $projectContract $validation $diff $previousReview $run.iteration ([string]$run.id)) (Join-Path $iterationPath 'review') 'review-result'
+                (New-HdoReviewPrompt $issueContract $taskContract $projectContract $validation $diff $previousReview $run.iteration ([string]$run.id)) (Join-Path $iterationPath 'review') 'review-result' -ActivityCallback $ActivityCallback
             $review = $reviewStep.output
             Assert-HdoWorktreeIntegrity ([string]$worktree.path) ([string]$worktree.baseCommit) | Out-Null
             $postReviewDiff = Get-HdoDiff ([string]$worktree.path) ([string]$worktree.baseCommit)
@@ -457,6 +465,13 @@ function Invoke-HdoRun {
         if ($finalDiff) { Set-Content -LiteralPath (Join-Path $finalPath 'diff.patch') -Value $finalDiff.patch -Encoding utf8NoBOM }
         Write-HdoJsonFile (Join-Path $finalPath 'summary.json') $run.result
         Set-HdoRunState $run $terminalState $artifactPath $terminalReason
+        Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
+            type = 'run.completed'
+            at = Get-HdoUtcTimestamp
+            runId = $runId
+            state = [string]$run.state
+            artifactPath = $artifactPath
+        })
         if ($writeBack) {
             try { Complete-HdoClaim $config $run $run.state ([string]$run.result.summary) }
             catch {
@@ -482,6 +497,13 @@ function Invoke-HdoRun {
                 Save-HdoRun $run $artifactPath
             }
         }
+        Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
+            type = 'run.completed'
+            at = Get-HdoUtcTimestamp
+            runId = $runId
+            state = [string]$run.state
+            artifactPath = $artifactPath
+        })
         return $run
     }
 }

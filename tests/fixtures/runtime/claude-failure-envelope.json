@@ -1,0 +1,1 @@
+{"is_error":true,"terminal_reason":"api_error","result":"API Error: response exceeded the output token maximum.","permission_denials":[{"tool_name":"Bash"}]}
