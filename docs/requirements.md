@@ -159,7 +159,7 @@ profile は `plan`、`implement`、`review`、`fix` の binding を持つ。`pla
 
 runner type:
 
-- `claude`: 既定。print mode、`--safe-mode`、strict-mode 向けに正規化した JSON Schema output を使用する。
+- `claude`: 既定。print mode、`--safe-mode`、strict-mode 向けに正規化した JSON Schema output を使用する。`provider: ollama` では Claude CLI を local tool harness として使い、loopback の Ollama endpoint へ固定し、schemaをpromptへ載せた後にcanonical schemaで再検証する。
 - `codex`: `codex exec` を非対話実行し、個人の Codex 設定と execpolicy rules を読み込まず、OpenAI Structured Outputs subset へ正規化した一時 output schema と last message file を使用する。返却後は canonical schema で再検証する。
 - `command`: argument template と stdin/file transport を利用する adapter。stable config として利用する場合は schema と policy の両方を満たす必要がある。
 
@@ -174,7 +174,7 @@ plan/review runner は `read-only`、implement/fix runner は `workspace-write` 
 
 runner の fallback 宣言、および `workflow.implicitFallback=true` は禁止する。model/provider を変更するには、profile、Issue route hint、`-Profile`、または `-SetStep` による明示選択を必要とする。
 
-既定 `claude-only` profile は Codex/Ollama を一切参照しない。`config/examples/claude-only.json` は model を明示した Claude 構成、`config/examples/cloud-only.json` は Codex cloud 構成、`config/examples/ollama-hybrid.json` は明示読込用、`config/examples/repository-ollama-hybrid.json` は自動読込用として plan/review を cloud、implement/fix を Ollama に割り当てる参考構成である。
+既定 `claude-only` profile は Codex/Ollama を一切参照しない。`config/examples/claude-only.json` は model を明示した Claude 構成、`config/examples/cloud-only.json` は Codex cloud 構成、`config/examples/ollama-hybrid.json` は明示読込用、`config/examples/repository-ollama-hybrid.json` は自動読込用として plan/review を Codex cloud、implement/fix を Claude CLI harness 経由の Ollama に割り当てる参考構成である。local route は Anthropic endpoint や Claude model を使用しない。
 
 ## 7. GitHub Issue 契約
 

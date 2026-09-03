@@ -93,9 +93,9 @@ try {
     $repositoryConfig = Get-HdoConfig -RepositoryPath $otherRepository
     Assert-Hdo ($repositoryConfig.resolvedProfile -eq 'ollama-hybrid') 'committed repository .hdo/config.json is loaded automatically'
     Assert-Hdo ($repositoryConfig.repositoryConfig.loaded -and $repositoryConfig.repositoryConfig.blob -and $repositoryConfig.repositoryConfig.sha256) 'repository config records its fixed commit, blob, and SHA-256 identity'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].command -eq 'codex') 'new repository runners receive the fixed built-in adapter command'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['codex-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
-    Assert-Hdo ($repositoryConfig.runners['codex-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].command -eq 'claude') 'new repository runners receive the fixed built-in adapter command'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['claude-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
     $repositoryExecution = Get-HdoExecutionPlan $repositoryConfig
     Assert-Hdo ($repositoryExecution.steps.plan.provider -eq 'cloud' -and $repositoryExecution.steps.review.provider -eq 'cloud' -and
         $repositoryExecution.steps.implement.provider -eq 'ollama' -and $repositoryExecution.steps.fix.provider -eq 'ollama') 'repository routing sends only implementation and fix roles to Ollama'
@@ -170,7 +170,7 @@ try {
     Remove-Item -LiteralPath $userConfigPath -Force
 
     $forbiddenRepositoryConfig = Get-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Raw | ConvertFrom-Json -AsHashtable -Depth 100
-    $forbiddenRepositoryConfig.runners['codex-ollama-implementer']['command'] = 'arbitrary-command'
+    $forbiddenRepositoryConfig.runners['claude-ollama-implementer']['command'] = 'arbitrary-command'
     $forbiddenRepositoryConfig | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $otherRepository '.hdo/config.json') -Encoding utf8NoBOM
     & git -C $otherRepository add -- .hdo/config.json
     & git -C $otherRepository commit --quiet -m 'forbidden repository config'
@@ -391,6 +391,27 @@ Keep the cycle bounded.
     $allowedToolsIndex = [Array]::IndexOf($claudeWriteArguments, '--allowedTools')
     Assert-Hdo ($allowedToolsIndex -ge 0 -and $claudeWriteArguments[$allowedToolsIndex + 1] -eq 'Read,Bash') 'allowedTools is passed as the --allowedTools permission allowlist, not --tools'
     Assert-Hdo ($claudeWriteArguments -notcontains '--tools') 'Claude adapter does not use the ambiguous --tools flag'
+    $ollamaClaudeArguments = & $module {
+        param($Runner)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{"type":"object"}'
+    } ([ordered]@{ sandbox = 'workspace-write'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; reasoningEffort = 'medium'; extraArgs = @() })
+    Assert-Hdo ($ollamaClaudeArguments -notcontains '--json-schema' -and $ollamaClaudeArguments -notcontains '--effort') 'Claude/Ollama route avoids SDK options that reject arbitrary local model IDs'
+    $ollamaClaudeInput = & $module {
+        param($Runner)
+        Get-HdoClaudeInputText -Runner $Runner -Prompt 'work' -SchemaJson '{"type":"object"}'
+    } ([ordered]@{ provider = 'ollama' })
+    Assert-Hdo ($ollamaClaudeInput -match 'work' -and $ollamaClaudeInput -match 'Return only one JSON object' -and $ollamaClaudeInput -match '"type":"object"') 'Claude/Ollama route embeds the transport schema into the local prompt'
+    $ollamaClaudeEnvironment = & $module {
+        param($Runner)
+        Get-HdoRunnerEnvironment -Runner $Runner
+    } ([ordered]@{
+        type = 'claude'
+        provider = 'ollama'
+        passEnvironment = @()
+    })
+    Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_BASE_URL -eq 'http://127.0.0.1:11434') 'Claude/Ollama route is pinned to the loopback Ollama Anthropic endpoint'
+    Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_AUTH_TOKEN -eq 'ollama' -and $ollamaClaudeEnvironment.ANTHROPIC_API_KEY -eq '') 'Claude/Ollama route uses local non-secret authentication instead of Anthropic credentials'
+    Assert-Hdo ($ollamaClaudeEnvironment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -eq '1') 'Claude/Ollama route disables nonessential Claude CLI traffic'
     $claudeReadArguments = & $module {
         param($Runner)
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
@@ -398,6 +419,13 @@ Keep the cycle bounded.
     $readPermissionIndex = [Array]::IndexOf($claudeReadArguments, '--permission-mode')
     Assert-Hdo ($readPermissionIndex -ge 0 -and $claudeReadArguments[$readPermissionIndex + 1] -eq 'plan') 'read-only maps to the plan permission mode'
     Assert-Hdo ($claudeReadArguments -notcontains '--injected-extra-argument') 'the Claude adapter never forwards extraArgs, even from an unvalidated runner'
+
+    $ollamaClaudeEffortConfig = Copy-HdoObject $config
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].provider = 'ollama'
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].model = 'qwen3.8:27b-q4_K_M'
+    $ollamaClaudeEffortConfig.runners['claude-implementer'].reasoningEffort = 'medium'
+    $ollamaClaudeEffortResult = Test-HdoConfiguration $ollamaClaudeEffortConfig
+    Assert-Hdo (-not $ollamaClaudeEffortResult.valid) 'Claude/Ollama runner rejects cloud-only reasoningEffort configuration'
 
     $normalizedReviewJson = ''
     foreach ($claudeSchemaName in @('task-contract', 'worker-result', 'review-result')) {

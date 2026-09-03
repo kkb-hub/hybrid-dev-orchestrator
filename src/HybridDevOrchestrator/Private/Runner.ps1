@@ -257,19 +257,54 @@ function Get-HdoClaudeArguments {
     # CLAUDE.md, plugins, hooks, MCP servers, and skills never join an HDO agent run.
     $arguments = @(
         '-p', '--output-format', 'json', '--no-session-persistence', '--safe-mode',
-        '--permission-mode', $(if ($Runner.sandbox -eq 'read-only') { 'plan' } else { 'acceptEdits' }),
-        '--json-schema', $SchemaJson
+        '--permission-mode', $(if ($Runner.sandbox -eq 'read-only') { 'plan' } else { 'acceptEdits' })
     )
+    $provider = [string](Get-HdoValue $Runner 'provider' 'cloud')
+    # Claude CLI's SDK-backed structured-output and effort features reject arbitrary
+    # Ollama model IDs before inference. Local output is constrained in the prompt and
+    # revalidated against the same canonical schema after the process returns.
+    if ($provider -ne 'ollama') { $arguments += @('--json-schema', $SchemaJson) }
     if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
     # The CLI matches --effort values case-sensitively and silently falls back on a
     # mismatch, so pass the canonical lowercase form regardless of config casing.
-    if (Get-HdoValue $Runner 'reasoningEffort' '') { $arguments += @('--effort', ([string]$Runner.reasoningEffort).ToLowerInvariant()) }
+    if ($provider -ne 'ollama' -and (Get-HdoValue $Runner 'reasoningEffort' '')) {
+        $arguments += @('--effort', ([string]$Runner.reasoningEffort).ToLowerInvariant())
+    }
     $allowedTools = @(Get-HdoValue $Runner 'allowedTools' @())
     if ($allowedTools.Count -gt 0) { $arguments += @('--allowedTools', ($allowedTools -join ',')) }
     # No extraArgs passthrough: the Claude adapter owns its full argument surface so the
     # --safe-mode isolation and structured-output contract cannot be overridden per run.
     # Test-HdoConfiguration rejects claude runners that declare extraArgs.
     return $arguments
+}
+
+function Get-HdoClaudeInputText {
+    param(
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Runner,
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][string]$SchemaJson
+    )
+
+    if ([string](Get-HdoValue $Runner 'provider' 'cloud') -ne 'ollama') { return $Prompt }
+    return "$Prompt`n`nReturn only one JSON object matching this JSON Schema. Do not wrap it in markdown fences or add prose:`n$SchemaJson"
+}
+
+function Get-HdoRunnerEnvironment {
+    param([Parameter(Mandatory)][System.Collections.IDictionary]$Runner)
+
+    $environment = Get-HdoSafeEnvironment @(Get-HdoValue $Runner 'passEnvironment' @())
+    $type = [string](Get-HdoValue $Runner 'type' '')
+    $provider = [string](Get-HdoValue $Runner 'provider' 'cloud')
+    if ($type -eq 'claude' -and $provider -eq 'ollama') {
+        # Claude CLI is only the local tool harness on this route. Hard-coded loopback
+        # routing and a non-secret token prevent accidental Anthropic cloud usage and
+        # keep repository configuration from selecting an arbitrary endpoint.
+        $environment['ANTHROPIC_BASE_URL'] = 'http://127.0.0.1:11434'
+        $environment['ANTHROPIC_AUTH_TOKEN'] = 'ollama'
+        $environment['ANTHROPIC_API_KEY'] = ''
+        $environment['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
+    }
+    return $environment
 }
 
 function ConvertFrom-HdoClaudeOutput {
@@ -337,7 +372,9 @@ function Invoke-HdoAgentStep {
             -SchemaPath $codexSchemaPath -FinalPath $finalPath
     }
     elseif ($type -eq 'claude') {
-        $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson (ConvertTo-HdoClaudeJsonSchema $schemaPath)
+        $claudeSchemaJson = ConvertTo-HdoClaudeJsonSchema $schemaPath
+        $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson $claudeSchemaJson
+        $inputText = Get-HdoClaudeInputText -Runner $runner -Prompt $Prompt -SchemaJson $claudeSchemaJson
     }
     elseif ($type -eq 'command') {
         foreach ($argument in @(Get-HdoValue $runner 'extraArgs' @())) {
@@ -351,7 +388,7 @@ function Invoke-HdoAgentStep {
         throw "Unsupported runner type '$type'."
     }
 
-    $environment = Get-HdoSafeEnvironment @(Get-HdoValue $runner 'passEnvironment' @())
+    $environment = Get-HdoRunnerEnvironment -Runner $runner
     $maximumOutputBytes = 33554432
     $result = Invoke-HdoProcess -Command $command -Arguments $arguments -WorkingDirectory $agentWorkingDirectory `
         -InputText $inputText -TimeoutSeconds ([int]$runner.timeoutSeconds) -Environment $environment `

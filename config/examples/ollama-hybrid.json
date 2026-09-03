@@ -6,9 +6,9 @@
     "ollama-hybrid": {
       "steps": {
         "plan": "codex-cloud-planner",
-        "implement": "codex-ollama-implementer",
+        "implement": "claude-ollama-implementer",
         "review": "codex-cloud-reviewer",
-        "fix": "codex-ollama-implementer"
+        "fix": "claude-ollama-implementer"
       }
     }
   },
@@ -24,13 +24,11 @@
       "passEnvironment": [],
       "extraArgs": []
     },
-    "codex-ollama-implementer": {
-      "type": "codex",
+    "claude-ollama-implementer": {
+      "type": "claude",
       "provider": "ollama",
-      "command": "codex",
+      "command": "claude",
       "model": "qwen3.8:27b-q4_K_M",
-      "reasoningEffort": "medium",
-      "contextTokens": 32768,
       "sandbox": "workspace-write",
       "timeoutSeconds": 1800,
       "passEnvironment": [],

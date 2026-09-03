@@ -120,7 +120,7 @@ Issue route は、merge 済み configuration の `profiles` に存在しなけ�
 
 ~~~powershell
 pwsh ./hdo.ps1 run -Issue 123 `
-  -SetStep implement=codex-ollama-implementer `
+  -SetStep implement=claude-ollama-implementer `
   -DryRun -Json
 ~~~
 
@@ -134,7 +134,7 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `provider` | yes | `cloud`, `ollama`, `lmstudio`, `custom` |
 | `command` | yes | executable 名または path。shell command line ではない |
 | `model` | local は yes | model ID。cloud で省略すると harness default |
-| `reasoningEffort` | no | harness が対応する effort。Claude は `low`/`medium`/`high`/`xhigh`/`max` のみ（他値は configuration error） |
+| `reasoningEffort` | no | harness が対応する effort。Claude cloud は `low`/`medium`/`high`/`xhigh`/`max` のみ、Claude/Ollama routeでは指定不可 |
 | `contextTokens` | no | Codex へ要求する context window。command は `{contextTokens}` token で明示利用 |
 | `sandbox` | yes | `read-only` または `workspace-write` |
 | `timeoutSeconds` | yes | 1–86400 |
@@ -171,7 +171,7 @@ HDO が model、provider、sandbox、schema を含む実行契約を組み立て
 
 Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter は対応する context-window argument がないため、`contextTokens` を設定すると configuration error になる。MVP の preflight は provider が実際に適用した context 長を照会・保証しないため、provider/CLI が unsupported とした場合は step failure として扱う。
 
-Codex runner は `cloud`、`ollama`、`lmstudio` に対応する。Claude runner は `cloud` のみ、command runner は上記に加えて任意 harness を表す `custom` を選べる。
+Codex runner は `cloud`、`ollama`、`lmstudio` に対応する。Claude runner は `cloud` と `ollama`、command runner は上記に加えて任意 harness を表す `custom` を選べる。現在の Ollama hybrid example は、Qwen 3.8 が Codex CLI 0.152.1 の local tool 名を互換形式で返さないため、Claude CLI を local tool harness として使用する。
 
 ### 4.3 Claude adapter
 
@@ -180,21 +180,22 @@ Claude runner は概ね次を組み立てる。
 ~~~text
 claude -p --output-format json --no-session-persistence --safe-mode
   --permission-mode <plan|acceptEdits>
-  --json-schema <normalized schema JSON>
+  [--json-schema <normalized schema JSON>]
   [--model <model>]
   [--effort <low|medium|high|xhigh|max>]
   [--allowedTools <name,name,...>]
 ~~~
 
-prompt は stdin で渡す。stdout の result envelope（単一 JSON object）は `envelope.json` として保存し、`structured_output`（なければ `result`）を final JSON として取り出したうえで、正規の schema で再検証する。
+prompt は stdin で渡す。stdout の result envelope（単一 JSON object）は `envelope.json` として保存し、`structured_output`（なければ `result`）を final JSON として取り出したうえで、正規の schema で再検証する。Ollama routeではCLIのSDKが任意model IDを拒否する `--json-schema` を使わず、正規化したtransport schemaをpromptへ付加する。
 
 - **schema の正規化**: Claude CLI は `--json-schema` を Ajv strict mode で検証するため、adapter は CLI へ渡す直前に transport copy だけを正規化する（`$schema` 宣言の除去、既定値どおりの `minContains: 1` の除去、array keyword を持つ subschema への `type: "array"` 補完）。`schemas/*.schema.json` が唯一の編集元であることは変わらず、step 出力は元の厳密な schema で再検証するため、検証強度は落ちない。
 - **`--safe-mode`**: 利用者の CLAUDE.md、plugin、hook、MCP server、skill を HDO の agent run へ持ち込まないための固定 flag である。再現性と、untrusted な Issue input に対する安全性の両方を目的とする。
 - **sandbox の意味**: `read-only` は `--permission-mode plan`、`workspace-write` は `--permission-mode acceptEdits` に対応する。これは Claude Code の permission mode であって OS-level sandbox ではない。`acceptEdits` の runner に対して worktree 外への書込や network access を OS が阻止するわけではない点は command adapter と同じであり（Codex の `workspace-write` とは保証が等価でない）、必要に応じて low-privilege account、VM/container、firewall 等の host policy を併用する。なお `acceptEdits` は `allowedTools` 未設定でも Bash 等のコマンド実行を許可し、`plan` は書込・実行をブロックする（claude 2.1.250 で実測）。つまり既定 profile の implementer/fixer は build・test を実行できる。
 - **extraArgs**: Claude runner では使用できず configuration error になる。`--safe-mode` や `--permission-mode` などの隔離保証を per-run に迂回できないよう、adapter が claude の argument surface 全体を専有する。独自の argument 構成が必要な場合は `command` runner を使う。
-- **`reasoningEffort`**: Claude CLI の `--effort` は `low`、`medium`、`high`、`xhigh`、`max` のみを受け付け、他の値は警告だけを出して既定値で続行する。HDO はこの silent degradation を防ぐため、Claude runner にそれ以外の値を設定すると configuration error にする。
+- **`reasoningEffort`**: Claude CLI の `--effort` は `low`、`medium`、`high`、`xhigh`、`max` のみを受け付け、他の値は警告だけを出して既定値で続行する。HDO はこの silent degradation を防ぐため、Claude cloud runner にそれ以外の値を設定すると configuration error にする。Ollama model IDではCLI側のcloud catalog検証に失敗するため、Claude/Ollama runnerでは指定自体を拒否する。
 - **`allowedTools`**: permission allowlist（`--allowedTools`）として渡す。利用可能な組み込み tool 集合の限定（`--tools`）ではない。
 - **認証**: HDO は runner process から `ANTHROPIC_API_KEY` と、名前が `TOKEN` / `SECRET` / `PASSWORD` / `API_KEY` で終わる環境変数（`CLAUDE_CODE_OAUTH_TOKEN` を含む）を既定で除外する。`claude` の OAuth login（`~/.claude` の credential store）はそのまま動作する。環境変数で認証する場合は、当該 runner の `passEnvironment` へ `ANTHROPIC_API_KEY` または `CLAUDE_CODE_OAUTH_TOKEN` を明示追加する（sensitive 名として warning が出る）。
+- **Ollama route**: `provider: ollama` では adapter が `ANTHROPIC_BASE_URL` を loopback の `http://127.0.0.1:11434` に固定し、非secretの local token、空の API key、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を設定する。Anthropic endpoint、OAuth login、Claude 利用枠は使用しない。repository config から endpoint や環境変数を差し替えることはできない。
 - `contextTokens` は設定できず、configuration error になる。
 - **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
 
@@ -265,9 +266,9 @@ Codex CLI の authentication/configuration は事前に完了しておく。
 | Step | Runner | Provider |
 |---|---|---|
 | plan | `codex-cloud-planner` | cloud |
-| implement | `codex-ollama-implementer` | ollama |
+| implement | `claude-ollama-implementer` | ollama |
 | review | `codex-cloud-reviewer` | cloud |
-| fix | `codex-ollama-implementer` | ollama |
+| fix | `claude-ollama-implementer` | ollama |
 
 ~~~powershell
 pwsh ./hdo.ps1 doctor `
@@ -287,7 +288,7 @@ pwsh ./hdo.ps1 config -Json
 pwsh ./hdo.ps1 run -Issue 123
 ~~~
 
-Ollama route を使う host では、Ollama 0.33.2 以降、tool calling 対応 model、Codex CLI の local provider 対応が必要である。HDO は service 起動や model pull を行わないため、事前に次を実行する。
+Ollama route を使う host では、Ollama 0.33.2 以降、tool calling 対応 model、Claude CLI command が必要である。Claude CLI は Ollamaのlocal tool harnessとしてだけ使い、Anthropic認証やClaude利用枠は不要である。HDO は service 起動や model pull を行わないため、事前に次を実行する。
 
 ~~~powershell
 ollama --version
@@ -298,13 +299,13 @@ ollama list
 
 `ollama serve` は foreground process なので、すでに service として起動している場合は重ねて起動しない。
 
-実providerを通常のCIから呼ばない opt-in smoke は次で実行する。隔離した一時Git repositoryを作り、plan/reviewがcloudのまま、implement/fixだけがOllamaであることを検査してから、HDOと同じ `UseShellExecute=false` / argument arrayのprocess runnerで指定modelへ実リクエストを送る。一時directoryは成功・失敗のどちらでも削除する。
+実providerを通常のCIから呼ばない opt-in smoke は次で実行する。隔離した一時Git repositoryを作り、plan/reviewがCodex cloudのまま、implement/fixだけがClaude CLI harness経由のOllamaであることを検査してから、指定modelにファイル作成、byte単位の検証、構造化worker resultの返却まで実行する。一時directoryは成功・失敗のどちらでも削除する。
 
 ~~~powershell
 pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
 ~~~
 
-2026-09-02の実測では Ollama 0.33.2 と `qwen3.8:27b-q4_K_M` で成功した。Codex CLIはこのlocal modelについてfallback metadata、model list response、telemetry tagのwarningを出す場合があるが、smokeはexit code、最終応答、変更なし、`ollama ps`の実modelを別々に検証する。warningが将来errorになる場合はCodex/Ollamaの互換性を再確認する。
+2026-09-03の実測では Codex CLI 0.152.1 から同modelを直接使うと、Qwenが `shell`、`apply_patch`、MCP-prefixed nameなどCodex routerに未登録のtool名を返し、通常実装を完遂できなかった。一方、Claude CLIをOllama Anthropic-compatible endpointへ向けた場合は、Ollama 0.33.2 と `qwen3.8:27b-q4_K_M` でlocal file editに成功した。このためhybrid exampleとsmokeは後者を採用する。
 
 この profile を選んだときだけ HDO は次を検査する。
 
