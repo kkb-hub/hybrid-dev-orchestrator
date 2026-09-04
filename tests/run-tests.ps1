@@ -442,23 +442,31 @@ Keep the cycle bounded.
     foreach ($claudeSchemaName in @('task-contract', 'worker-result', 'review-result')) {
         $normalizedSchemaJson = & $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } (Join-Path $repositoryRoot "schemas/$claudeSchemaName.schema.json")
         Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"' -and $normalizedSchemaJson -notmatch '"minContains"') "Claude-normalized $claudeSchemaName schema drops `$schema and default minContains"
+        $normalizedSchemaObject = $normalizedSchemaJson | ConvertFrom-Json -AsHashtable -Depth 100
+        # The Anthropic API rejects tools[].custom.input_schema with a 400 when the
+        # document root carries oneOf/allOf/anyOf, even though the CLI's own Ajv strict
+        # mode accepts it (regression coverage for the review-result 400: issue #21).
+        Assert-Hdo (-not ($normalizedSchemaObject.Contains('oneOf') -or $normalizedSchemaObject.Contains('allOf') -or $normalizedSchemaObject.Contains('anyOf'))) "Claude-normalized $claudeSchemaName schema has no top-level oneOf/allOf/anyOf"
         if ($claudeSchemaName -eq 'review-result') { $normalizedReviewJson = $normalizedSchemaJson }
     }
     $normalizedReview = $normalizedReviewJson | ConvertFrom-Json -AsHashtable -Depth 100
-    Assert-Hdo ([string]$normalizedReview.allOf[0].if.properties.missingViewpoints.type -eq 'array') 'Claude schema normalization adds the explicit array type strict mode requires'
+    Assert-Hdo ([string]$normalizedReview.properties.findings.items.'$ref' -eq '#/$defs/finding') 'Claude-normalized review schema keeps referencing the finding definition'
+    Assert-Hdo ([string]$normalizedReview.'$defs'.finding.allOf[0].if.properties.actionable.const -eq $true) 'Claude schema normalization keeps nested (non-root) composition under $defs'
     $normalizedReviewSchemaPath = Join-Path $testAppData 'claude-review-result.schema.json'
     Set-Content -LiteralPath $normalizedReviewSchemaPath -Value $normalizedReviewJson -Encoding utf8NoBOM
     $validReviewJson = Get-Content -LiteralPath (Join-Path $repositoryRoot 'tests/fixtures/schema/review.valid.json') -Raw
     Assert-Hdo ([bool]($validReviewJson | Test-Json -SchemaFile $normalizedReviewSchemaPath -ErrorAction SilentlyContinue)) 'valid review fixture passes the Claude-normalized schema'
-    foreach ($invalidReviewFixture in @(
-        'review.invalid-request-changes-empty.json',
-        'review.invalid-approve-open-blocker.json',
-        'review.invalid-missing-viewpoint-non-escalate.json'
-    )) {
-        $invalidReviewJson = Get-Content -LiteralPath (Join-Path $repositoryRoot "tests/fixtures/schema/$invalidReviewFixture") -Raw
-        $invalidStillRejected = -not [bool]($invalidReviewJson | Test-Json -SchemaFile $normalizedReviewSchemaPath -ErrorAction SilentlyContinue)
-        Assert-Hdo $invalidStillRejected "Claude schema normalization does not weaken validation: $invalidReviewFixture stays invalid"
-    }
+    # Dropping the root allOf from the transport copy trades away its guidance to the
+    # model, not enforcement: the adapter re-validates the final output against the
+    # untouched canonical schema (Test-HdoJsonSchema, tests/test-schemas.ps1), which still
+    # rejects these fixtures.
+
+    $arrayKeywordSchemaPath = Join-Path $testAppData 'claude-array-keyword.schema.json'
+    Set-Content -LiteralPath $arrayKeywordSchemaPath -Encoding utf8NoBOM -Value (@'
+{"type":"object","properties":{"tags":{"minItems":1,"uniqueItems":true}}}
+'@)
+    $normalizedArrayKeyword = (& $module { param($Path) ConvertTo-HdoClaudeJsonSchema $Path } $arrayKeywordSchemaPath) | ConvertFrom-Json -AsHashtable -Depth 100
+    Assert-Hdo ([string]$normalizedArrayKeyword.properties.tags.type -eq 'array') 'Claude schema normalization adds the explicit array type strict mode requires'
 
     # const/enum/default hold data values, not schemas; normalization must never rewrite
     # them or the CLI's structured output would fail re-validation against the canonical schema.

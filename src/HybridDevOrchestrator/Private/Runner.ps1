@@ -90,6 +90,15 @@ function ConvertTo-HdoClaudeJsonSchema {
     # re-validates the final output against the original strict schema.
     $schema = Read-HdoJsonFile $SchemaPath
     $normalized = Convert-HdoClaudeSchemaNode $schema
+    # Separately, the Anthropic Messages API rejects oneOf/allOf/anyOf as a top-level key
+    # of tools[].custom.input_schema with a 400 ("does not support ... at the top level"),
+    # even though the CLI's Ajv pass above accepts it. Nested composition (e.g. under
+    # $defs) is unaffected, so only the document root needs stripping. Dropping it only
+    # weakens the model's structured-output guidance, not enforcement: the adapter
+    # re-validates the final output against the untouched canonical schema afterward.
+    foreach ($topLevelCompositionKeyword in @('oneOf', 'allOf', 'anyOf')) {
+        $normalized.Remove($topLevelCompositionKeyword)
+    }
     return ($normalized | ConvertTo-Json -Depth 100 -Compress)
 }
 
