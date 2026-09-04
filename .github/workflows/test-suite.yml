@@ -1,0 +1,35 @@
+name: test-suite
+
+# HDO 本体の deterministic PowerShell regression suite。
+# 現在の正式対象である Windows native を PR / main push の gate にする。
+# Issue #15 で Linux 対応する際は matrix.os に ubuntu-latest を追加できる構成とする。
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  powershell-tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run full PowerShell test suite
+        shell: pwsh
+        run: pwsh -NoProfile -File ./tests/test-suite.ps1

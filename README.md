@@ -327,6 +327,14 @@ client repository は plugin manifest の `version` でのみ HDO の更新を�
 pwsh -NoProfile -File tools/check-plugin-version.ps1 -BaseRef origin/main
 ```
 
+## CI
+
+`.github/workflows/test-suite.yml` は pull request と `main` への push で `windows-latest` を使い、`pwsh -NoProfile -File ./tests/test-suite.ps1` により HDO 本体の full deterministic PowerShell test suite を実行します。suite の失敗は CI failure になります。
+
+実 Ollama provider の smoke（`tests/test-ollama-smoke.ps1 -Run`）など外部 provider を必要とする検査は通常 CI には含めず、明示的な opt-in のまま維持します。`.github/workflows/plugin-version.yml` は plugin version guard のみを担当し、本体 regression gate とは責務を分離します。
+
+将来 Issue #15 で WSL2/Linux を正式対応する際は、test-suite workflow の OS matrix に `ubuntu-latest` を追加して同じ suite を実行できる構成です。
+
 ## 安全境界
 
 - implement/fix は現在の working tree ではなく専用 worktree だけを変更します。

@@ -312,12 +312,14 @@ Keep the cycle bounded.
     Assert-Hdo ($contract.priority -eq 'p2' -and $contract.risk -eq 'medium') 'priority and risk are resolved'
 
     $sentinelIssue = Copy-HdoObject $issue
-    $sentinelIssue.body = $issueBody.Replace("### Route Hint`n`n", "### Route Hint`n_No response_`n`n")
+    $sentinelIssue.body = $issueBody -replace '(?m)^(### Route Hint)\r?\n(?=\r?\n### Additional Context)', "`$1`n_No response_`n"
     $sentinelContract = ConvertTo-HdoIssueContract $sentinelIssue
     Assert-Hdo ($sentinelContract.preferredExecution -eq '') 'Issue Form _No response_ route is normalized to no route hint'
 
     $emptyRequiredIssue = Copy-HdoObject $issue
-    $emptyRequiredIssue.body = $issueBody.Replace("AC-01: Parse the Issue form`nAC-02: Run trusted validation gates", '_No response_').Replace("tests`nschemas", '_No response_')
+    $acceptanceFixturePattern = '(?m)^AC-01: Parse the Issue form\r?\nAC-02: Run trusted validation gates\r?$'
+    $validationFixturePattern = '(?m)^tests\r?\nschemas\r?$'
+    $emptyRequiredIssue.body = ($issueBody -replace $acceptanceFixturePattern, '_No response_') -replace $validationFixturePattern, '_No response_'
     $emptyRequiredContract = ConvertTo-HdoIssueContract $emptyRequiredIssue
     Assert-Hdo ($emptyRequiredContract.acceptanceCriteria.Count -eq 0 -and $emptyRequiredContract.validationGates.Count -eq 0) 'Issue Form _No response_ does not create required AC or gate entries'
 
