@@ -135,7 +135,7 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `command` | yes | executable 名または path。shell command line ではない |
 | `model` | local は yes | model ID。cloud で省略すると harness default |
 | `reasoningEffort` | no | harness が対応する effort。Claude cloud は `low`/`medium`/`high`/`xhigh`/`max` のみ、Claude/Ollama routeでは指定不可 |
-| `contextTokens` | no | Codex へ要求する context window。command は `{contextTokens}` token で明示利用 |
+| `contextTokens` | no | Codex、または Claude/Ollama runner へ要求する context window（1024–1048576）。Claude cloud では configuration error。command は `{contextTokens}` token で明示利用 |
 | `sandbox` | yes | `read-only` または `workspace-write` |
 | `timeoutSeconds` | yes | 1–86400 |
 | `passEnvironment` | yes | runner へ明示継承する environment 名 |
@@ -169,7 +169,7 @@ codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
 
 HDO が model、provider、sandbox、schema を含む実行契約を組み立てるため、個人の `config.toml` と execpolicy rules は読み込まない。Codex 組み込みおよび repository の instruction は引き続き読み込まれる。
 
-Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter は対応する context-window argument がないため、`contextTokens` を設定すると configuration error になる。MVP の preflight は provider が実際に適用した context 長を照会・保証しないため、provider/CLI が unsupported とした場合は step failure として扱う。
+Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter には context-window argument も、Ollama の Anthropic-compatible endpoint 向けの per-request override もないため、cloud runner で `contextTokens` を設定すると configuration error になる。Claude/Ollama runner（4.3 参照）では別経路（derived local model）で強制するため設定できる。
 
 Codex runner は `cloud`、`ollama`、`lmstudio` に対応する。Claude runner は `cloud` と `ollama`、command runner は上記に加えて任意 harness を表す `custom` を選べる。現在の Ollama hybrid example は、Qwen 3.8 が Codex CLI 0.152.1 の local tool 名を互換形式で返さないため、Claude CLI を local tool harness として使用する。
 
@@ -199,7 +199,7 @@ prompt は stdin で渡す。stdout の result envelope（単一 JSON object）�
 - **Ollama route**: `provider: ollama` では adapter が `ANTHROPIC_BASE_URL` を loopback の `http://127.0.0.1:11434` に固定し、非secretの local token、空の API key、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を設定する。Anthropic endpoint、OAuth login、Claude 利用枠は使用しない。repository config から endpoint や環境変数を差し替えることはできない。
 - **Ollama tool boundary**: local worker には `Read` / `Write` / `Edit` / `Glob` / `Grep`（read-only runner は読み取り3種）だけを `--tools` で公開する。shell、git、npm、validation gate は worker に実行させず、trusted project contract を持つ HDO 本体が実行する。これにより、local model が plan 中の検査手順を反復して unattended permission denial と token 消費を起こす経路を閉じる。
 - **失敗 envelope**: Claude が非ゼロ終了しても stdout の JSON envelope を解析し、`result`、`terminal_reason`、permission denial を一次診断として保持する。stderr は二次情報として併記し、model warning が実際の API error を覆い隠さないようにする。
-- `contextTokens` は設定できず、configuration error になる。
+- **`contextTokens`（Ollama route のみ）**: cloud runner では configuration error になる。Ollama は `ollama ps` の `CONTEXT` 列が示す実行時 context window をモデル読み込み時に決めており、これはモデルの advertised 最大値よりずっと小さいことが多い（環境依存で 2048〜32768 程度）。しかも Claude CLI にも Ollama の Anthropic-compatible endpoint にもこれをリクエスト単位で上げる方法がない。小さい疎通確認では成功し、実サイズの repository file を読む実タスクで初めてこの上限を超えて `no user query found in messages` のような不可解な 500 として失敗する（境界を超えた瞬間に会話の先頭が暗黙に落ちるとみられる）。これを避けるため、`contextTokens` を設定した claude+ollama runner では、agent step の直前（および `doctor` の preflight）で HDO が `FROM <model>` / `PARAMETER num_ctx <contextTokens>` の Modelfile から `ollama create hdo-ctx-<model>-<contextTokens>` を実行して派生モデルを作り、`--model` にはそちらを渡す。`ollama create` はモデルの manifest を書くだけで重みを複製もロードもしない軽量操作なので、毎 run 実行しても実用上のコストは小さい。`ollama create` 自体が失敗した場合（Modelfile の構文エラーや base model 不在など）は ollama の stderr を含めて fail-closed する。ただし `ollama create` は num_ctx がハードウェアやモデルの実際の上限を超えていても manifest 作成自体は成功しうるため、それを超える `contextTokens` を要求した場合の失敗は実際の推論（agent step の実行時）まで顕在化しないことがある。requested output の `model` は引き続き設定ファイル上のモデル名を報告し、派生モデル名は内部の transport 詳細として `stderr.log` からのみ確認できる。
 - **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
 
 ### 4.4 Command adapter
@@ -315,8 +315,11 @@ pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
 1. `ollama` command
 2. `ollama list` の成功
 3. runner が指定した model の存在
+4. （claude+ollama runner が `contextTokens` を設定している場合）4.3 で説明した derived context model を実際に `ollama create` できること
 
 model がなければ導入方法を自動実行せず fail する。Ollama が不調でも cloud runner へ暗黙 fallback しない。
+
+`claude-ollama-implementer` は既定で `contextTokens: 65536` を設定している（Ollama 自身が Claude Code 向けに公開している推奨値）。これを外す、または元のモデルの実行時 context window より小さい値のままにすると、疎通確認レベルの小さいタスクは成功するのに、実サイズの repository file を読む実タスクだけが上記の 500 エラーで失敗する、というこの profile の既知の落とし穴を再び踏む。
 
 LM Studio は Codex CLI の `--local-provider lmstudio` へ委譲する。MVP の doctor は runner command の存在までは検査するが、LM Studio server/model の専用 probe は行わないため、接続と model の利用可否は step 実行時に fail-closed で判定される。
 

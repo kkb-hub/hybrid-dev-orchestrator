@@ -1,7 +1,7 @@
 {
   "name": "hdo",
   "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles with thin Claude Code and Codex wrappers around hdo.ps1.",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "author": {
     "name": "kkb-hub"
   },

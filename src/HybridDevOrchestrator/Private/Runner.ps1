@@ -259,7 +259,8 @@ function Get-HdoCodexFailureDetail {
 function Get-HdoClaudeArguments {
     param(
         [Parameter(Mandatory)][System.Collections.IDictionary]$Runner,
-        [Parameter(Mandatory)][string]$SchemaJson
+        [Parameter(Mandatory)][string]$SchemaJson,
+        [string]$ModelOverride
     )
 
     # --safe-mode keeps the run deterministic and untrusted-input safe: the user's
@@ -281,7 +282,11 @@ function Get-HdoClaudeArguments {
         $localTools = if ($Runner.sandbox -eq 'read-only') { @('Read', 'Glob', 'Grep') } else { @('Read', 'Write', 'Edit', 'Glob', 'Grep') }
         $arguments += @('--tools', ($localTools -join ','))
     }
-    if (Get-HdoValue $Runner 'model' '') { $arguments += @('--model', [string]$Runner.model) }
+    # ModelOverride carries the derived context-window model (see
+    # Resolve-HdoOllamaContextModel) so the requested model name in config/artifacts
+    # stays the human-facing one while the CLI actually loads the larger-context copy.
+    $model = if ($ModelOverride) { $ModelOverride } else { [string](Get-HdoValue $Runner 'model' '') }
+    if ($model) { $arguments += @('--model', $model) }
     # The CLI matches --effort values case-sensitively and silently falls back on a
     # mismatch, so pass the canonical lowercase form regardless of config casing.
     if ($provider -ne 'ollama' -and (Get-HdoValue $Runner 'reasoningEffort' '')) {
@@ -327,6 +332,49 @@ function Get-HdoRunnerEnvironment {
         $environment['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
     }
     return $environment
+}
+
+function Get-HdoOllamaContextModelName {
+    param(
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][int]$ContextTokens
+    )
+
+    # Deterministic so repeated runs with the same (model, contextTokens) pair reuse
+    # the same tag: 'ollama create' on an unchanged Modelfile is a fast metadata-only
+    # overwrite, not a new copy of the model weights. Sanitizing $Model for the tag is
+    # lossy (e.g. 'qwen:3' and 'qwen-3' both sanitize to 'qwen-3'), so a short hash of
+    # the exact original model string is appended to keep distinct models from
+    # colliding onto, and silently overwriting, the same derived model name.
+    $sanitized = [regex]::Replace($Model, '[^a-zA-Z0-9._-]', '-')
+    $modelHash = (Get-HdoSha256 $Model).Substring(0, 8)
+    return "hdo-ctx-$sanitized-$modelHash-$ContextTokens"
+}
+
+function Resolve-HdoOllamaContextModel {
+    param(
+        [Parameter(Mandatory)][string]$Model,
+        [Parameter(Mandatory)][int]$ContextTokens,
+        [Parameter(Mandatory)][string]$WorkingDirectory,
+        [Parameter(Mandatory)][int]$TimeoutSeconds
+    )
+
+    # Neither the Claude CLI nor Ollama's Anthropic-compatible endpoint exposes a
+    # context-window argument or a per-request override, so the only reliable lever is
+    # a Modelfile-baked 'num_ctx' on a derived model. 'FROM <model>' does not duplicate
+    # the underlying weights, so this is cheap enough to run before every step.
+    $derivedName = Get-HdoOllamaContextModelName -Model $Model -ContextTokens $ContextTokens
+    $modelfilePath = Join-Path ([IO.Path]::GetTempPath()) "hdo-ollama-modelfile-$([guid]::NewGuid().ToString('N')).txt"
+    try {
+        Set-Content -LiteralPath $modelfilePath -Value @("FROM $Model", "PARAMETER num_ctx $ContextTokens") -Encoding utf8NoBOM
+        Invoke-HdoProcess -Command 'ollama' -Arguments @('create', $derivedName, '-f', $modelfilePath) `
+            -WorkingDirectory $WorkingDirectory -TimeoutSeconds $TimeoutSeconds -Environment (Get-HdoSafeEnvironment) `
+            -ThrowOnError | Out-Null
+    }
+    finally {
+        Remove-Item -LiteralPath $modelfilePath -Force -ErrorAction SilentlyContinue
+    }
+    return $derivedName
 }
 
 function ConvertFrom-HdoClaudeOutput {
@@ -433,7 +481,18 @@ function Invoke-HdoAgentStep {
     }
     elseif ($type -eq 'claude') {
         $claudeSchemaJson = ConvertTo-HdoClaudeJsonSchema $schemaPath
-        $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson $claudeSchemaJson
+        $claudeModelOverride = $null
+        $claudeProvider = [string](Get-HdoValue $runner 'provider' 'cloud')
+        if ($claudeProvider -eq 'ollama' -and (Get-HdoValue $runner 'contextTokens')) {
+            # 'ollama create' only writes a model manifest (it does not duplicate or
+            # reload weights), so it is bounded independently of the runner's own
+            # timeoutSeconds instead of being able to consume the full step budget on
+            # top of the Claude process that follows it.
+            $contextModelTimeoutSeconds = [Math]::Min(300, [int]$runner.timeoutSeconds)
+            $claudeModelOverride = Resolve-HdoOllamaContextModel -Model ([string]$runner.model) -ContextTokens ([int]$runner.contextTokens) `
+                -WorkingDirectory $agentWorkingDirectory -TimeoutSeconds $contextModelTimeoutSeconds
+        }
+        $arguments = Get-HdoClaudeArguments -Runner $runner -SchemaJson $claudeSchemaJson -ModelOverride $claudeModelOverride
         $inputText = Get-HdoClaudeInputText -Runner $runner -Prompt $Prompt -SchemaJson $claudeSchemaJson
     }
     elseif ($type -eq 'command') {

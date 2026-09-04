@@ -29,6 +29,7 @@
       "provider": "ollama",
       "command": "claude",
       "model": "qwen3.8:27b-q4_K_M",
+      "contextTokens": 65536,
       "sandbox": "workspace-write",
       "timeoutSeconds": 1800,
       "passEnvironment": [],

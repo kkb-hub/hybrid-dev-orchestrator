@@ -414,8 +414,8 @@ function Test-HdoConfiguration {
         if ($type -eq 'claude' -and $provider -notin @('cloud', 'ollama')) {
             $errors.Add("Claude runner '$runnerName' cannot use provider '$provider'.")
         }
-        if ($type -eq 'claude' -and (Get-HdoValue $runner 'contextTokens')) {
-            $errors.Add("Claude runner '$runnerName' cannot set contextTokens because the Claude adapter does not expose a context-window argument.")
+        if ($type -eq 'claude' -and $provider -ne 'ollama' -and (Get-HdoValue $runner 'contextTokens')) {
+            $errors.Add("Claude runner '$runnerName' cannot set contextTokens for provider '$provider'; the Claude CLI exposes no context-window argument against Anthropic's API. Set provider 'ollama' to let HDO enforce it via a derived local model instead.")
         }
         $reasoningEffort = [string](Get-HdoValue $runner 'reasoningEffort' '')
         if ($type -eq 'claude' -and $reasoningEffort -and $reasoningEffort -notin @('low', 'medium', 'high', 'xhigh', 'max')) {

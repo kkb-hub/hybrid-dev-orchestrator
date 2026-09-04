@@ -75,6 +75,29 @@ function Test-HdoEnvironment {
                     $model = [string]$runner.model
                     $found = @($list.stdout -split "`r?`n" | Where-Object { $_ -match "^$([regex]::Escape($model))\s" }).Count -gt 0
                     Add-HdoPreflightCheck $checks "ollama-model:$model" $(if ($found) { 'pass' } else { 'fail' }) $(if ($found) { "Model '$model' is installed." } else { "Model '$model' is not installed. HDO will not pull it automatically." })
+                    # Ollama's runtime context window (commonly far below the model's
+                    # advertised maximum) is invisible until a real task exceeds it, so a
+                    # claude+ollama runner that requests contextTokens gets its derived
+                    # context model built here too: a bad value fails doctor instead of a
+                    # real implement/fix run. This still writes to the local Ollama model
+                    # store, so -ReadOnly (a documented no-mutation guarantee for
+                    # doctor/run -DryRun) must skip it like the paths:writable probe below.
+                    $contextTokens = [int](Get-HdoValue $runner 'contextTokens' 0)
+                    if ([string]$runner.type -eq 'claude' -and $found -and $contextTokens -gt 0) {
+                        if ($ReadOnly) {
+                            Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'skipped' "Read-only preflight does not create the $contextTokens-token derived Ollama model." $false
+                        }
+                        else {
+                            try {
+                                $derivedModel = Resolve-HdoOllamaContextModel -Model $model -ContextTokens $contextTokens `
+                                    -WorkingDirectory ([string]$Config.repositoryPath) -TimeoutSeconds 300
+                                Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'pass' "Derived a $contextTokens-token context model '$derivedModel' from '$model'."
+                            }
+                            catch {
+                                Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'fail' $_.Exception.Message
+                            }
+                        }
+                    }
                 }
             }
         }

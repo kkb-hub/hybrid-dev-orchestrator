@@ -96,6 +96,7 @@ try {
     Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].command -eq 'claude') 'new repository runners receive the fixed built-in adapter command'
     Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].passEnvironment.Count -eq 0 -and $repositoryConfig.runners['claude-ollama-implementer'].extraArgs.Count -eq 0) 'new repository runners cannot inject environment variables or extra arguments'
     Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].model -eq 'qwen3.8:27b-q4_K_M') 'repository routing selects the exact configured Ollama model'
+    Assert-Hdo ($repositoryConfig.runners['claude-ollama-implementer'].contextTokens -eq 65536) 'repository routing ships a context window large enough for real repository-sized tasks'
     $repositoryExecution = Get-HdoExecutionPlan $repositoryConfig
     Assert-Hdo ($repositoryExecution.steps.plan.provider -eq 'cloud' -and $repositoryExecution.steps.review.provider -eq 'cloud' -and
         $repositoryExecution.steps.implement.provider -eq 'ollama' -and $repositoryExecution.steps.fix.provider -eq 'ollama') 'repository routing sends only implementation and fix roles to Ollama'
@@ -369,7 +370,15 @@ Keep the cycle bounded.
     $claudeContextConfig = Copy-HdoObject $config
     $claudeContextConfig.runners['claude-planner'].contextTokens = 8192
     $claudeContextResult = Test-HdoConfiguration $claudeContextConfig
-    Assert-Hdo (-not $claudeContextResult.valid) 'Claude runner rejects unsupported contextTokens configuration'
+    Assert-Hdo (-not $claudeContextResult.valid) 'Claude cloud runner rejects unsupported contextTokens configuration'
+
+    $claudeOllamaContextConfig = Copy-HdoObject $config
+    $claudeOllamaContextConfig.runners['claude-implementer'].provider = 'ollama'
+    $claudeOllamaContextConfig.runners['claude-implementer'].model = 'qwen3.8:27b-q4_K_M'
+    $claudeOllamaContextConfig.runners['claude-implementer'].reasoningEffort = ''
+    $claudeOllamaContextConfig.runners['claude-implementer'].contextTokens = 65536
+    $claudeOllamaContextResult = Test-HdoConfiguration $claudeOllamaContextConfig
+    Assert-Hdo $claudeOllamaContextResult.valid 'Claude/Ollama runner accepts contextTokens now that HDO enforces it via a derived local model'
 
     $claudeEffortConfig = Copy-HdoObject $config
     $claudeEffortConfig.runners['claude-planner'].reasoningEffort = 'ultra'
@@ -406,6 +415,58 @@ Keep the cycle bounded.
     } ([ordered]@{ sandbox = 'read-only'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; extraArgs = @() })
     $ollamaReadOnlyToolsIndex = [Array]::IndexOf($ollamaReadOnlyArguments, '--tools')
     Assert-Hdo ($ollamaReadOnlyToolsIndex -ge 0 -and $ollamaReadOnlyArguments[$ollamaReadOnlyToolsIndex + 1] -eq 'Read,Glob,Grep') 'Claude/Ollama read-only runner does not expose file-editing tools'
+
+    $contextModelName = & $module {
+        param($Model, $ContextTokens)
+        Get-HdoOllamaContextModelName -Model $Model -ContextTokens $ContextTokens
+    } 'qwen3.8:27b-q4_K_M' 65536
+    Assert-Hdo ($contextModelName -match '^hdo-ctx-qwen3\.8-27b-q4_K_M-[0-9a-f]{8}-65536$') 'Get-HdoOllamaContextModelName sanitizes the model ID into a deterministic derived model tag'
+    $contextModelNameRepeat = & $module {
+        param($Model, $ContextTokens)
+        Get-HdoOllamaContextModelName -Model $Model -ContextTokens $ContextTokens
+    } 'qwen3.8:27b-q4_K_M' 65536
+    Assert-Hdo ($contextModelName -eq $contextModelNameRepeat) 'Get-HdoOllamaContextModelName is deterministic for the same model and contextTokens'
+    $collidingContextModelName = & $module {
+        param($Model, $ContextTokens)
+        Get-HdoOllamaContextModelName -Model $Model -ContextTokens $ContextTokens
+    } 'qwen3.8-27b-q4_K_M' 65536
+    Assert-Hdo (([regex]::Replace('qwen3.8:27b-q4_K_M', '[^a-zA-Z0-9._-]', '-')) -eq 'qwen3.8-27b-q4_K_M') 'test fixture sanity check: the two model IDs below sanitize to the identical text'
+    Assert-Hdo ($contextModelName -ne $collidingContextModelName) 'Get-HdoOllamaContextModelName keeps model IDs that sanitize to the same text from colliding on the same derived model'
+
+    $modelOverrideArguments = & $module {
+        param($Runner, $ModelOverride)
+        Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{"type":"object"}' -ModelOverride $ModelOverride
+    } ([ordered]@{ sandbox = 'workspace-write'; type = 'claude'; provider = 'ollama'; model = 'qwen3.8:27b-q4_K_M'; extraArgs = @() }) $contextModelName
+    $modelOverrideIndex = [Array]::IndexOf($modelOverrideArguments, '--model')
+    Assert-Hdo ($modelOverrideIndex -ge 0 -and $modelOverrideArguments[$modelOverrideIndex + 1] -eq $contextModelName) 'Get-HdoClaudeArguments passes the derived context model instead of the configured model when overridden'
+
+    $originalOllamaPath = $env:PATH
+    try {
+        $mockOllamaSuccessDirectory = Join-Path $testAppData 'mock-ollama-success'
+        New-Item -ItemType Directory -Path $mockOllamaSuccessDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mockOllamaSuccessDirectory 'ollama.cmd') -Value "@echo off`r`nexit /b 0`r`n" -Encoding utf8NoBOM
+        $env:PATH = "$mockOllamaSuccessDirectory;$originalOllamaPath"
+        $resolvedContextModel = & $module {
+            param($Model, $ContextTokens, $WorkingDirectory)
+            Resolve-HdoOllamaContextModel -Model $Model -ContextTokens $ContextTokens -WorkingDirectory $WorkingDirectory -TimeoutSeconds 60
+        } 'qwen3.8:27b-q4_K_M' 65536 $repositoryRoot
+        Assert-Hdo ($resolvedContextModel -eq $contextModelName) 'Resolve-HdoOllamaContextModel returns the derived model name after ollama create succeeds'
+
+        $mockOllamaFailureDirectory = Join-Path $testAppData 'mock-ollama-failure'
+        New-Item -ItemType Directory -Path $mockOllamaFailureDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mockOllamaFailureDirectory 'ollama.cmd') -Value "@echo off`r`necho Error: model requires more system memory than is available 1>&2`r`nexit /b 1`r`n" -Encoding utf8NoBOM
+        $env:PATH = "$mockOllamaFailureDirectory;$originalOllamaPath"
+        $resolveContextModelError = $null
+        try {
+            & $module {
+                param($Model, $ContextTokens, $WorkingDirectory)
+                Resolve-HdoOllamaContextModel -Model $Model -ContextTokens $ContextTokens -WorkingDirectory $WorkingDirectory -TimeoutSeconds 60
+            } 'qwen3.8:27b-q4_K_M' 65536 $repositoryRoot
+        }
+        catch { $resolveContextModelError = $_.Exception.Message }
+        Assert-Hdo ($resolveContextModelError -match 'model requires more system memory') 'Resolve-HdoOllamaContextModel surfaces the ollama create failure instead of failing silently'
+    }
+    finally { $env:PATH = $originalOllamaPath }
     $ollamaClaudeInput = & $module {
         param($Runner)
         Get-HdoClaudeInputText -Runner $Runner -Prompt 'work' -SchemaJson '{"type":"object"}'

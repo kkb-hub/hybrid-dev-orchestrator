@@ -1,6 +1,6 @@
 {
   "name": "hdo",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Run bounded, issue-driven implement, validate, review, and fix cycles with Hybrid Dev Orchestrator.",
   "author": {
     "name": "kkb-hub"
