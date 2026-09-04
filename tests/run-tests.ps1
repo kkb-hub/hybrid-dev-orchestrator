@@ -380,6 +380,24 @@ Keep the cycle bounded.
     $claudeOllamaContextResult = Test-HdoConfiguration $claudeOllamaContextConfig
     Assert-Hdo $claudeOllamaContextResult.valid 'Claude/Ollama runner accepts contextTokens now that HDO enforces it via a derived local model'
 
+    # The CLI withholds 23000 tokens of the declared window before it will send anything, so
+    # values under the floor fail every step with 'Prompt is too long' rather than merely
+    # compacting more often. Measured: 32768/40960/49152 all fail a trivial read; 57344 works.
+    $claudeOllamaLowContextConfig = Copy-HdoObject $claudeOllamaContextConfig
+    $claudeOllamaLowContextConfig.runners['claude-implementer'].contextTokens = 32768
+    $claudeOllamaLowContextResult = Test-HdoConfiguration $claudeOllamaLowContextConfig
+    Assert-Hdo (-not $claudeOllamaLowContextResult.valid) 'Claude/Ollama runner rejects a contextTokens below the usable floor instead of failing every step at runtime'
+    Assert-Hdo (@(@($claudeOllamaLowContextResult.errors) -match 'below the usable floor of 57344').Count -gt 0) 'the contextTokens floor error explains the Claude CLI reserve that causes it'
+    $claudeOllamaFloorConfig = Copy-HdoObject $claudeOllamaContextConfig
+    $claudeOllamaFloorConfig.runners['claude-implementer'].contextTokens = 57344
+    Assert-Hdo (Test-HdoConfiguration $claudeOllamaFloorConfig).valid 'the smallest contextTokens measured to work is accepted'
+    # Codex sizes its own window through --config model_context_window and has no such reserve.
+    $codexLowContextConfig = Copy-HdoObject $claudeOllamaContextConfig
+    $codexLowContextConfig.runners['claude-implementer'].type = 'codex'
+    $codexLowContextConfig.runners['claude-implementer'].provider = 'cloud'
+    $codexLowContextConfig.runners['claude-implementer'].contextTokens = 8192
+    Assert-Hdo (Test-HdoConfiguration $codexLowContextConfig).valid 'the Claude/Ollama contextTokens floor does not constrain Codex runners'
+
     $claudeEffortConfig = Copy-HdoObject $config
     $claudeEffortConfig.runners['claude-planner'].reasoningEffort = 'ultra'
     $claudeEffortResult = Test-HdoConfiguration $claudeEffortConfig
@@ -484,6 +502,48 @@ Keep the cycle bounded.
     Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_BASE_URL -eq 'http://127.0.0.1:11434') 'Claude/Ollama route is pinned to the loopback Ollama Anthropic endpoint'
     Assert-Hdo ($ollamaClaudeEnvironment.ANTHROPIC_AUTH_TOKEN -eq 'ollama' -and $ollamaClaudeEnvironment.ANTHROPIC_API_KEY -eq '') 'Claude/Ollama route uses local non-secret authentication instead of Anthropic credentials'
     Assert-Hdo ($ollamaClaudeEnvironment.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC -eq '1') 'Claude/Ollama route disables nonessential Claude CLI traffic'
+    Assert-Hdo (-not $ollamaClaudeEnvironment.Contains('CLAUDE_CODE_MAX_CONTEXT_TOKENS')) 'Claude/Ollama route leaves the context window undeclared when the runner sets no contextTokens'
+    $ollamaClaudeContextEnvironment = & $module {
+        param($Runner)
+        Get-HdoRunnerEnvironment -Runner $Runner
+    } ([ordered]@{
+        type = 'claude'
+        provider = 'ollama'
+        contextTokens = 65536
+        passEnvironment = @()
+    })
+    # Without this the CLI assumes 200000 tokens for an unrecognized model id and only
+    # compacts near that, so a long agentic run always outgrows the smaller local window
+    # first and dies as an Ollama 'no user query found in messages' 500.
+    Assert-Hdo ($ollamaClaudeContextEnvironment.CLAUDE_CODE_MAX_CONTEXT_TOKENS -eq '65536') 'Claude/Ollama route declares contextTokens as the CLI context window so auto-compaction fires below the Ollama limit'
+
+    # Get-HdoSafeEnvironment forwards every non-secret ambient variable, and anyone
+    # debugging this route is exactly the person likely to have exported this one by hand.
+    # The runner definition, not the operator's shell, has to decide the window.
+    $originalMaxContextTokens = $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    try {
+        $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = '4096'
+        $inheritedContextEnvironment = & $module {
+            param($Runner)
+            Get-HdoRunnerEnvironment -Runner $Runner
+        } ([ordered]@{ type = 'claude'; provider = 'ollama'; passEnvironment = @() })
+        Assert-Hdo (-not $inheritedContextEnvironment.Contains('CLAUDE_CODE_MAX_CONTEXT_TOKENS')) 'an inherited context window is stripped from a Claude/Ollama runner that declares no contextTokens'
+        $overriddenContextEnvironment = & $module {
+            param($Runner)
+            Get-HdoRunnerEnvironment -Runner $Runner
+        } ([ordered]@{ type = 'claude'; provider = 'ollama'; contextTokens = 65536; passEnvironment = @() })
+        Assert-Hdo ($overriddenContextEnvironment.CLAUDE_CODE_MAX_CONTEXT_TOKENS -eq '65536') 'the runner contextTokens wins over an inherited context window'
+        # Only the Ollama route is HDO's to pin. HDO does not fix a cloud runner's endpoint
+        # either, so a gateway-backed cloud runner behind an unrecognized model id keeps its
+        # operator-declared window -- contextTokens is a hard error there, leaving no
+        # in-config alternative.
+        $cloudInheritedEnvironment = & $module {
+            param($Runner)
+            Get-HdoRunnerEnvironment -Runner $Runner
+        } ([ordered]@{ type = 'claude'; provider = 'cloud'; passEnvironment = @() })
+        Assert-Hdo ($cloudInheritedEnvironment.CLAUDE_CODE_MAX_CONTEXT_TOKENS -eq '4096') 'cloud Claude runners keep an operator-declared context window that HDO has no configuration path to express'
+    }
+    finally { $env:CLAUDE_CODE_MAX_CONTEXT_TOKENS = $originalMaxContextTokens }
     $claudeReadArguments = & $module {
         param($Runner)
         Get-HdoClaudeArguments -Runner $Runner -SchemaJson '{}'
@@ -616,6 +676,31 @@ Keep the cycle bounded.
     Assert-Hdo ($claudeFailureDetail -match 'stderr: \[claude-code:unrecognized_model\]') 'Claude failures retain stderr as secondary diagnostic context'
     $claudeFailureFallback = & $module { Get-HdoClaudeFailureDetail '' 'plain stderr failure' }
     Assert-Hdo ($claudeFailureFallback -eq 'stderr: plain stderr failure') 'Claude failure reporting falls back to stderr when no envelope is available'
+
+    # Ollama reports context-window exhaustion with a message that names neither the
+    # context window nor Ollama, which is why the original report took two full runs to
+    # diagnose. The long envelope also proves the hint survives detail truncation.
+    # The marker sits past the 4096-character detail cap here, which is the realistic shape:
+    # a run long enough to exhaust the context window also produces a long envelope.
+    $claudeContextOverflowEnvelope = @"
+{"is_error":true,"terminal_reason":"api_error","result":"$('x' * 5000) API Error: 500 no user query found in messages."}
+"@
+    $claudeContextOverflowDetail = & $module {
+        param($Output, $ErrorOutput)
+        Get-HdoClaudeFailureDetail $Output $ErrorOutput
+    } $claudeContextOverflowEnvelope ''
+    Assert-Hdo ($claudeContextOverflowDetail -match '\.\.\.\[truncated\]') 'test fixture sanity check: the failure detail below is long enough to be truncated'
+    Assert-Hdo ($claudeContextOverflowDetail -match 'HDO diagnosis: the conversation outgrew the local model context window') 'Ollama context-window exhaustion is reported as such instead of as its misleading upstream message'
+    Assert-Hdo ($claudeContextOverflowDetail -match 'contextTokens') 'the context-window diagnosis names the setting that fixes it'
+    Assert-Hdo ($claudeFailureDetail -notmatch 'HDO diagnosis') 'unrelated Claude failures are not annotated with the context-window diagnosis'
+    # The error comes from the Ollama server, so the Codex/Ollama route surfaces the same
+    # misleading string and needs the same explanation.
+    $codexContextOverflowDetail = & $module {
+        param($Output, $ErrorOutput)
+        Get-HdoCodexFailureDetail $Output $ErrorOutput
+    } '{"type":"turn.failed","error":{"message":"no user query found in messages"}}' ''
+    Assert-Hdo ($codexContextOverflowDetail -match 'HDO diagnosis: the conversation outgrew the local model context window') 'the Codex/Ollama route explains the same Ollama context-window exhaustion'
+    Assert-Hdo ($codexFailureFallback -notmatch 'HDO diagnosis') 'unrelated Codex failures are not annotated with the context-window diagnosis'
 
     $contextTokenExpansion = & $module {
         Expand-HdoArgumentTemplate '--context={contextTokens}' ([ordered]@{ contextTokens = 8192 })

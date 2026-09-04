@@ -218,6 +218,17 @@ function Get-HdoCodexArguments {
     return $arguments
 }
 
+# Ollama raises this from its chat-template renderer once front-truncation to fit num_ctx
+# has dropped the last real user turn, so it always means 'the conversation outgrew the
+# model context window' -- never anything about the prompt HDO sent. Neither the context
+# window nor Ollama is named upstream, and diagnosing it from the raw text cost the
+# original reporter two full runs. The error comes from the Ollama server, so every
+# adapter routed through it can surface it, not just Claude.
+$script:HdoOllamaContextOverflowPattern = 'no user query found in messages'
+$script:HdoOllamaContextOverflowHint = ' | HDO diagnosis: the conversation outgrew the local model context window.' `
+    + ' Ollama truncates the oldest messages to fit num_ctx and reports the resulting' `
+    + ' user-turn-less prompt as this error. Raise the runner contextTokens, or split the task.'
+
 function Get-HdoCodexFailureDetail {
     param(
         [AllowEmptyString()][string]$StandardOutput,
@@ -252,7 +263,11 @@ function Get-HdoCodexFailureDetail {
         if ($message -and -not $details.Contains($message)) { $details.Add($message) }
     }
     $detail = if ($details.Count -gt 0) { $details -join ' | ' } else { (Protect-HdoText $StandardError).Trim() }
+    # Matched before truncation and appended after it: a run long enough to exhaust the
+    # context window is also the one whose detail is long enough to lose the marker.
+    $outgrewContextWindow = $detail -match $script:HdoOllamaContextOverflowPattern
     if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + '...[truncated]' }
+    if ($outgrewContextWindow) { $detail += $script:HdoOllamaContextOverflowHint }
     return $detail
 }
 
@@ -330,6 +345,27 @@ function Get-HdoRunnerEnvironment {
         $environment['ANTHROPIC_AUTH_TOKEN'] = 'ollama'
         $environment['ANTHROPIC_API_KEY'] = ''
         $environment['CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC'] = '1'
+
+        # The Claude CLI only recognizes the context window of Anthropic's own models; for
+        # any other model id behind a custom base URL it assumes 200000 tokens and sizes
+        # auto-compaction against that. A local model's real window is far smaller, so the
+        # agentic loop keeps growing the transcript well past it, Ollama silently truncates
+        # from the front until the user turn itself is gone, and the request finally fails
+        # as a misleading 'no user query found in messages' 500. Declaring the real window
+        # here makes the CLI compact before that boundary instead. Baking num_ctx into the
+        # derived model (see Resolve-HdoOllamaContextModel) only raises Ollama's ceiling --
+        # it is this variable that keeps the conversation underneath it.
+        #
+        # Get-HdoSafeEnvironment forwards the whole ambient environment except secrets, so
+        # an inherited value is dropped first: on this route the window is HDO's to decide,
+        # not the operator's shell. Cloud runners are left alone -- HDO does not pin their
+        # endpoint either, so a gateway-backed cloud runner may legitimately need to declare
+        # its own window.
+        $environment.Remove('CLAUDE_CODE_MAX_CONTEXT_TOKENS')
+        $contextTokens = [int](Get-HdoValue $Runner 'contextTokens' 0)
+        if ($contextTokens -gt 0) {
+            $environment['CLAUDE_CODE_MAX_CONTEXT_TOKENS'] = [string]$contextTokens
+        }
     }
     return $environment
 }
@@ -424,7 +460,12 @@ function Get-HdoClaudeFailureDetail {
     $stderrDetail = (Protect-HdoText $StandardError).Trim()
     if ($stderrDetail) { $details.Add("stderr: $stderrDetail") }
     $detail = if ($details.Count -gt 0) { $details -join ' | ' } else { 'Claude returned no failure detail.' }
+    # The marker is matched before truncation and the hint appended after it, because a
+    # long envelope is exactly the case that both pushes the marker past 4096 characters
+    # and needs the explanation most.
+    $outgrewContextWindow = $detail -match $script:HdoOllamaContextOverflowPattern
     if ($detail.Length -gt 4096) { $detail = $detail.Substring(0, 4096) + '...[truncated]' }
+    if ($outgrewContextWindow) { $detail += $script:HdoOllamaContextOverflowHint }
     return $detail
 }
 

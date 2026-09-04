@@ -135,7 +135,7 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `command` | yes | executable 名または path。shell command line ではない |
 | `model` | local は yes | model ID。cloud で省略すると harness default |
 | `reasoningEffort` | no | harness が対応する effort。Claude cloud は `low`/`medium`/`high`/`xhigh`/`max` のみ、Claude/Ollama routeでは指定不可 |
-| `contextTokens` | no | Codex、または Claude/Ollama runner へ要求する context window（1024–1048576）。Claude cloud では configuration error。command は `{contextTokens}` token で明示利用 |
+| `contextTokens` | no | Codex、または Claude/Ollama runner へ要求する context window（1024–1048576）。Claude/Ollama では派生モデルの `num_ctx` と CLI の compaction 基準の両方になり、下限は 57344（4.3 参照）。Claude cloud では configuration error。command は `{contextTokens}` token で明示利用 |
 | `sandbox` | yes | `read-only` または `workspace-write` |
 | `timeoutSeconds` | yes | 1–86400 |
 | `passEnvironment` | yes | runner へ明示継承する environment 名 |
@@ -169,7 +169,7 @@ codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
 
 HDO が model、provider、sandbox、schema を含む実行契約を組み立てるため、個人の `config.toml` と execpolicy rules は読み込まない。Codex 組み込みおよび repository の instruction は引き続き読み込まれる。
 
-Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter には context-window argument も、Ollama の Anthropic-compatible endpoint 向けの per-request override もないため、cloud runner で `contextTokens` を設定すると configuration error になる。Claude/Ollama runner（4.3 参照）では別経路（derived local model）で強制するため設定できる。
+Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter には context-window argument も、Ollama の Anthropic-compatible endpoint 向けの per-request override もないため、cloud runner で `contextTokens` を設定すると configuration error になる。Claude/Ollama runner（4.3 参照）では別経路（derived local model の `num_ctx` と CLI 側の compaction 基準）で強制するため設定できる。
 
 Codex runner は `cloud`、`ollama`、`lmstudio` に対応する。Claude runner は `cloud` と `ollama`、command runner は上記に加えて任意 harness を表す `custom` を選べる。現在の Ollama hybrid example は、Qwen 3.8 が Codex CLI 0.152.1 の local tool 名を互換形式で返さないため、Claude CLI を local tool harness として使用する。
 
@@ -199,7 +199,41 @@ prompt は stdin で渡す。stdout の result envelope（単一 JSON object）�
 - **Ollama route**: `provider: ollama` では adapter が `ANTHROPIC_BASE_URL` を loopback の `http://127.0.0.1:11434` に固定し、非secretの local token、空の API key、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` を設定する。Anthropic endpoint、OAuth login、Claude 利用枠は使用しない。repository config から endpoint や環境変数を差し替えることはできない。
 - **Ollama tool boundary**: local worker には `Read` / `Write` / `Edit` / `Glob` / `Grep`（read-only runner は読み取り3種）だけを `--tools` で公開する。shell、git、npm、validation gate は worker に実行させず、trusted project contract を持つ HDO 本体が実行する。これにより、local model が plan 中の検査手順を反復して unattended permission denial と token 消費を起こす経路を閉じる。
 - **失敗 envelope**: Claude が非ゼロ終了しても stdout の JSON envelope を解析し、`result`、`terminal_reason`、permission denial を一次診断として保持する。stderr は二次情報として併記し、model warning が実際の API error を覆い隠さないようにする。
-- **`contextTokens`（Ollama route のみ）**: cloud runner では configuration error になる。Ollama は `ollama ps` の `CONTEXT` 列が示す実行時 context window をモデル読み込み時に決めており、これはモデルの advertised 最大値よりずっと小さいことが多い（環境依存で 2048〜32768 程度）。しかも Claude CLI にも Ollama の Anthropic-compatible endpoint にもこれをリクエスト単位で上げる方法がない。小さい疎通確認では成功し、実サイズの repository file を読む実タスクで初めてこの上限を超えて `no user query found in messages` のような不可解な 500 として失敗する（境界を超えた瞬間に会話の先頭が暗黙に落ちるとみられる）。これを避けるため、`contextTokens` を設定した claude+ollama runner では、agent step の直前（および `doctor` の preflight）で HDO が `FROM <model>` / `PARAMETER num_ctx <contextTokens>` の Modelfile から `ollama create hdo-ctx-<model>-<contextTokens>` を実行して派生モデルを作り、`--model` にはそちらを渡す。`ollama create` はモデルの manifest を書くだけで重みを複製もロードもしない軽量操作なので、毎 run 実行しても実用上のコストは小さい。`ollama create` 自体が失敗した場合（Modelfile の構文エラーや base model 不在など）は ollama の stderr を含めて fail-closed する。ただし `ollama create` は num_ctx がハードウェアやモデルの実際の上限を超えていても manifest 作成自体は成功しうるため、それを超える `contextTokens` を要求した場合の失敗は実際の推論（agent step の実行時）まで顕在化しないことがある。requested output の `model` は引き続き設定ファイル上のモデル名を報告し、派生モデル名は内部の transport 詳細として `stderr.log` からのみ確認できる。
+- **`contextTokens`（Ollama route のみ）**: cloud runner では configuration error になる。Ollama route では **上限と、その上限に収める仕組みの両方**を意味し、HDO は 1 つの値から 2 つの lever を導出する。
+
+  この route が壊れやすいのは、上限を決める側と会話量を決める側が別々で、どちらも既定値のままでは噛み合わないため:
+
+  - **Ollama 側（上限）**: モデル読み込み時に決まる実行時 context window（`ollama ps` の `CONTEXT` 列）は、モデルの advertised 最大値よりずっと小さいことが多い（環境依存で 2048〜32768 程度）。リクエスト単位で上げる方法は Claude CLI 側にも Ollama の Anthropic-compatible endpoint 側にも無い。
+  - **Claude CLI 側（会話量）**: Claude CLI は Anthropic 自身のモデルの context window しか知らないため、custom base URL 越しの未知の model ID に対しては **200000 tokens と仮定**し、auto-compaction もその値を基準に働く。つまり local model の実際の window がいくつであろうと、CLI 側は 200000 に達するまで会話を伸ばし続ける。
+
+  この 2 つが揃うと、agentic な複数ターンのタスクでは会話履歴がターンごとに単調増加し、CLI が compaction を始めるよりはるか手前で Ollama 側の上限を超える。超えた時点で Ollama は `num_ctx` に収めるため**会話の先頭から切り詰め**、user turn そのものが落ちた prompt を chat template renderer が拒否して、`no user query found in messages` という原因を誤解させる 500 になる。数ターンで終わる疎通確認では両方の境界に届かないため成功し、実タスクだけが失敗する。
+
+  `contextTokens` を設定すると HDO は両側を同時に閉じる:
+
+  1. **上限を上げる**: agent step の直前（および `doctor` の preflight）に `FROM <model>` / `PARAMETER num_ctx <contextTokens>` の Modelfile から `ollama create hdo-ctx-<model>-<hash>-<contextTokens>` で派生モデルを作り、`--model` にはそちらを渡す。`ollama create` は manifest を書くだけで重みを複製もロードもしない軽量操作なので、毎 run 実行しても実用上のコストは小さい。
+  2. **上限に収める**: runner 環境へ `CLAUDE_CODE_MAX_CONTEXT_TOKENS=<contextTokens>` を渡し、Claude CLI が 200000 ではなく実際の window を基準に auto-compaction するようにする。ターンを重ねて履歴が伸びていく分はこれで要約され、Ollama 側の切り詰めに到達しなくなる。
+
+  1 だけでは「失敗するまでのターン数が増える」だけで、十分に長いタスクはやはり失敗する。**構造的に効くのは 2 であり、1 はその作業領域を広げる**という関係にある。
+
+  ただし 2 が抑えられるのは**ターンの積み重ねによる増加**だけで、window を単独で超えるような巨大な tool result（大きなファイルの一括読み込みなど）は compaction では追い出せない。この場合 Claude CLI は `compaction cannot help` を記録したうえで送信し、Ollama は黙って切り詰めるため、**エラーではなく「切り詰められた内容に基づく誤った回答」になり得る**。unattended 運用ではこちらのほうが厄介なので、local worker には巨大ファイルの一括読み込みを伴うタスクを渡さない前提で使う。
+
+  **`contextTokens` には実用下限がある（57344）。** Claude CLI は宣言した window から固定の予備枠を先に差し引く: 未知のモデルでは `maxOutputTokens` が 32000 になり、そのうち 20000 が出力用に留保され、さらにその残りの 3000 手前で送信自体を拒否する。つまり実際に prompt へ使えるのは `contextTokens - 23000` しかない。実測（Claude CLI 2.1.250 + Ollama 0.33.2 + `qwen3.8:27b-q4_K_M`、README を 1 ファイル読むだけの些細なタスク）:
+
+  | `contextTokens` | 結果 |
+  | --- | --- |
+  | 32768 | `terminal_reason: blocking_limit` / `Prompt is too long` |
+  | 40960 | 同上 |
+  | 49152 | 同上 |
+  | 57344 | 成功 |
+  | 65536 | 成功 |
+
+  このため HDO は claude+ollama runner の `contextTokens` が 57344 未満なら configuration error にする。`CLAUDE_CODE_MAX_OUTPUT_TOKENS` でこの予備枠を縮められないことも実測で確認済み（未知のモデルでは無視され `maxOutputTokens` は 32000 のまま）。
+
+  なお Ollama の `num_ctx` は prompt と生成の両方を収める必要があるが、CLI が留保するのは 20000 で、報告される `maxOutputTokens` は 32000 である。理論上は prompt 上限 + 生成上限が `num_ctx` を超え得る（未観測）。
+
+  なお Ollama route の context window は runner 定義だけが決める。`Get-HdoSafeEnvironment` は secret 以外の環境変数をそのまま runner process へ渡すため、operator が export した `CLAUDE_CODE_MAX_CONTEXT_TOKENS` は claude+ollama runner では破棄したうえで `contextTokens` から再設定する。cloud runner では破棄しない。HDO は cloud runner の endpoint を固定しないので gateway 経由の未知 model ID という構成があり得るが、cloud では `contextTokens` 自体が configuration error であるため、環境変数以外に window を宣言する手段が無いためである。
+
+  `ollama create` 自体が失敗した場合（Modelfile の構文エラーや base model 不在など）は ollama の stderr を含めて fail-closed する。ただし `ollama create` は num_ctx がハードウェアやモデルの実際の上限を超えていても manifest 作成自体は成功しうるため、それを超える `contextTokens` を要求した場合の失敗は実際の推論（agent step の実行時）まで顕在化しないことがある。`contextTokens` を設定しない claude+ollama runner は上記の落とし穴をそのまま踏むため、doctor が warning を出す。requested output の `model` は引き続き設定ファイル上のモデル名を報告し、派生モデル名は内部の transport 詳細として `stderr.log` からのみ確認できる。なお `no user query found in messages` で失敗した場合、HDO は failure detail に context window 超過である旨の診断を追記する。
 - **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
 
 ### 4.4 Command adapter
@@ -316,10 +350,15 @@ pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
 2. `ollama list` の成功
 3. runner が指定した model の存在
 4. （claude+ollama runner が `contextTokens` を設定している場合）4.3 で説明した derived context model を実際に `ollama create` できること
+5. （claude+ollama runner が `contextTokens` を設定していない場合）長い run で確実に失敗する構成である旨の warning
 
 model がなければ導入方法を自動実行せず fail する。Ollama が不調でも cloud runner へ暗黙 fallback しない。
 
-`claude-ollama-implementer` は既定で `contextTokens: 65536` を設定している（Ollama 自身が Claude Code 向けに公開している推奨値）。これを外す、または元のモデルの実行時 context window より小さい値のままにすると、疎通確認レベルの小さいタスクは成功するのに、実サイズの repository file を読む実タスクだけが上記の 500 エラーで失敗する、というこの profile の既知の落とし穴を再び踏む。
+`claude-ollama-implementer` は既定で `contextTokens: 65536` を設定している（Ollama 自身が Claude Code 向けに公開している推奨値）。これを外すと、疎通確認レベルの小さいタスクは成功するのに実タスクだけが 4.3 の 500 エラーで失敗する、というこの profile の既知の落とし穴を再び踏む。
+
+この値は VRAM とのトレードオフになるが、**下げて妥協するという選択肢は実質的に無い**。`num_ctx` を上げるほど KV cache が VRAM を占め、モデル本体が GPU に載りきらなくなった時点で推論速度が大きく落ちる（実測例: RTX 4090 + `qwen3.8:27b-q4_K_M` では 32768 を超えると顕著に遅くなる）。しかし 4.3 の実測表のとおり、`contextTokens` を 57344 未満に下げると Claude CLI の予備枠だけで prompt 領域が尽き、些細なタスクすら `Prompt is too long` で失敗する（HDO は configuration error として事前に弾く）。
+
+つまり **VRAM が 65536 tokens 分の KV cache を保持できないマシンでは、この profile は速度面で実用にならない**。その場合は implement/fix も cloud runner へ回すのが正しい判断で、`contextTokens` を下げて凌ぐことはできない。
 
 LM Studio は Codex CLI の `--local-provider lmstudio` へ委譲する。MVP の doctor は runner command の存在までは検査するが、LM Studio server/model の専用 probe は行わないため、接続と model の利用可否は step 実行時に fail-closed で判定される。
 

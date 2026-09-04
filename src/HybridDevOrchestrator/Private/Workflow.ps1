@@ -83,7 +83,14 @@ function Test-HdoEnvironment {
                     # store, so -ReadOnly (a documented no-mutation guarantee for
                     # doctor/run -DryRun) must skip it like the paths:writable probe below.
                     $contextTokens = [int](Get-HdoValue $runner 'contextTokens' 0)
-                    if ([string]$runner.type -eq 'claude' -and $found -and $contextTokens -gt 0) {
+                    if ([string]$runner.type -eq 'claude' -and $found -and $contextTokens -le 0) {
+                        # Without contextTokens the Claude CLI assumes a 200000-token window
+                        # for this unrecognized model id and never compacts, while Ollama runs
+                        # the model at its much smaller default. Short tasks stay under both
+                        # and pass; any real multi-turn task is certain to fail mid-run.
+                        Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'warning' "Claude/Ollama runner '$runnerName' does not set contextTokens, so HDO cannot bound the conversation to the model's real context window. Short tasks succeed, but longer agentic runs will fail once the transcript outgrows Ollama's default context." $false
+                    }
+                    elseif ([string]$runner.type -eq 'claude' -and $found -and $contextTokens -gt 0) {
                         if ($ReadOnly) {
                             Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'skipped' "Read-only preflight does not create the $contextTokens-token derived Ollama model." $false
                         }
@@ -91,7 +98,12 @@ function Test-HdoEnvironment {
                             try {
                                 $derivedModel = Resolve-HdoOllamaContextModel -Model $model -ContextTokens $contextTokens `
                                     -WorkingDirectory ([string]$Config.repositoryPath) -TimeoutSeconds 300
-                                Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'pass' "Derived a $contextTokens-token context model '$derivedModel' from '$model'."
+                                # Deliberately narrow wording: declaring the window makes the
+                                # CLI compact against it, which bounds turn-by-turn growth.
+                                # It does not bound a single turn whose tool results already
+                                # exceed the window -- compaction cannot evict those, and
+                                # Ollama truncates them silently. Do not promise otherwise.
+                                Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'pass' "Derived a $contextTokens-token context model '$derivedModel' from '$model'; the Claude CLI is told the same window so it compacts against it rather than assuming 200000 tokens."
                             }
                             catch {
                                 Add-HdoPreflightCheck $checks "ollama-context:$runnerName" 'fail' $_.Exception.Message

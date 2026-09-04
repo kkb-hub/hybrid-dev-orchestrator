@@ -417,6 +417,17 @@ function Test-HdoConfiguration {
         if ($type -eq 'claude' -and $provider -ne 'ollama' -and (Get-HdoValue $runner 'contextTokens')) {
             $errors.Add("Claude runner '$runnerName' cannot set contextTokens for provider '$provider'; the Claude CLI exposes no context-window argument against Anthropic's API. Set provider 'ollama' to let HDO enforce it via a derived local model instead.")
         }
+        # The Claude CLI carves a fixed reserve out of the declared window before any prompt
+        # is sent: it withholds min(maxOutputTokens, 20000) -- and maxOutputTokens is 32000
+        # for a model it does not recognize -- then refuses to send at all 3000 tokens below
+        # what remains. A declared window under this floor therefore has less usable prompt
+        # space than HDO's own system prompt and tool definitions occupy, and every step
+        # dies with 'Prompt is too long' before reaching the model. Measured on Claude CLI
+        # 2.1.250 + Ollama 0.33.2 + qwen3.8:27b-q4_K_M: 32768, 40960 and 49152 all fail a
+        # trivial single-file read this way; 57344 is the smallest value that completes.
+        if ($type -eq 'claude' -and $provider -eq 'ollama' -and (Get-HdoValue $runner 'contextTokens') -and [int]$runner.contextTokens -lt 57344) {
+            $errors.Add("Claude/Ollama runner '$runnerName' contextTokens $([int]$runner.contextTokens) is below the usable floor of 57344; the Claude CLI reserves 23000 tokens of the declared window before it will send a prompt at all, so smaller windows fail every step with 'Prompt is too long'. Use 65536, or route implement/fix to a cloud runner if the GPU cannot hold that many tokens.")
+        }
         $reasoningEffort = [string](Get-HdoValue $runner 'reasoningEffort' '')
         if ($type -eq 'claude' -and $reasoningEffort -and $reasoningEffort -notin @('low', 'medium', 'high', 'xhigh', 'max')) {
             $errors.Add("Claude runner '$runnerName' reasoningEffort '$reasoningEffort' is not supported; the Claude CLI --effort accepts low, medium, high, xhigh, or max and silently ignores other values.")
