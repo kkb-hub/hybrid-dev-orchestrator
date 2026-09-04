@@ -35,6 +35,7 @@ $watchedPaths = @(
     'skills/',
     'config/',
     'schemas/',
+    'workers/',
     $claudeManifestPath,
     $codexManifestPath
 )

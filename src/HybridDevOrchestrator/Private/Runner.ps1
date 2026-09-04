@@ -512,6 +512,11 @@ function Invoke-HdoAgentStep {
         step = $Step
         iteration = $Iteration
         runId = [string]$Run.id
+        # A command runner's process working directory is the target repository's
+        # worktree, not HDO's own install, so a worker shipped alongside HDO cannot be
+        # referenced by a relative path. This token lets configuration point at one
+        # without hard-coding an absolute path that breaks on every other machine.
+        hdoRoot = [string]$script:HdoRepositoryRoot
     }
 
     if ($type -eq 'codex') {

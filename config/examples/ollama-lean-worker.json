@@ -1,0 +1,103 @@
+{
+  "$schema": "../../schemas/hdo-config.schema.json",
+  "schemaVersion": 1,
+  "activeProfile": "ollama-lean-worker",
+  "profiles": {
+    "ollama-lean-worker": {
+      "steps": {
+        "plan": "codex-cloud-planner",
+        "implement": "ollama-lean-implementer",
+        "review": "codex-cloud-reviewer",
+        "fix": "ollama-lean-implementer"
+      }
+    }
+  },
+  "runners": {
+    "codex-cloud-planner": {
+      "type": "codex",
+      "provider": "cloud",
+      "command": "codex",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 900,
+      "passEnvironment": [],
+      "extraArgs": []
+    },
+    "ollama-lean-implementer": {
+      "type": "command",
+      "provider": "ollama",
+      "command": "pwsh",
+      "model": "qwen3.8:27b-q4_K_M",
+      "contextTokens": 32768,
+      "sandbox": "workspace-write",
+      "timeoutSeconds": 1800,
+      "promptTransport": "file",
+      "passEnvironment": [],
+      "extraArgs": [
+        "-NoProfile",
+        "-File",
+        "{hdoRoot}/workers/hdo-ollama-worker.ps1",
+        "-PromptFile",
+        "{promptFile}",
+        "-OutputFile",
+        "{outputFile}",
+        "-SchemaFile",
+        "{schemaFile}",
+        "-WorkingDirectory",
+        "{workingDirectory}",
+        "-Model",
+        "{model}",
+        "-ContextTokens",
+        "{contextTokens}"
+      ]
+    },
+    "codex-cloud-reviewer": {
+      "type": "codex",
+      "provider": "cloud",
+      "command": "codex",
+      "model": "gpt-5.6-sol",
+      "reasoningEffort": "high",
+      "sandbox": "read-only",
+      "timeoutSeconds": 1200,
+      "passEnvironment": [],
+      "extraArgs": []
+    }
+  },
+  "github": {
+    "labels": {
+      "ready": "hdo:ready",
+      "skip": "hdo:skip",
+      "statusPrefix": "hdo:status/",
+      "claimed": "hdo:status/claimed",
+      "implementing": "hdo:status/implementing",
+      "review": "hdo:status/review",
+      "changesRequested": "hdo:status/changes-requested",
+      "approved": "hdo:status/approved",
+      "escalated": "hdo:status/blocked",
+      "failed": "hdo:status/failed",
+      "cancelled": "hdo:status/cancelled"
+    },
+    "priorityOrder": [
+      "hdo:priority/p0",
+      "hdo:priority/p1",
+      "hdo:priority/p2",
+      "hdo:priority/p3"
+    ],
+    "writeBack": "status",
+    "candidateLimit": 50,
+    "assignOnClaim": true
+  },
+  "workflow": {
+    "maxFixAttempts": 2,
+    "implicitFallback": false,
+    "onNoDiff": "fail",
+    "onValidationFailure": "request-changes",
+    "onMaxFixAttempts": "escalate"
+  },
+  "paths": {
+    "worktreeRoot": "%LOCALAPPDATA%/hdo/worktrees",
+    "artifactRoot": "%LOCALAPPDATA%/hdo/runs"
+  },
+  "projectContractPath": ".hdo/project.json"
+}

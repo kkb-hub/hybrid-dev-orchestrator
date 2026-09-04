@@ -249,8 +249,13 @@ command runner は既定で prompt を stdin へ渡し、`extraArgs` 内の次�
 - `{step}`
 - `{iteration}`
 - `{runId}`
+- `{hdoRoot}`
 
 shell evaluation は行わない。command adapter の `sandbox` は HDO の routing policy として検査されるが、任意 executable に OS-level sandbox を自動付与するものではない。
+
+`{hdoRoot}` は HDO 自身の install 先を指す。command runner の process working directory は対象 repository の worktree なので、HDO と一緒に配布される worker（6.1 参照）は相対パスでは指せず、この token が無いとマシンごとに異なる絶対パスを config へ直書きする必要がある。
+
+repository config は command runner を定義・変更・選択できない（3.1 参照）。command runner を選べるのは explicit / user configuration だけであり、任意 executable を起動する経路は operator の明示的な選択に限定されている。
 
 ### 4.5 Environment と extraArgs
 
@@ -356,9 +361,36 @@ model がなければ導入方法を自動実行せず fail する。Ollama が�
 
 `claude-ollama-implementer` は既定で `contextTokens: 65536` を設定している（Ollama 自身が Claude Code 向けに公開している推奨値）。これを外すと、疎通確認レベルの小さいタスクは成功するのに実タスクだけが 4.3 の 500 エラーで失敗する、というこの profile の既知の落とし穴を再び踏む。
 
-この値は VRAM とのトレードオフになるが、**下げて妥協するという選択肢は実質的に無い**。`num_ctx` を上げるほど KV cache が VRAM を占め、モデル本体が GPU に載りきらなくなった時点で推論速度が大きく落ちる（実測例: RTX 4090 + `qwen3.8:27b-q4_K_M` では 32768 を超えると顕著に遅くなる）。しかし 4.3 の実測表のとおり、`contextTokens` を 57344 未満に下げると Claude CLI の予備枠だけで prompt 領域が尽き、些細なタスクすら `Prompt is too long` で失敗する（HDO は configuration error として事前に弾く）。
+この値は VRAM とのトレードオフになるが、**この profile では下げて妥協するという選択肢が無い**。`num_ctx` を上げるほど KV cache が VRAM を占め、モデル本体が GPU に載りきらなくなった時点で推論速度が大きく落ちる（実測例: RTX 4090 + `qwen3.8:27b-q4_K_M` では 32768 を超えると顕著に遅くなる）。しかし 4.3 の実測表のとおり、`contextTokens` を 57344 未満に下げると Claude CLI の予備枠だけで prompt 領域が尽き、些細なタスクすら `Prompt is too long` で失敗する（HDO は configuration error として事前に弾く）。
 
-つまり **VRAM が 65536 tokens 分の KV cache を保持できないマシンでは、この profile は速度面で実用にならない**。その場合は implement/fix も cloud runner へ回すのが正しい判断で、`contextTokens` を下げて凌ぐことはできない。
+つまり **VRAM が 65536 tokens 分の KV cache を保持できないマシンでは、この profile は速度面で実用にならない**。この場合の選択肢は、implement/fix も cloud runner へ回すか、次の lean worker profile へ切り替えるかのどちらかで、`contextTokens` を下げて凌ぐことはできない。
+
+## 6.1 Ollama lean worker profile
+
+`config/examples/ollama-lean-worker.json` は、local step を Claude CLI ではなく HDO 同梱の `workers/hdo-ollama-worker.ps1` に `type: command` runner として実行させる。plan / review が cloud のままである点は 6 と同じで、違うのは local 側の harness だけである。
+
+**この profile が存在する理由は context の固定費にある。** 4.3 のとおり Claude CLI は宣言 window から 23000 tokens を先に差し引くため、汎用の対話型 agent としての機能と引き換えに `contextTokens` の下限が 57344 になる。lean worker は HDO が必要とする tool 定義と system prompt しか積まないため、同じ仕事の固定費が桁違いに小さい。
+
+| harness | 送信前の固定費 | `contextTokens` の下限 |
+| --- | --- | --- |
+| Claude CLI（6 の profile） | 予備枠 23000 + 独自 system prompt + tool 定義 | 57344 |
+| lean worker（本 profile） | 数百 tokens | schema 下限の 1024 |
+
+実測（Ollama 0.33.2 + `qwen3.8:27b-q4_K_M`、`num_ctx: 32768`）では、1 ファイルの off-by-one 修正が read → edit の 3 ターンで完了し、ピークの prompt は 712 tokens だった。**同クラスのタスクが Claude CLI では 32768 で `Prompt is too long` になる**のに対し、lean worker は window の 2% しか使っていない。このため example は 24GB VRAM の GPU に完全に載る `contextTokens: 32768` を既定にしている。
+
+設計上の性質:
+
+- **派生モデルが不要**: Ollama の native `/api/chat` は `num_ctx` を request option として受け付けるため、4.3 の `ollama create` による派生モデルは要らない。`contextTokens` がそのまま `options.num_ctx` になる
+- **tool boundary は同じ**: 公開するのは workspace 配下の `read_file` / `list_files` / `search_files`（および read-only でない場合は `write_file` / `edit_file`）だけで、shell、git、build、validation gate は実行しない。workspace 外への path は拒否する。read-only の制約は tool 一覧から外すだけでなく、実際に file system へ触れる dispatch 地点でも強制する
+- **tool result に上限がある**: 1 回の tool result は既定 20000 文字で切り詰め、切り詰めた事実をモデルへ返す。4.3 で述べた「単一ターンの巨大な tool result が黙って切り詰められて誤答になる」問題を、harness 側で制御できる形にしている
+- **turn 上限**: 既定 40 ターンで打ち切り、未完了分を `blockers` として報告させる
+
+制約:
+
+- command runner なので repository config からは選択できない（4.4 参照）。explicit / user configuration で明示的に選ぶ必要がある
+- Claude CLI が持つ汎用機能（sub-agent、MCP、hook など）は無い。狙いは「HDO の implement/fix step を最小の context で回すこと」に限定されている
+
+検証は `tests/test-lean-worker.ps1`（stub server を使い実 Ollama 不要、CI で実行）と `tests/test-lean-worker-smoke.ps1 -Run`（実 Ollama を使う opt-in）で行う。
 
 LM Studio は Codex CLI の `--local-provider lmstudio` へ委譲する。MVP の doctor は runner command の存在までは検査するが、LM Studio server/model の専用 probe は行わないため、接続と model の利用可否は step 実行時に fail-closed で判定される。
 

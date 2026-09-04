@@ -707,6 +707,23 @@ Keep the cycle bounded.
     }
     Assert-Hdo ($contextTokenExpansion -eq '--context=8192') 'command argument templates can explicitly consume contextTokens'
 
+    # A command runner's process working directory is the target repository, so a worker
+    # shipped with HDO is unreachable by relative path and would otherwise have to be
+    # named by an absolute path that differs on every machine.
+    $hdoRootExpansion = & $module {
+        Expand-HdoArgumentTemplate '{hdoRoot}/workers/hdo-ollama-worker.ps1' ([ordered]@{ hdoRoot = 'C:\install\hdo' })
+    }
+    Assert-Hdo ($hdoRootExpansion -eq 'C:\install\hdo/workers/hdo-ollama-worker.ps1') 'command argument templates can locate files shipped alongside HDO'
+    $leanWorkerConfig = Get-HdoConfig -RepositoryPath $repositoryRoot -ConfigPath (Join-Path $repositoryRoot 'config/examples/ollama-lean-worker.json')
+    $leanWorkerRunner = $leanWorkerConfig.runners['ollama-lean-implementer']
+    Assert-Hdo ($leanWorkerRunner.type -eq 'command' -and $leanWorkerRunner.provider -eq 'ollama') 'the lean worker example routes local work through a command runner'
+    Assert-Hdo ($leanWorkerRunner.promptTransport -eq 'file') 'the lean worker example receives its prompt as a file rather than on stdin'
+    # The whole point of the lean harness: it has no Claude CLI reserve to pay for, so it
+    # can use a window that fits entirely in a 24 GB GPU.
+    Assert-Hdo ([int]$leanWorkerRunner.contextTokens -eq 32768) 'the lean worker example uses the VRAM-friendly window the Claude CLI route cannot support'
+    Assert-Hdo (@($leanWorkerRunner.extraArgs) -contains '{hdoRoot}/workers/hdo-ollama-worker.ps1') 'the lean worker example locates its worker without a machine-specific absolute path'
+    Assert-Hdo (Test-Path -LiteralPath (Join-Path $repositoryRoot 'workers/hdo-ollama-worker.ps1') -PathType Leaf) 'the worker the example names is actually shipped'
+
     $badLabelPrefixConfig = Copy-HdoObject $config
     $badLabelPrefixConfig.github.labels.statusPrefix = 'custom:status/'
     $badLabelPrefixResult = Test-HdoConfiguration $badLabelPrefixConfig
