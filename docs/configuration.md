@@ -610,3 +610,4 @@ secret は user config にも保存しない。runner が authentication を必�
 | gate unknown | Issue の Validation Gate IDs と `.hdo/project.json` |
 | GitHub actor rejected | `github.trustedActors` と ready label event / `gh api user` |
 | write-back を止めたい | run に `-NoWriteBack`、または `github.writeBack: none` |
+| `hdo cleanup` が `Filename too long` で失敗する、または失敗後に worktree ディレクトリだけが残る | Windows で worktree 配下（`node_modules/.pnpm` 等）のパスが `MAX_PATH` (260) を超えている。HDO は git 呼び出しに `-c core.longpaths=true` を付けるが、global / system config に `core.longpaths=false` があると git はそちらを優先する。`git worktree remove` が admin entry を消した後に失敗した場合、HDO は同じ cleanup 内でディレクトリを削除し `git worktree prune` する。既に残骸だけになった worktree（`git worktree list` に無い）は、run の branch がまだ存在していれば `hdo cleanup -RunId <id> -Force` で削除できる。恒久対策は `git config --global core.longpaths true` |

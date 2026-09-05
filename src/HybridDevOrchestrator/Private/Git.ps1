@@ -6,7 +6,15 @@ function Invoke-HdoGit {
         [switch]$ThrowOnError
     )
 
-    return Invoke-HdoProcess -Command 'git' -Arguments $Arguments -WorkingDirectory $WorkingDirectory `
+    # Windows worktrees can exceed MAX_PATH once dependency installers (e.g. pnpm's flat
+    # .pnpm store) create deeply nested paths. This per-invocation setting (never persisted
+    # to the user's repository config) lets git create and delete such paths when no config
+    # file sets core.longpaths at all. Git resolves core.longpaths while it is still reading
+    # its global/system config files, so a global- or system-level core.longpaths=false wins
+    # over this -c (a repository-local value does not); that is why Remove-HdoRunWorktree
+    # also carries a filesystem fallback (issue #25).
+    $effectiveArguments = if ($IsWindows) { @('-c', 'core.longpaths=true') + $Arguments } else { $Arguments }
+    return Invoke-HdoProcess -Command 'git' -Arguments $effectiveArguments -WorkingDirectory $WorkingDirectory `
         -TimeoutSeconds $TimeoutSeconds -ThrowOnError:$ThrowOnError
 }
 
@@ -176,6 +184,30 @@ function Test-HdoPathWithinRoot {
     return $fullPath.StartsWith($fullRoot + [System.IO.Path]::DirectorySeparatorChar, $comparison)
 }
 
+function Test-HdoOrphanedWorktree {
+    param(
+        [Parameter(Mandatory)][string]$WorktreePath,
+        [Parameter(Mandatory)][string]$RepositoryPath,
+        [Parameter(Mandatory)][string]$WorktreeRoot,
+        [Parameter(Mandatory)][string]$RunId,
+        [AllowEmptyString()][string]$Branch
+    )
+
+    # A worktree whose `git worktree remove` died on "Filename too long" (issue #25) has
+    # already lost its admin entry, its gitfile and its tracked files: git no longer lists
+    # it and only the undeletable subtree (typically node_modules) is left. Recognise that
+    # shape strictly so cleanup only ever finishes HDO's own worktree slot for this run:
+    # the directory is exactly <worktreeRoot>/<runId> (how New-HdoWorktree names it), the
+    # run's branch still exists in this repository, and nothing inside claims to be a Git
+    # checkout of its own.
+    $expectedPath = Get-HdoComparableFullPath (Join-Path $WorktreeRoot $RunId)
+    if ((Get-HdoComparableFullPath $WorktreePath) -ne $expectedPath) { return $false }
+    if (Test-Path -LiteralPath (Join-Path $WorktreePath '.git')) { return $false }
+    if (-not $Branch) { return $false }
+    $branchResult = Invoke-HdoGit @('show-ref', '--verify', '--quiet', "refs/heads/$Branch") $RepositoryPath
+    return $branchResult.exitCode -eq 0
+}
+
 function Remove-HdoRunWorktree {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
     param(
@@ -199,24 +231,69 @@ function Remove-HdoRunWorktree {
         return [ordered]@{ runId = $RunId; removed = $false; reason = 'already-missing'; path = $worktreePath }
     }
 
-    $listed = Invoke-HdoGit @('worktree', 'list', '--porcelain') ([string]$config.repositoryPath) -ThrowOnError
+    $repositoryPath = [string]$config.repositoryPath
+    $listed = Invoke-HdoGit @('worktree', 'list', '--porcelain') $repositoryPath -ThrowOnError
     $listedWorktreePath = @($listed.stdout -split "`r?`n" | Where-Object { $_ -like 'worktree *' } |
         ForEach-Object { $_.Substring('worktree '.Length) } |
         Where-Object { (Get-HdoComparableFullPath $_) -eq (Get-HdoComparableFullPath $worktreePath) } |
         Select-Object -First 1)
+    $orphaned = $false
     if ($listedWorktreePath.Count -eq 0) {
-        throw "Refusing cleanup because Git does not list the target as a worktree: $worktreePath"
+        if (-not (Test-HdoOrphanedWorktree $worktreePath $repositoryPath ([string]$config.paths.worktreeRoot) $RunId ([string](Get-HdoValue $run 'worktree.branch' '')))) {
+            throw "Refusing cleanup because Git does not list the target as a worktree: $worktreePath"
+        }
+        if (-not $Force) {
+            throw "Refusing cleanup because Git does not list the target as a worktree: $worktreePath. The directory is an orphaned worktree of this repository whose Git admin entry is already gone (issue #25); re-run with -Force to delete it."
+        }
+        $orphaned = $true
     }
-    $dirty = Invoke-HdoGit @('status', '--porcelain=v1', '--untracked-files=all') $worktreePath -ThrowOnError
-    if ($dirty.stdout.Trim() -and -not $Force) {
-        throw "Worktree has uncommitted changes. Re-run with -Force only after preserving the diff: $worktreePath"
+    if (-not $orphaned) {
+        $dirty = Invoke-HdoGit @('status', '--porcelain=v1', '--untracked-files=all') $worktreePath -ThrowOnError
+        if ($dirty.stdout.Trim() -and -not $Force) {
+            throw "Worktree has uncommitted changes. Re-run with -Force only after preserving the diff: $worktreePath"
+        }
     }
 
     if ($PSCmdlet.ShouldProcess($worktreePath, 'Remove HDO Git worktree')) {
-        $arguments = @('worktree', 'remove')
-        if ($Force) { $arguments += '--force' }
-        $arguments += $listedWorktreePath[0]
-        Invoke-HdoGit $arguments ([string]$config.repositoryPath) -TimeoutSeconds 300 -ThrowOnError | Out-Null
+        $removeResult = $null
+        if (-not $orphaned) {
+            $arguments = @('worktree', 'remove')
+            if ($Force) { $arguments += '--force' }
+            $arguments += $listedWorktreePath[0]
+            $removeResult = Invoke-HdoGit $arguments $repositoryPath -TimeoutSeconds 300
+        }
+        if ($orphaned -or $removeResult.exitCode -ne 0) {
+            # Git deletes its worktree admin entry (and tracked files) before a
+            # "Filename too long" failure on Windows, leaving the directory behind while
+            # `git worktree list` no longer shows it. Only that shape - the target is no
+            # longer listed - is finished here with a filesystem delete plus
+            # `git worktree prune`; any other refusal (locked worktree, submodules, ...)
+            # is surfaced unchanged so this never deletes what git declined to remove.
+            $gitFailure = ''
+            if ($removeResult) {
+                $detail = if ($removeResult.stderr) { $removeResult.stderr.Trim() } else { $removeResult.stdout.Trim() }
+                $gitFailure = "Command 'git' failed with exit code $($removeResult.exitCode). $detail"
+                $stillListed = @((Invoke-HdoGit @('worktree', 'list', '--porcelain') $repositoryPath -ThrowOnError).stdout -split "`r?`n" |
+                    Where-Object { $_ -like 'worktree *' } |
+                    ForEach-Object { $_.Substring('worktree '.Length) } |
+                    Where-Object { (Get-HdoComparableFullPath $_) -eq (Get-HdoComparableFullPath $worktreePath) })
+                if ($stillListed.Count -gt 0) { throw $gitFailure }
+                Write-Verbose "git worktree remove failed for '$worktreePath' after unregistering it ($detail); finishing the removal on the filesystem."
+            }
+            $removalError = ''
+            if (Test-Path -LiteralPath $worktreePath -PathType Container) {
+                # .NET on PowerShell 7 handles paths beyond MAX_PATH itself (it adds the
+                # \\?\ prefix internally), so the literal path is passed as-is.
+                try { Remove-Item -LiteralPath $worktreePath -Recurse -Force -ErrorAction Stop }
+                catch { $removalError = $_.Exception.Message }
+            }
+            Invoke-HdoGit @('worktree', 'prune') $repositoryPath -TimeoutSeconds 300 | Out-Null
+            if (Test-Path -LiteralPath $worktreePath -PathType Container) {
+                $suffix = if ($removalError) { " Fallback removal of '$worktreePath' failed: $removalError" } else { " Fallback removal left '$worktreePath' in place." }
+                if ($gitFailure) { throw ($gitFailure + $suffix) }
+                throw "Failed to remove orphaned worktree directory.$suffix"
+            }
+        }
         $run['cleanup'] = [ordered]@{ worktreeRemoved = $true; removedAt = Get-HdoUtcTimestamp; forced = [bool]$Force }
         Save-HdoRun $run $artifactPath
         return [ordered]@{ runId = $RunId; removed = $true; path = $worktreePath; branchPreserved = $run.worktree.branch }

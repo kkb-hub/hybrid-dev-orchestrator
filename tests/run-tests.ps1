@@ -1074,6 +1074,187 @@ Keep the cycle bounded.
     finally {
         if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
     }
+
+    if ($IsWindows) {
+        # Regression tests for issue #25: git deletes its worktree admin entry (and tracked
+        # files) before failing with "Filename too long" on a deep node_modules path, leaving
+        # the directory behind while `git worktree list` no longer shows it. Invoke-HdoGit
+        # forces core.longpaths=true per invocation (effective only when no config file sets
+        # the key), and Remove-HdoRunWorktree finishes the removal on the filesystem plus
+        # `git worktree prune` when git has already unregistered the worktree.
+        #
+        # git config is isolated for the whole block: a developer's global core.longpaths=true
+        # would otherwise make every case pass against unfixed code.
+        $longPathRepository = Join-Path $repositoryRoot "test-results/longpath-repo-$([guid]::NewGuid().ToString('N'))"
+        $longPathWorktreeRoot = Join-Path $repositoryRoot "test-results/longpath-worktrees-$([guid]::NewGuid().ToString('N'))"
+        $longPathArtifactRoot = Join-Path $repositoryRoot "test-results/longpath-artifacts-$([guid]::NewGuid().ToString('N'))"
+        $longPathGlobalConfig = Join-Path $repositoryRoot "test-results/longpath-gitconfig-$([guid]::NewGuid().ToString('N'))"
+        $savedGitEnvironment = @{}
+        foreach ($name in @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')) {
+            $savedGitEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
+        }
+        New-Item -ItemType Directory -Path $longPathRepository -Force | Out-Null
+        try {
+            [IO.File]::WriteAllText($longPathGlobalConfig, '')
+            $env:GIT_CONFIG_GLOBAL = $longPathGlobalConfig
+            $env:GIT_CONFIG_NOSYSTEM = '1'
+            & git -C $longPathRepository init --quiet
+            & git -C $longPathRepository config user.email 'hdo-tests@example.invalid'
+            & git -C $longPathRepository config user.name 'HDO Tests'
+            & git -C $longPathRepository config commit.gpgSign false
+            Set-Content -LiteralPath (Join-Path $longPathRepository 'README.md') -Value 'longpath cleanup regression fixture' -Encoding utf8NoBOM
+            & git -C $longPathRepository add -- README.md
+            & git -C $longPathRepository commit --quiet -m baseline
+
+            $longPathConfigOverride = Join-Path $longPathRepository 'hdo-longpath-override.json'
+            [ordered]@{
+                paths = [ordered]@{
+                    worktreeRoot = $longPathWorktreeRoot
+                    artifactRoot = $longPathArtifactRoot
+                }
+            } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $longPathConfigOverride -Encoding utf8NoBOM
+            $longPathConfig = Get-HdoConfig -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig
+
+            # Creates a worktree + run.json for $RunId and, unless -SkipDeepPath, a pnpm-shaped
+            # nested path inside it that exceeds MAX_PATH. Returns the worktree record.
+            $newLongPathRun = {
+                param($RunId, [switch]$SkipDeepPath)
+                $worktree = & $module {
+                    param($Config, $RunId, $IssueNumber)
+                    New-HdoWorktree -Config $Config -RunId $RunId -IssueNumber $IssueNumber
+                } $longPathConfig $RunId 25
+                $artifactPath = Join-Path $longPathArtifactRoot $RunId
+                New-Item -ItemType Directory -Path $artifactPath -Force | Out-Null
+                [ordered]@{
+                    schemaVersion = 1
+                    id = $RunId
+                    state = 'IMPLEMENTING'
+                    iteration = 0
+                    createdAt = '2026-09-05T00:00:00.0000000+00:00'
+                    updatedAt = '2026-09-05T00:00:00.0000000+00:00'
+                    artifactPath = $artifactPath
+                    worktree = $worktree
+                } | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath (Join-Path $artifactPath 'run.json') -Encoding utf8NoBOM
+                if (-not $SkipDeepPath) {
+                    $deepSegmentOne = ".pnpm-$('x' * 120)"
+                    $deepSegmentTwo = "pkg-$('y' * 120)"
+                    $deepDirectory = Join-Path $worktree.path (Join-Path 'node_modules' (Join-Path $deepSegmentOne (Join-Path 'node_modules' $deepSegmentTwo)))
+                    $deepFilePath = Join-Path $deepDirectory 'deeply-nested-file.txt'
+                    [IO.Directory]::CreateDirectory($deepDirectory) | Out-Null
+                    [IO.File]::WriteAllText($deepFilePath, 'long path regression fixture')
+                    Assert-Hdo ($deepFilePath.Length -gt 300) "the regression fixture path for '$RunId' exceeds 300 characters (issue #25 reproduction shape)"
+                }
+                return $worktree
+            }
+            $listedWorktreeCount = {
+                param($Path)
+                $comparable = & $module { param($Path) Get-HdoComparableFullPath $Path } $Path
+                return @(& git -C $longPathRepository worktree list --porcelain | Where-Object { $_ -like 'worktree *' } |
+                    ForEach-Object { $_.Substring('worktree '.Length) } |
+                    Where-Object { (& $module { param($Path) Get-HdoComparableFullPath $Path } $_) -eq $comparable }).Count
+            }
+
+            # Case 1: no config file sets core.longpaths, so Invoke-HdoGit's -c takes effect and
+            # `git worktree remove` itself succeeds on the long path.
+            $longPathWorktree = & $newLongPathRun 'issue-25-longpath'
+            Assert-Hdo ((& $listedWorktreeCount $longPathWorktree.path) -eq 1) 'git lists the long-path worktree before cleanup (porcelain path comparison is live)'
+            $cleanupResult = Remove-HdoRunWorktree -RunId 'issue-25-longpath' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false
+            Assert-Hdo ($cleanupResult.removed -eq $true) 'cleanup reports success for a worktree containing paths beyond MAX_PATH on Windows (issue #25)'
+            Assert-Hdo (-not (Test-Path -LiteralPath $longPathWorktree.path)) 'the long-path worktree directory no longer exists on disk after cleanup (issue #25)'
+            Assert-Hdo ((& $listedWorktreeCount $longPathWorktree.path) -eq 0) 'git no longer lists the long-path worktree after cleanup (issue #25)'
+
+            # Case 2: a config-level core.longpaths=false (GIT_CONFIG_COUNT is parsed after -c
+            # and overrides it, exactly like a file-level setting does) makes `git worktree
+            # remove` fail after unregistering the worktree; the filesystem fallback finishes.
+            $env:GIT_CONFIG_COUNT = '1'
+            $env:GIT_CONFIG_KEY_0 = 'core.longpaths'
+            $env:GIT_CONFIG_VALUE_0 = 'false'
+            $fallbackWorktree = & $newLongPathRun 'issue-25-fallback'
+            $fallbackResult = Remove-HdoRunWorktree -RunId 'issue-25-fallback' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false
+            Assert-Hdo ($fallbackResult.removed -eq $true) 'cleanup falls back to a filesystem delete when git fails with Filename too long after unregistering the worktree (issue #25)'
+            Assert-Hdo (-not (Test-Path -LiteralPath $fallbackWorktree.path)) 'the fallback removed the long-path worktree directory (issue #25)'
+            Assert-Hdo ((& $listedWorktreeCount $fallbackWorktree.path) -eq 0) 'git does not list the worktree after the fallback (issue #25)'
+
+            # Case 3: a worktree that an earlier, unfixed cleanup already orphaned (directory on
+            # disk, admin entry gone) is refused without -Force and removed with -Force.
+            $orphanWorktree = & $newLongPathRun 'issue-25-orphan'
+            & git -C $longPathRepository worktree remove --force $orphanWorktree.path 2>$null
+            Assert-Hdo (Test-Path -LiteralPath $orphanWorktree.path -PathType Container) 'plain git worktree remove leaves the long-path directory behind with core.longpaths=false (issue #25 reproduction)'
+            Assert-Hdo ((& $listedWorktreeCount $orphanWorktree.path) -eq 0) 'plain git worktree remove already unregistered the orphaned worktree (issue #25 reproduction)'
+            $orphanError = $null
+            try {
+                Remove-HdoRunWorktree -RunId 'issue-25-orphan' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Confirm:$false | Out-Null
+            }
+            catch { $orphanError = $_.Exception.Message }
+            Assert-Hdo ($orphanError -like 'Refusing cleanup because Git does not list the target as a worktree:*-Force*') "an orphaned worktree is refused without -Force and the message says how to proceed (got: $orphanError)"
+            Assert-Hdo (Test-Path -LiteralPath $orphanWorktree.path -PathType Container) 'the orphaned worktree stays on disk when cleanup is refused'
+            $orphanResult = Remove-HdoRunWorktree -RunId 'issue-25-orphan' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false
+            Assert-Hdo ($orphanResult.removed -eq $true) 'an orphaned HDO worktree is removed with -Force (issue #25 recovery)'
+            Assert-Hdo (-not (Test-Path -LiteralPath $orphanWorktree.path)) 'the orphaned worktree directory is gone after -Force cleanup (issue #25 recovery)'
+            $env:GIT_CONFIG_COUNT = $null
+            $env:GIT_CONFIG_KEY_0 = $null
+            $env:GIT_CONFIG_VALUE_0 = $null
+
+            # Case 4: the orphan path only ever removes HDO's own worktree slot. A directory at
+            # that path that is a Git checkout of its own, or whose run branch is gone, is refused
+            # even with -Force.
+            $strangerWorktree = & $newLongPathRun 'issue-25-stranger' -SkipDeepPath
+            & git -C $longPathRepository worktree remove --force $strangerWorktree.path
+            & git -C $longPathRepository worktree prune
+            New-Item -ItemType Directory -Path $strangerWorktree.path -Force | Out-Null
+            & git -C $strangerWorktree.path init --quiet
+            [IO.File]::WriteAllText((Join-Path $strangerWorktree.path 'keep.txt'), 'not an HDO worktree')
+            $strangerError = $null
+            try {
+                Remove-HdoRunWorktree -RunId 'issue-25-stranger' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false | Out-Null
+            }
+            catch { $strangerError = $_.Exception.Message }
+            Assert-Hdo ($strangerError -eq "Refusing cleanup because Git does not list the target as a worktree: $($strangerWorktree.path)") "a foreign Git checkout at the worktree path is refused even with -Force (got: $strangerError)"
+            Assert-Hdo (Test-Path -LiteralPath (Join-Path $strangerWorktree.path 'keep.txt') -PathType Leaf) 'the foreign checkout is left untouched'
+            Remove-Item -LiteralPath (Join-Path $strangerWorktree.path '.git') -Recurse -Force
+            & git -C $longPathRepository branch -D $strangerWorktree.branch --quiet
+            $strangerError = $null
+            try {
+                Remove-HdoRunWorktree -RunId 'issue-25-stranger' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false | Out-Null
+            }
+            catch { $strangerError = $_.Exception.Message }
+            Assert-Hdo ($strangerError -eq "Refusing cleanup because Git does not list the target as a worktree: $($strangerWorktree.path)") "a leftover directory whose run branch no longer exists is refused even with -Force (got: $strangerError)"
+            Assert-Hdo (Test-Path -LiteralPath (Join-Path $strangerWorktree.path 'keep.txt') -PathType Leaf) 'the directory without a run branch is left untouched'
+
+            # Case 5: the fallback must never delete a worktree that git itself declined to
+            # remove for a reason other than "Filename too long": a locked worktree (single
+            # --force is not enough for git) surfaces git's own failure and stays on disk.
+            $lockedWorktree = & $newLongPathRun 'issue-25-locked' -SkipDeepPath
+            & git -C $longPathRepository worktree lock --reason 'hdo test lock' $lockedWorktree.path
+            $lockedError = $null
+            try {
+                Remove-HdoRunWorktree -RunId 'issue-25-locked' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false | Out-Null
+            }
+            catch { $lockedError = $_.Exception.Message }
+            Assert-Hdo ($lockedError -like "Command 'git' failed with exit code *") "a locked worktree surfaces git's own failure instead of being force-deleted by the long-path fallback (got: $lockedError)"
+            Assert-Hdo (Test-Path -LiteralPath $lockedWorktree.path -PathType Container) 'a locked worktree stays on disk when git refuses to remove it (issue #25 fallback guard)'
+            & git -C $longPathRepository worktree unlock $lockedWorktree.path
+        }
+        finally {
+            foreach ($name in $savedGitEnvironment.Keys) {
+                # SetEnvironmentVariable(name, $null) leaves an empty-string variable behind on
+                # pwsh 7 (and GIT_CONFIG_GLOBAL="" makes git ignore the global config entirely),
+                # so previously-unset variables are removed rather than assigned.
+                if ($null -eq $savedGitEnvironment[$name]) { Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue }
+                else { [Environment]::SetEnvironmentVariable($name, $savedGitEnvironment[$name]) }
+            }
+            foreach ($cleanupPath in @($longPathWorktreeRoot, $longPathArtifactRoot, $longPathRepository)) {
+                try {
+                    if (Test-Path -LiteralPath $cleanupPath) { Remove-HdoTestDirectory $cleanupPath }
+                }
+                catch { Write-Host "WARN: failed to clean up '$cleanupPath': $($_.Exception.Message)" -ForegroundColor Yellow }
+            }
+            if (Test-Path -LiteralPath $longPathGlobalConfig) { Remove-Item -LiteralPath $longPathGlobalConfig -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    else {
+        Write-Host 'SKIP: long-path worktree cleanup regression test (issue #25) only runs on Windows.' -ForegroundColor Yellow
+    }
 }
 catch {
     $failures.Add("Unexpected test error: $($_.Exception.Message)`n$($_.ScriptStackTrace)")
