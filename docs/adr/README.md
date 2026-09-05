@@ -9,3 +9,4 @@ ADR は HDO のアーキテクチャに関わる重要な決定と、その背�
 ## Index
 
 - [ADR-0001](0001-primary-runtime-typescript.md) — HDO の primary implementation runtime（Accepted 2026-09-05、Amendment 2026-09-05）
+- [ADR-0002](0002-windows-job-object-via-koffi.md) — Windows process-tree containment は koffi 経由の Job Object（Accepted 2026-09-05）

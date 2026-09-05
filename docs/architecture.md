@@ -345,21 +345,42 @@ src/
                 意味検証のみを移植。file 未検出/schema 失敗時の throw は phase 1 の
                 `config` サブコマンドからは到達しないため未移植）
     state/      RunState union + 遷移表 + transition(from, to) / isValidTransition
-  platform/   PlatformAdapter の Windows/POSIX 実装（userConfigDir・defaultDataDir・
-              pathEquals・isPathWithinRoot。killProcessTree・resolveExecutable・
-              isReparsePointInPath はフェーズ2で追加する）
-  git/        GitClient（rev-parse・show の read-only wrapper）+
-              repositoryConfigSnapshot（Get-HdoRepositoryConfigSnapshot 相当）
+    process/    Invoke-HdoProcess の結果契約（ProcessRunOptions/ProcessResult・
+                resolveExitCode の exit code 優先順位）、Protect-HdoText/
+                Protect-HdoObject（redact.ts）、Get-HdoSafeEnvironment
+                （safeEnvironment.ts）。process 実行そのもの（node:child_process）は
+                含まない - それは src/process/ の役割
+  platform/   PlatformAdapter の Windows/POSIX 実装。フェーズ1
+              （userConfigDir・defaultDataDir・pathEquals・isPathWithinRoot・
+              expandPath）に加え、フェーズ2で resolveExecutable・killProcessTree・
+              isReparsePointInPath・removeTree（long-path safe）・
+              createProcessContainer（Windows Job Object、jobObject.ts）・
+              spawnDetached を追加した
+  process/    NodeProcessRunner（runner.ts）- bounded output・timeout・
+              process-tree containment・heartbeat を実装する本番 ProcessRunner。
+              `src/core/process/types.ts` の contract を実装する
+  git/        GitClient（rev-parse・show・worktree add/list/remove/prune）+
+              repositoryConfigSnapshot（Get-HdoRepositoryConfigSnapshot 相当）。
+              フェーズ2で ProcessRunner 経由の実行、Windows での
+              `-c core.longpaths=true`、worktree 操作を追加した
   cli/        main.ts が composition root（現在 config/help のみ実装）
 ```
 
-依存方向は `core <- platform, git <- cli` で、`core` は上位レイヤーに一切依存しない。既存 PowerShell module（`src/HybridDevOrchestrator/`）は変更していない。
+依存方向は `core <- platform, process, git <- cli` で、`core` は上位レイヤーに一切依存しない。`platform/jobObject.ts` は `koffi` を `src/platform/**` からのみ import し（`src/core/boundary.test.ts` の allow-list は変更していない）、失敗時は `taskkill /T /F /PID` へフォールバックする（ADR-0002）。既存 PowerShell module（`src/HybridDevOrchestrator/`）は変更していない。
 
 ### 16.2 フェーズと終了条件
 
 Migration strategy（ADR-0001）はフェーズ1（core contracts / config / state）から順に7フェーズで進む。フェーズ1の終了条件は、`config/hdo.default.json`・`config/examples/*.json`・`.hdo/project.json`・`tests/fixtures/schema/**` の valid/invalid 判定が `tests/test-schemas.ps1` と一致することであり、`src/core/contracts/schemaFixtures.test.ts` で検証している。`node src/cli/main.ts config -Json` の出力は、`pwsh -NoProfile -File hdo.ps1 config -Json` と同一入力に対して意味的に等価であることを `src/cli/configParity.test.ts` が pwsh を oracle にして検証する（`pwsh` が無い環境では skip）。
 
-process/platform（フェーズ2）以降は ADR-0001 の Migration strategy 節を参照。移行の一次ターゲットは Windows（2026-09-05 Amendment）であり、WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない。
+**フェーズ2（process / platform）は完了した。** 終了条件（ADR-0001 Migration strategy）は次の通り満たしている:
+
+- `tests/fixtures/runtime/hold-output-handle.ps1` シナリオを Windows で pass させる: `src/platform/jobObject.test.ts` が実際の `NodeProcessRunner` + Windows `PlatformAdapter` で実行し、exitCode 0・`outputDrainTimedOut: false`・孫プロセスの終了を確認する。koffi 経由の Windows Job Object 実装を採用した経緯は ADR-0002（`docs/adr/0002-windows-job-object-via-koffi.md`）に記録した。
+- `spam-output.ps1`（stdout/stderr）・`delayed-output.ps1`（heartbeat）・`hold-output-handle.ps1`・`ignore-input.ps1`（timeout 124、capture error 127）の各シナリオについて、pwsh の `Invoke-HdoProcess` と TypeScript の `NodeProcessRunner` の結果を比較する parity test（`src/process/processParity.test.ts`）が windows-latest で green。
+- longpath 対応（Issue #25 相当）: `GitClient.worktreeRemove` が Windows で `-c core.longpaths=true` 付きの `git worktree remove` を試み、失敗時は `platform.removeTree`（long-path safe `fs.rm`）+ `git worktree prune` にフォールバックする（`src/git/index.test.ts`）。**訂正（以前の版は本節と16.4項目7で「この開発機では core.longpaths の有無に関わらず git がそのまま成功し、フォールバック経路は発火しなかった」としていたが、これは事実誤認だった）**: 実機検証の結果、`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` でこのマシン自身の git 設定（`core.longpaths=true` を含む）を分離すると、300文字超のネストされたパスを含む worktree に対する `git worktree remove --force` は、**`core.longpaths` がどこにも設定されていない状態では実際に「Filename too long」（exit 255）で失敗する**(admin entry・gitfile・tracked files は削除済みで `git worktree list` からも消えた状態で、undeletable な subtree だけが残る)。`exec` の `-c core.longpaths=true` はこれを解消するが、**グローバルまたはシステムの git config ファイルで `core.longpaths=false` が設定されている場合、git は config ファイル読み込み中にその値をキャッシュするため後続の `-c` より優先され、`-c` があっても同じ失敗が再現する**。`worktreeRemove` のフォールバックはこの両方のケース(`-c` が無い場合、および `-c` があっても global/system 設定に負ける場合)のために存在し、`git worktree list --porcelain` に対象がもう listed されていないことを確認してから `platform.removeTree` + `git worktree prune` を実行する。`src/git/index.test.ts` は `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` でこの両ケースを明示的に分離して再現する: 「設定なし」のケースでは git 自身（`-c`）が削除し `removeTree` が呼ばれないことを spy で確認し、「global に false」のケースではフォールバックが実際に発火して削除することを確認する。さらに `worktreeRemove` は削除を試みる前に対象が `git worktree list` に載っていることを要求し（載っていなければ `Refusing cleanup because Git does not list the target as a worktree: <path>` を throw）、無関係なディレクトリや他 repository の worktree がフォールバックで削除されることを防ぐ。
+
+WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない（ADR-0001 Amendment 2026-09-05）。POSIX 版 `PlatformAdapter`（`killProcessTree`・`isReparsePointInPath`・`removeTree`・no-op `createProcessContainer`）は型を満たし `src/platform/posix.test.ts` にテストを持つが、CI gate ではない。
+
+process/platform 以降（フェーズ3以降）は ADR-0001 の Migration strategy 節を参照。
 
 ### 16.3 実行方法
 
@@ -385,3 +406,17 @@ PoC（`poc/typescript/`）は評価時点の実証根拠として凍結し、本
 7. **`Expand-HdoPath`/`expandPath` と末尾区切り文字**: .NET `[System.IO.Path]::GetFullPath` は入力に末尾区切り文字があればそれを保持するのに対し、Node の `path.resolve`（TS の `expandPath` が最終ステップで使う）は末尾区切り文字を落とす（詳細は `src/core/config/expand.ts` のコメントを参照）。そのため `paths.worktreeRoot`/`paths.artifactRoot` を `{repository}/`（末尾スラッシュ付き）にすると、PowerShell 側は `C:\repo\` に展開され `worktreeRoot -eq repositoryPath`（`C:\repo`）が `false` になり、この誤設定（実質的に repository 直下を worktree root にしてしまう設定）を **受理してしまう**。TS 側は `path.resolve` が末尾区切りを落として `C:\repo` になり、`pathEquals` で repositoryPath と一致するため `paths.worktreeRoot must be outside repositoryPath.` として **正しく拒否する**（この差異では TS の挙動が正しい）。
 8. **unknown command/option の exit code**: 未知の command / 未知の option を渡した場合、PowerShell は `[CmdletBinding()]`/`ValidateSet` のパラメーターバインディングエラーとして exit 1 になるのに対し、TS の `parseArgs`/`main`（`src/cli/main.ts`）は exit 2 を返す。これは Migration strategy フェーズ7（CLI 移植）で PowerShell 側の挙動に揃える予定の既知の差異であり、フェーズ1時点では未対応（なお `help` コマンド自体の出力先は両実装とも stdout で一致している）。
 9. **8.3 短縮名（`RUNNER~1` 等）を含む path の `Expand-HdoPath`/`expandPath` 展開**: .NET `[System.IO.Path]::GetFullPath` は path に `~` が含まれる場合、既存部分の 8.3 短縮名を `GetLongPathNameW` で展開する（`~` を含まない path では何もしないのが .NET 自身の高速パス）。TS の core `expandPath`（`src/core/config/expand.ts`）は最終ステップで `path.resolve` を呼ぶだけでこの展開を行わないため、`src/platform/windows.ts` の Windows adapter が同じ条件（`~` を含む場合のみ）で post-step を追加する: 最長の既存祖先を `fs.realpathSync.native` で展開し、存在しない末尾セグメントをそのまま再連結する。この post-step は `~` を含まない path には適用されず（`GetFullPath` の高速パスと同じ）、また `realpathSync.native` は reparse point（symlink/junction）も解決してしまう（`GetLongPathNameW` は解決しない）ため、既存祖先に reparse point が含まれる場合にのみ両者の結果が異なりうる近似実装である。GitHub Actions の `windows-latest` は `%TEMP%` が `C:\Users\RUNNER~1\...` という短縮名になるため、この差は CI で実際に観測された（`src/cli/configParity.test.ts` の `-Config` 存在しないファイルを指す negative case、および `src/git/repositoryConfig.test.ts` の一時リポジトリに対する `snapshot.path` の期待値）。POSIX adapter に変更はない。単体テストは `src/platform/windows.test.ts`（Windows限定、`C:\PROGRA~1` が存在しない環境ではskip）。
+
+以下はフェーズ2（process / platform）で判明した追加の意図的な差異である。
+
+1. **`Invoke-HdoProcess -Environment` の Windows 環境変数注入**: PowerShell は `ProcessStartInfo.Environment.Clear()` してから明示的な `Environment` の内容だけを設定するため、明示指定した変数のみが子プロセスに渡る。TypeScript の `NodeProcessRunner`（`src/process/runner.ts`）は `spawn(..., { env })` に明示的な `environment` オブジェクトをそのまま渡すが、libuv 自身が Windows 上で子プロセスに常に注入する固定リスト（`HOMEDRIVE`・`HOMEPATH`・`LOGONSERVER`・`PATH`・`SYSTEMDRIVE`・`SYSTEMROOT`・`TEMP`・`USERDOMAIN`・`USERNAME`・`USERPROFILE`・`WINDIR`）が追加で子プロセスに見える。呼び出し側は Windows 上の明示的な `environment` を「指定した変数 + この固定リスト」として扱う必要がある（`src/core/process/types.ts` の `ProcessRunOptions.environment` doc comment 参照）。POSIX にはこの注入は無い。
+2. **command 未解決時の throw vs 127**: `NodeProcessRunner.run` は `platform.resolveExecutable(command)` が `undefined` を返す場合 `Command was not found: <command>` を throw する（PowerShell の `Invoke-HdoProcess` が `Get-Command` failure で throw するのと同じ契約）。凍結済みの PoC（`poc/typescript/src/process/runner.ts`）はこれを `captureError`/exitCode 127 という**値**として表現していたが、これは PoC 限定の簡易実装であり本番の契約ではない（PoC のモジュールコメント参照）。
+3. **spawn 失敗時のエラー文言**: PowerShell の `Invoke-HdoProcess` は `Process.Start()` が `false` を返した場合、詳細を含まない `Failed to start command: $Command` を throw する。TypeScript は working directory 不正・spawn 自体の同期例外のいずれも `Failed to start command: <command>. <detail>` と、Node が実際に報告する detail 文言を追加する（.NET の `Process.Start()` の bool 戻り値には対応する detail が無いため）。
+4. **`.exe`/`.com` 限定の実行ファイル解決**: `PlatformAdapter.resolveExecutable`（Windows）は PATH・PATHEXT を辿るが、`shell: true` を使わない `spawn()` が同期的に throw する（EINVAL、CVE-2024-27980）ことを避けるため候補を `.exe`/`.com` のみに絞る。`.cmd`/`.bat`/`.ps1` の shim（npm グローバルの `claude.cmd`/`codex.cmd` 等）はこの adapter からは解決されない。PowerShell の `Get-Command` はこれらの shim を解決するため、この差は明示的にフェーズ5（runners）へ持ち越す。なお Windows の「App Execution Alias」（Microsoft Store 配布の `pwsh.exe`/`python.exe` 等、`%LOCALAPPDATA%\Microsoft\WindowsApps` 配下の reparse point placeholder）は `fs.existsSync`/`fs.statSync` では検出できない（`existsSync` は false を返し、`statSync` は `EACCES` を throw する）ため、`resolveExecutable` は `fs.accessSync(path, F_OK)` で存在を確認し、`fs.lstatSync(path).isSymbolicLink()` の場合は App Execution Alias として受け入れ（`statSync` が `EACCES` になるため）、それ以外の symlink/通常ファイルは `fs.statSync(path).isFile()` で判定する（この開発機で実機確認済み: `pwsh` が Program Files ではなく WindowsApps の App Execution Alias としてのみ存在する）。
+5. **`stdoutBytes`/`stderrBytes` のチャンク粒度**: 出力上限到達時、PowerShell は 8192 byte 固定バッファで読み取るのに対し、Node のパイプは既定で最大 64 KiB の `highWaterMark` を持つ。そのため上限超過を検知した時点の受信済みバイト数（`stdoutBytes`/`stderrBytes`）は、上限ちょうどにはならず、実装依存の 1 チャンク分（最大 64 KiB 程度）の上振れがあり得る。両実装とも「`maximumOutputBytes` 以上」であることは保証するが、正確な超過量は一致しない - `src/process/processParity.test.ts` はこれを `>=` 比較で許容している。
+6. **Windows Job Object の `OpenProcess` ステップ**: PowerShell の `KillOnCloseJob.TryAttach` は .NET `Process` オブジェクトが既に開いている handle を直接使うため `OpenProcess` を呼ばない。TypeScript は Node の `ChildProcess.pid`（PID のみ）から改めて `OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, false, pid)` で handle を取得する必要があり、その失敗は PowerShell に対応物が無い `OpenProcess failed with Win32 error N.` という独自のエラー文言になる（ADR-0002 参照）。
+7. **`GitClient` の longpath fallback**: `worktreeRemove` は `git worktree remove` が非ゼロで終了した場合、`git worktree list --porcelain` を再実行して対象がまだ listed かどうかで分岐する（`git worktree add`/`worktreeRemove` 自体は Windows でのみ `-c core.longpaths=true` を付与するが、この分岐・フォールバック処理コード自体に `platform.name === "windows"` のようなプラットフォーム判定は無く、POSIX でも同じロジックが動く - **訂正: 以前の版は本項目を「Windows で...のみ」としていたが、コードの実態と一致していなかった**）。まだ listed なら元の git 失敗をそのまま throw し、listed から消えていた場合のみ `platform.removeTree`（`fs.rm`）+ `git worktree prune` にフォールバックする。16.2 に記載の通り、このフォールバックは実機で実際に発火することを確認済み（`GIT_CONFIG_GLOBAL`/`GIT_CONFIG_NOSYSTEM` で git 設定を分離した `src/git/index.test.ts` のテスト）。フォールバックが失敗した場合は元の git 失敗メッセージに詳細を追記する。orphan recovery（`git worktree list` に一度も現れたことのない孤立 worktree の `-Force` 復旧、PowerShell 側の `Test-HdoOrphanedWorktree`相当）は意図的に含んでいない - phase 3+ の `cleanup` コマンド向け。
+8. **`isReparsePointInPath` が検出できる reparse tag の範囲**: PowerShell の `Test-HdoReparsePointInPath`（`Runner.ps1`）は `Get-Item ... | Attributes -band [FileAttributes]::ReparsePoint` で判定するため、symlink/junction に限らず OneDrive のプレースホルダファイルや Windows Projected File System（ProjFS）のプレースホルダなど、あらゆる reparse tag を検出する。TypeScript の `isReparsePointInPath`（`src/platform/windows.ts`）は `fs.lstatSync(path).isSymbolicLink()` を使うため、symlink・ジャンクション・App Execution Alias は検出できるが、OneDrive/ProjFS のようなそれ以外の reparse tag は Node の `fs` モジュールがそもそも symlink として報告しないため検出できない。この差を native 呼び出しで埋める予定はない。なお、欠落したパスセグメントに対しては PowerShell の `Get-Item -ErrorAction Stop` と同様に例外を throw する（`src/platform/windows.test.ts`）。POSIX adapter（`src/platform/posix.ts`）は Windows-first の方針により未整合で、欠落セグメントを false として扱い root の判定を包含判定より先に行う。WSL2/Linux 対応 Issue で Windows 版と揃える。
+9. **redact.ts の大文字小文字畳み込み**: JS の `/i` フラグと .NET の `RegexOptions.IgnoreCase` は、U+212A（KELVIN SIGN, "K"/"k" と等価とみなす）と U+017F（LATIN SMALL LETTER LONG S, "S"/"s" と等価とみなす）の扱いが異なる。これを閉じるには `/i` フラグの影響範囲を変える（他の全文字の畳み込みに影響しうる）か、Unicode `CaseFolding.txt` 相当の変換表を自前実装する必要があり、費用対効果が見合わないため既知の divergence として記録するに留める（`src/core/process/redact.ts` の `SECRET_PATTERNS` コメント参照）。
+10. **タイムスタンプの文字列表現**: PowerShell の `startedAt`/`endedAt`（`Get-HdoUtcTimestamp` 相当、`[DateTimeOffset]::UtcNow.ToString('o')`）は `2026-09-05T15:43:50.7777426+00:00` のように 7桁の小数秒とタイムゾーンオフセット表記になるのに対し、TypeScript の `Date.prototype.toISOString()` は `2026-09-05T15:43:50.777Z` のように常に 3桁の小数秒と `Z` 表記になる。両者とも ISO 8601 として有効だが文字列としては一致しないため、`src/process/processParity.test.ts` はこれら3フィールド（`startedAt`/`endedAt`/`durationMs`）を比較前に削除している。
+11. **`getSafeEnvironment` のキー順序**: PowerShell の `Get-HdoSafeEnvironment` は `Get-ChildItem Env:` から取得するため、キー順序は概ねアルファベット順（大文字小文字を無視）になる。TypeScript の `getSafeEnvironment`（`src/core/process/safeEnvironment.ts`）は入力オブジェクトの挿入順を保持する。実害は無い: `NodeProcessRunner`/`Invoke-HdoProcess` いずれも、最終的に子プロセスへ渡す環境変数ブロック自体は OS/libuv 側でソートされるため、この順序差が子プロセスから観測可能になることはない。

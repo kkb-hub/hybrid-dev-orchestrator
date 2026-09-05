@@ -11,6 +11,8 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { SCHEMA_NAMES, SchemaRegistry, type SchemaDocumentMap } from "../core/contracts/schemas.ts";
 import type { SchemaObject } from "../core/contracts/validate.ts";
+import { getPlatform } from "../platform/index.ts";
+import { NodeProcessRunner } from "../process/runner.ts";
 import { GitClient } from "./index.ts";
 import { getRepositoryConfigSnapshot } from "./repositoryConfig.ts";
 
@@ -27,7 +29,8 @@ function loadSchemas(): SchemaRegistry {
 }
 
 const schemas = loadSchemas();
-const git = new GitClient();
+const platform = getPlatform();
+const git = new GitClient({ runner: new NodeProcessRunner({ platform }), platform });
 
 function runGit(args: string[], cwd: string): void {
   execFileSync("git", args, { cwd, stdio: "pipe" });

@@ -4,8 +4,9 @@ name: typescript
 # ADR-0001 Amendment 2026-09-05: the migration's first target is Windows, so
 # ubuntu-latest is intentionally not a gate here (unlike poc-typescript.yml, which
 # keeps its ubuntu-latest job as PoC-only informational evidence and is not touched
-# by this workflow). This workflow is the regression gate for phase 1 (core
-# contracts / config / state) and will grow to cover later migration phases in
+# by this workflow). This workflow is the regression gate for the Migration
+# strategy phases as they land - phase 1 (core contracts / config / state) and now
+# phase 2 (process / platform) - and will grow to cover later migration phases in
 # place, without renaming.
 
 on:

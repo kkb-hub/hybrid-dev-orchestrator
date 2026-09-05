@@ -353,7 +353,7 @@ MVP の command adapter と validation command に対して、HDO 自身が OS f
 
 ## TypeScript 実装（進行中の移行）
 
-`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。現在の移行フェーズは **フェーズ1（core contracts / config / state）** で、`src/core/`・`src/platform/`・`src/git/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
+`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ2（process / platform）まで完了**しており、`src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
 
 ```sh
 npm ci
@@ -364,7 +364,8 @@ node src/cli/main.ts config -Json
 
 - `node src/cli/main.ts config -Json` は `pwsh -NoProfile -File hdo.ps1 config -Json` と意味的に等価な出力を返します（オプション名は `hdo.ps1` と同じ `-Json`/`-Config`/`-Profile`/`-IgnoreRepositoryConfig`/`-RepositoryPath` 等）。`-Json` を付けない `config` も同じ JSON を stdout に出力します（PowerShell 版の非`-Json`テーブル表示は再現していません）。
 - PowerShell 実装は、Migration strategy フェーズ7の parity 到達まで **canonical CLI であり続けます**。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
-- CI は `.github/workflows/typescript.yml` が `windows-latest` で `npm ci` → typecheck → test → `config -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows で `ubuntu-latest` は gate にしていません）。
+- Windows の process-tree containment（`NodeProcessRunner`）は `koffi`（FFI、`package.json` に exact version pin）経由で Win32 Job Object を保持します。詳細は `docs/adr/0002-windows-job-object-via-koffi.md` を参照してください。koffi の import は `src/platform/**` に限定され、`src/core/**` からは import できません（`src/core/boundary.test.ts` が機械的に検査します）。
+- CI は `.github/workflows/typescript.yml` が **`windows-latest` のみ**で `npm ci` → typecheck → test → `config -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows です）。
 
 ## 詳細文書
 

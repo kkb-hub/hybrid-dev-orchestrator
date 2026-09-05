@@ -15,6 +15,7 @@ import { resolveHdoConfig, type NamedConfigSource, type ResolveConfigHost } from
 import { GitClient } from "../git/index.ts";
 import { getRepositoryConfigSnapshot } from "../git/repositoryConfig.ts";
 import type { PlatformAdapter } from "../platform/index.ts";
+import { NodeProcessRunner } from "../process/runner.ts";
 import type { ParsedArgs } from "./args.ts";
 import { CONFIG_DEFAULT_PATH } from "./paths.ts";
 
@@ -56,7 +57,7 @@ export interface ResolveCliConfigOptions {
 
 export async function resolveCliConfig(options: ResolveCliConfigOptions): Promise<JsonObject> {
   const { parsed, platform, schemas } = options;
-  const git = options.git ?? new GitClient();
+  const git = options.git ?? new GitClient({ runner: new NodeProcessRunner({ platform }), platform });
 
   const requestedRepositoryPath = resolve(parsed.repositoryPath);
   let repositoryPath = requestedRepositoryPath;

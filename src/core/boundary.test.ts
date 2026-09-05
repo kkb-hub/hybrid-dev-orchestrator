@@ -34,7 +34,8 @@
 // below inverts this into an ALLOW-list instead: every non-relative specifier must be
 // one of the modules `src/core/**` legitimately imports today (`node:path`, the two
 // `ajv`/`ajv-formats` entry points), or it is a violation - regardless of which of the
-// four extraction forms (`from`, bare `import "..."`, `import()`, `require()`/`createRequire`) reached it.
+// extraction form (`from`, bare `import "..."`, `import()`, `require()`/`createRequire`,
+// `process.getBuiltinModule()` - S-11) reached it.
 import { strict as assert } from "node:assert";
 import { readFile, readdir } from "node:fs/promises";
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -59,6 +60,14 @@ const REQUIRE_PATTERN = /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 // directly by the quote, which is what rules out double-counting `import x from "y"`:
 // there, the character after `import` is `x`/`{`/`type`, never a quote.
 const SIDE_EFFECT_IMPORT_PATTERN = /\bimport\s*['"]([^'"]+)['"]/g;
+// S-11: `process.getBuiltinModule("node:child_process")` (Node 22.3+) is yet another
+// way to reach a host module that bypasses every pattern above - none of them
+// recognize the `getBuiltinModule` call form at all. Its literal-string-argument
+// specifier is extracted the same way `require`'s is, so it goes through the SAME
+// allow-list check as every other specifier (an allow-listed module, e.g.
+// `getBuiltinModule("node:path")`, is not flagged either - it is the module identity
+// that matters, not which syntax reached it).
+const GET_BUILTIN_MODULE_PATTERN = /getBuiltinModule\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
 const CREATE_REQUIRE_PATTERN = /createRequire/;
 
 function extractSpecifiers(contents: string): string[] {
@@ -68,6 +77,7 @@ function extractSpecifiers(contents: string): string[] {
     DYNAMIC_IMPORT_PATTERN,
     REQUIRE_PATTERN,
     SIDE_EFFECT_IMPORT_PATTERN,
+    GET_BUILTIN_MODULE_PATTERN,
   ]) {
     for (const match of contents.matchAll(pattern)) specifiers.push(match[1]);
   }
@@ -180,6 +190,9 @@ test("findBoundaryViolations detects every bypass form on synthetic snippets (se
       label: "bare side-effect import escaping into ../../platform",
       code: `import "../../platform/index.ts";`,
     },
+    // S-11: `process.getBuiltinModule` (Node 22.3+) is a distinct bypass form none
+    // of the patterns above recognized at all.
+    { label: "process.getBuiltinModule of a forbidden module", code: `const cp = process.getBuiltinModule("node:child_process");` },
     // fakeFileDir is CORE_DIR/contracts (one level under core, like the real
     // core/contracts/*.ts files), so escaping to a sibling of core (src/platform,
     // src/process, src/cli, src/git) takes "../../<sibling>", matching how deep the
@@ -214,4 +227,12 @@ test("findBoundaryViolations detects every bypass form on synthetic snippets (se
       `expected allow-listed specifier "${specifier}" not to be flagged`,
     );
   }
+
+  // S-11: an allow-listed module reached via process.getBuiltinModule must not be
+  // flagged either - it is the module identity that matters, not the syntax used.
+  assert.deepEqual(
+    findBoundaryViolations(`process.getBuiltinModule("node:path");`, fakeFileDir),
+    [],
+    "expected an allow-listed specifier reached via process.getBuiltinModule not to be flagged",
+  );
 });
