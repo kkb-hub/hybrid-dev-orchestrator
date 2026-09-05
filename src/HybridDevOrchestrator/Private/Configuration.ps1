@@ -176,8 +176,9 @@ function Get-HdoConfig {
     $config = Read-HdoJsonFile $defaultPath
     $sources = @($defaultPath)
 
-    if ($env:APPDATA) {
-        $userPath = Join-Path $env:APPDATA 'hdo/config.json'
+    $userConfigDirectory = Get-HdoPlatformDirectory -Kind UserConfig
+    if ($userConfigDirectory) {
+        $userPath = Join-Path $userConfigDirectory 'hdo/config.json'
         if (Test-Path -LiteralPath $userPath -PathType Leaf) {
             $config = Merge-HdoHashtable $config (Read-HdoJsonFile $userPath)
             $sources += $userPath

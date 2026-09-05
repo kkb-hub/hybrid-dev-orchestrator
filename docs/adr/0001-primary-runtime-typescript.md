@@ -169,6 +169,14 @@ AC-04: README / requirements / architecture / configuration docs の OS 前提�
 AC-05: 本 Issue の範囲内では PowerShell 7 実装を維持し、次を実施しない（いずれも ADR-0001 の Migration strategy に委譲する）: Linux/WSL2 の process・Job Object・symlink・CI matrix 対応（フェーズ2）、Git worktree/diff/cleanup の Linux 実行契約の検証（フェーズ3）、runner（Claude/Codex/Ollama）の OS 別可用性検証（フェーズ5）、`config`/`doctor -DryRun` が Linux/WSL2 上で実際に成功することの検証（フェーズ1・7）。WSL2 + Ubuntu での `doctor -DryRun` 実行証跡は `poc/typescript` の Ubuntu Docker 実行結果（`results/ubuntu.json` 等）が代替する
 ```
 
+## Amendments
+
+### 2026-09-05: 移行の一次ターゲットは Windows
+
+repository owner の決定により、TypeScript 移行の一次ターゲットは Windows とする。Migration strategy の各フェーズの終了条件のうち `ubuntu-latest` / Linux に関する部分（フェーズ 2 の Linux CI、フェーズ 1・7 の Linux 上での起動確認など）は初期フェーズの gate とせず、TypeScript 実装が Windows parity（フェーズ 7）に到達した後に起票する WSL2 / Linux 対応 Issue で扱う。`poc-typescript.yml` の `ubuntu-latest` job は PoC の情報提供として維持するが、移行フェーズの終了条件には含めない。Issue #15 はこの前提で再スコープ済み（PowerShell 側の portability fix のみ。「Issue #15 への影響」節）。
+
+また bucket (a) の「`config/hdo.default.json` の `%LOCALAPPDATA%` 固定値を変更する」は、同ファイルが両実装共通の契約であるため値は変更せず、`Expand-HdoPath` 側で `%LOCALAPPDATA%` / `%APPDATA%` を .NET の既知フォルダーへ fallback させる方式で満たした（`docs/configuration.md` 9 節）。
+
 ## References
 
 - `docs/evaluation/powershell-vs-typescript.md`

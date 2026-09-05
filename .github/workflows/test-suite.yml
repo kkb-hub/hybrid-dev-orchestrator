@@ -2,7 +2,7 @@ name: test-suite
 
 # HDO 本体の deterministic PowerShell regression suite。
 # 現在の正式対象である Windows native を PR / main push の gate にする。
-# Issue #15 で Linux 対応する際は matrix.os に ubuntu-latest を追加できる構成とする。
+# ADR-0001 により Linux / WSL2 対応は TypeScript 実装側で扱うため、この PowerShell suite に ubuntu-latest を追加する予定はない。
 
 on:
   pull_request:

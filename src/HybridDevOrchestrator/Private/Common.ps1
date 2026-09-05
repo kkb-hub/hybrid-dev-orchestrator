@@ -575,13 +575,57 @@ function Get-HdoValue {
     return $current
 }
 
+function Get-HdoPlatformDirectory {
+    param([Parameter(Mandatory)][ValidateSet('UserConfig', 'UserData')][string]$Kind)
+
+    # Preferring the environment variable keeps existing Windows behaviour unchanged
+    # (and lets tests redirect APPDATA/LOCALAPPDATA). The .NET known-folder fallback
+    # matches the intent of poc/typescript/src/platform/posix.ts `userConfigDir()` /
+    # `defaultDataDir()`: UserConfig resolves to $XDG_CONFIG_HOME/~/.config, UserData
+    # resolves to $XDG_DATA_HOME/~/.local/share, without any $IsWindows branching
+    # here. Note that the PoC `resolveToken` currently routes %APPDATA% to the data
+    # dir instead of the config dir; docs/evaluation/powershell-vs-typescript.md
+    # flags that PoC shortcut for correction, and this function follows the intended
+    # (config-dir) mapping rather than the PoC's current behaviour.
+    if ($Kind -eq 'UserConfig') {
+        if ($env:APPDATA) { return $env:APPDATA }
+        $folder = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+        if ($folder) { return $folder }
+        return $null
+    }
+
+    if ($env:LOCALAPPDATA) { return $env:LOCALAPPDATA }
+    $folder = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+    if ($folder) { return $folder }
+    return $null
+}
+
 function Expand-HdoPath {
     param(
         [Parameter(Mandatory)][string]$Path,
         [string]$RepositoryPath
     )
 
-    $expanded = [Environment]::ExpandEnvironmentVariables($Path)
+    $expanded = $Path
+    if (-not $env:LOCALAPPDATA -and $expanded -match '(?i)%LOCALAPPDATA%') {
+        $directory = Get-HdoPlatformDirectory -Kind UserData
+        if (-not $directory) {
+            throw "Path '$Path' references %LOCALAPPDATA% but neither the environment variable nor a platform default directory is available."
+        }
+        # The evaluator returns the already-resolved $directory captured by GetNewClosure();
+        # it never re-runs arbitrary logic inside [regex]::Replace, so a failure here throws
+        # before Replace is even called instead of surfacing as an opaque
+        # "Exception calling Replace with 4 argument(s)" wrapper.
+        $expanded = [regex]::Replace($expanded, '%LOCALAPPDATA%', { param($match) $directory }.GetNewClosure(), [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    if (-not $env:APPDATA -and $expanded -match '(?i)%APPDATA%') {
+        $directory = Get-HdoPlatformDirectory -Kind UserConfig
+        if (-not $directory) {
+            throw "Path '$Path' references %APPDATA% but neither the environment variable nor a platform default directory is available."
+        }
+        $expanded = [regex]::Replace($expanded, '%APPDATA%', { param($match) $directory }.GetNewClosure(), [Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    }
+    $expanded = [Environment]::ExpandEnvironmentVariables($expanded)
     if ($RepositoryPath) { $expanded = $expanded.Replace('{repository}', $RepositoryPath) }
     if (-not [System.IO.Path]::IsPathRooted($expanded)) {
         $base = if ($RepositoryPath) { $RepositoryPath } else { (Get-Location).Path }

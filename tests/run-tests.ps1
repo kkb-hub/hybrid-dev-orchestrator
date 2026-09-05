@@ -80,6 +80,72 @@ try {
     Assert-Hdo ($multipleExplicitConfig.configSources[-2] -eq $explicitConfigPath -and $multipleExplicitConfig.configSources[-1] -eq $secondExplicitConfigPath) 'multiple explicit config sources preserve their supplied order'
     Remove-Item -LiteralPath $userConfigPath, $explicitConfigPath, $secondExplicitConfigPath -Force
 
+    $platformUserConfigDirectory = & $module { param($Kind) Get-HdoPlatformDirectory -Kind $Kind } 'UserConfig'
+    Assert-Hdo ($platformUserConfigDirectory -eq $env:APPDATA) 'Get-HdoPlatformDirectory UserConfig matches the redirected APPDATA environment variable'
+
+    $localAppDataWorktreePath = & $module { param($Path, $Repository) Expand-HdoPath $Path $Repository } '%LOCALAPPDATA%/hdo/worktrees' $repositoryRoot
+    $expectedLocalAppDataWorktreePath = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hdo/worktrees'))
+    Assert-Hdo ($localAppDataWorktreePath -eq $expectedLocalAppDataWorktreePath) 'Expand-HdoPath resolves %LOCALAPPDATA% via the environment variable when it is set'
+
+    $savedLocalAppData = $env:LOCALAPPDATA
+    try {
+        $env:LOCALAPPDATA = $null
+        $fallbackDataDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+        $expectedFallbackWorktreePath = [IO.Path]::GetFullPath((Join-Path $fallbackDataDirectory 'hdo/worktrees'))
+        $expectedFallbackArtifactPath = [IO.Path]::GetFullPath((Join-Path $fallbackDataDirectory 'hdo/runs'))
+
+        $fallbackWorktreePath = & $module { param($Path, $Repository) Expand-HdoPath $Path $Repository } '%LOCALAPPDATA%/hdo/worktrees' $repositoryRoot
+        Assert-Hdo ($fallbackWorktreePath -eq $expectedFallbackWorktreePath) 'Expand-HdoPath falls back to the .NET known folder when LOCALAPPDATA is unset'
+        $fallbackIsRooted = [IO.Path]::IsPathRooted($fallbackWorktreePath)
+        $fallbackWithinRepository = & $module { param($Path, $Root) Test-HdoPathWithinRoot $Path $Root } $fallbackWorktreePath $repositoryRoot
+        Assert-Hdo ($fallbackIsRooted -and -not $fallbackWithinRepository) 'the LOCALAPPDATA fallback path is rooted and outside the repository'
+
+        $lowercaseFallbackWorktreePath = & $module { param($Path, $Repository) Expand-HdoPath $Path $Repository } '%localappdata%/hdo/worktrees' $repositoryRoot
+        Assert-Hdo ($lowercaseFallbackWorktreePath -eq $expectedFallbackWorktreePath) 'Expand-HdoPath resolves the lowercase %localappdata% token the same way as the uppercase token'
+
+        $fallbackPathConfig = Get-HdoConfig -RepositoryPath $repositoryRoot
+        Assert-Hdo ($fallbackPathConfig.paths.worktreeRoot -eq $expectedFallbackWorktreePath) 'Get-HdoConfig resolves paths.worktreeRoot through the LOCALAPPDATA fallback end to end (AC-03)'
+        Assert-Hdo ($fallbackPathConfig.paths.artifactRoot -eq $expectedFallbackArtifactPath) 'Get-HdoConfig resolves paths.artifactRoot through the LOCALAPPDATA fallback end to end (AC-03)'
+    }
+    finally {
+        $env:LOCALAPPDATA = $savedLocalAppData
+    }
+
+    $savedAppData = $env:APPDATA
+    try {
+        $env:APPDATA = $null
+        $expectedFallbackUserConfigDirectory = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+        $fallbackUserConfigDirectory = & $module { param($Kind) Get-HdoPlatformDirectory -Kind $Kind } 'UserConfig'
+        Assert-Hdo ($fallbackUserConfigDirectory -and $fallbackUserConfigDirectory -eq $expectedFallbackUserConfigDirectory) 'Get-HdoPlatformDirectory UserConfig falls back to the .NET ApplicationData known folder when APPDATA is unset'
+
+        $fallbackUserConfigPath = & $module { param($Path, $Repository) Expand-HdoPath $Path $Repository } '%AppData%/hdo/config.json' $repositoryRoot
+        $expectedFallbackUserConfigPath = [IO.Path]::GetFullPath((Join-Path $expectedFallbackUserConfigDirectory 'hdo/config.json'))
+        Assert-Hdo ($fallbackUserConfigPath -eq $expectedFallbackUserConfigPath) 'Expand-HdoPath falls back to the .NET ApplicationData known folder for %AppData% when APPDATA is unset'
+    }
+    finally {
+        $env:APPDATA = $savedAppData
+    }
+
+    $savedLocalAppDataForMixedToken = $env:LOCALAPPDATA
+    $savedAppDataForMixedToken = $env:APPDATA
+    try {
+        $env:LOCALAPPDATA = $null
+        $env:APPDATA = $null
+        $mixedTokenLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+        $mixedTokenAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData, [Environment+SpecialFolderOption]::DoNotVerify)
+        $expectedMixedTokenPath = [IO.Path]::GetFullPath($mixedTokenLocalAppData + '/x/' + $mixedTokenAppData + '/y')
+        $mixedTokenPath = & $module { param($Path, $Repository) Expand-HdoPath $Path $Repository } '%LocalAppData%/x/%AppData%/y' $repositoryRoot
+        Assert-Hdo ($mixedTokenPath -eq $expectedMixedTokenPath) 'Expand-HdoPath resolves both %LocalAppData% and %AppData% fallbacks within a single path when both environment variables are unset'
+    }
+    finally {
+        $env:LOCALAPPDATA = $savedLocalAppDataForMixedToken
+        $env:APPDATA = $savedAppDataForMixedToken
+    }
+
+    $defaultPathConfig = Get-HdoConfig -RepositoryPath $repositoryRoot
+    $expectedDefaultWorktreeRoot = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'hdo/worktrees'))
+    Assert-Hdo ([IO.Path]::IsPathRooted($defaultPathConfig.paths.worktreeRoot) -and $defaultPathConfig.paths.worktreeRoot -eq $expectedDefaultWorktreeRoot) 'default configuration still resolves paths.worktreeRoot through %LOCALAPPDATA% unchanged'
+
     $otherRepository = Join-Path $testAppData 'target-repository'
     New-Item -ItemType Directory -Path (Join-Path $otherRepository '.hdo') -Force | Out-Null
     & git -C $otherRepository init --quiet

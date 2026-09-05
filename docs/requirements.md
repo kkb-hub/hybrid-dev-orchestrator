@@ -58,7 +58,7 @@ MVP は次を行わない。
 - model の自動 download / pull
 - 独自 inference engine または独自 OpenAI-compatible proxy
 - GitHub Projects custom field の必須化
-- Linux、macOS、WSL2 の正式対応
+- Linux、macOS、WSL2 の正式対応（ADR-0001 により primary runtime は TypeScript へ段階移行する。移行の一次ターゲットは Windows であり、WSL2 / Linux の正式対応は Windows parity 到達後に別 Issue で検討する）
 - OS firewall、VM、container による汎用 command adapter の完全な network isolation
 - 多段 reviewer orchestration、反証 batch、mutation runner、token telemetry
 
@@ -80,6 +80,8 @@ MVP は次を行わない。
 既定 profile では Claude CLI `claude` と、その authentication（OAuth login、または `passEnvironment` で明示継承する `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）が必要である。Codex CLI は `config/examples/cloud-only.json` 等で明示的に選択した場合だけ必要になる。
 
 PowerShell は 7.2 以上が必須であり、Windows 同梱の Windows PowerShell 5.1 では動作しない。「Claude のみの PC」でも `pwsh` の別途導入は前提となる。
+
+正式な動作対象 OS は Windows 11 である。user config path と既定の worktree / artifact root は platform-neutral に解決される（`docs/configuration.md` 1 節・9 節）が、WSL2 / Linux 上での動作は検証しておらず正式対応ではない。runtime の中長期方針は `docs/adr/0001-primary-runtime-typescript.md` を参照。
 
 Ollama は必須ではない。active step が `provider: ollama` の runner を参照するときだけ次を要求する。
 
@@ -146,7 +148,7 @@ exit code は次を使用する。
 設定優先順位:
 
 1. `config/hdo.default.json`
-2. `%APPDATA%/hdo/config.json` が存在する場合
+2. `%APPDATA%/hdo/config.json` が存在する場合（環境変数が未定義の環境での fallback は `docs/configuration.md` 1 節参照）
 3. 対象 repository の commit 済み `HEAD:.hdo/config.json`
 4. 明示した `-Config <path>`（複数時は左から右、後勝ち）
 5. programmatic override
@@ -283,7 +285,7 @@ validation gate は対象 branch が所有する code/command を host process �
 各 full run は固定した `HEAD` commit から次を作る。
 
 - branch: `hdo/issue-<number>-<run-id>`
-- worktree: `%LOCALAPPDATA%/hdo/worktrees/<run-id>`
+- worktree: `%LOCALAPPDATA%/hdo/worktrees/<run-id>`（環境変数が未定義の環境での fallback は `docs/configuration.md` 9 節参照）
 
 ユーザーの現在の working tree にある未 commit 変更は base commit に含まれない。worker は専用 worktree だけを変更し、変更を commit しない。
 
@@ -349,7 +351,7 @@ fail-safe rule:
 
 ## 13. Run artifact
 
-既定 root は `%LOCALAPPDATA%/hdo/runs/<run-id>` である。
+既定 root は `%LOCALAPPDATA%/hdo/runs/<run-id>` である（環境変数が未定義の環境での fallback は `docs/configuration.md` 9 節参照）。
 
 root artifact:
 
@@ -434,5 +436,5 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 - reviewer lens の多段実行、反証、mutation validation
 - usage/token telemetry schema と集計
 - standalone review-platform plugin（多段 review lens）と Codex review adapter の独立配布
-- WSL2 / Linux / macOS
+- WSL2 / Linux / macOS（ADR-0001 の TypeScript 実装が Windows parity に到達した後）
 - self-hosted local-model integration benchmark

@@ -10,7 +10,7 @@
 HDO は JSON object を deep merge し、後の source で同名値を上書きする。
 
 1. HDO checkout の `config/hdo.default.json`
-2. `%APPDATA%/hdo/config.json` が存在する場合
+2. `%APPDATA%/hdo/config.json` が存在する場合（`APPDATA` が未定義の環境では .NET の ApplicationData 既知フォルダーへ fallback する。Linux では `$XDG_CONFIG_HOME/hdo/config.json`、既定 `~/.config/hdo/config.json`）
 3. 対象 repository の `HEAD:.hdo/config.json` が存在する場合
 4. CLI で明示した1個以上の `-Config <path>`（左から右、後勝ち）
 5. programmatic override
@@ -492,6 +492,8 @@ validation は設定で順序変更できず、常に implement/fix の後、rev
 - project contract は repository root 内でなければならない。
 - run directory は各 root 直下の run ID で決まる。
 
+`%LOCALAPPDATA%` / `%APPDATA%` は環境変数が定義されていればそれを使い、未定義なら .NET の既知フォルダー（Windows: LocalApplicationData/ApplicationData、Linux: `$XDG_DATA_HOME` または `~/.local/share` / `$XDG_CONFIG_HOME` または `~/.config`）へ fallback する。両方とも得られない場合は設定エラーになる。`config/hdo.default.json` の既定値は OS 共通のまま `%LOCALAPPDATA%/hdo/...` を維持する（ADR-0001 で両実装共通の契約としている）。これは Linux を正式対応にするものではない（ADR-0001 参照）。
+
 artifact/worktree root の書込 probe は通常 doctor/full run で行う。`doctor -DryRun` は directory/file を作らず path probe を skip する。
 
 ## 10. Project contract
@@ -568,7 +570,7 @@ structured review の fail-safe rule は `schemas/review-result.schema.json` と
 
 ## 11. User config の例
 
-`%APPDATA%/hdo/config.json` は partial overlay にできる。
+`%APPDATA%/hdo/config.json`（Windows。他 OS の fallback は 1 節参照）は partial overlay にできる。
 
 ~~~json
 {

@@ -82,6 +82,8 @@ config/hdo.default.json
   < -SetStep / StepOverrides
 ~~~
 
+`%APPDATA%` は環境変数が未定義なら .NET の ApplicationData 既知フォルダーへ fallback する（`docs/configuration.md` 1 節）。
+
 対象 repository の `.hdo/config.json` は `HEAD` に commit 済みの blob だけを自動読込する。専用の制限付き schema は profile routing と built-in Codex/Claude runner の provider/model/sandbox/timeout 等だけを許可し、任意 command、argument、environment、path、GitHub/workflow policy は許可しない。新規 runner の command は adapter type から HDO が固定し、既存 command runner の変更・自動 routing も拒否する。worktree 作成後に blob ID と SHA-256 を再照合する。
 
 明示 `-Config` は利用者が承認した full configuration overlay として扱い、複数 file を左から右へ merge できる。`-IgnoreRepositoryConfig` は自動 repository source だけを除外する。

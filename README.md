@@ -7,6 +7,7 @@ Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化�
 ## 前提
 
 - Windows 11 と PowerShell 7.2 以上（`pwsh`。Windows 同梱の Windows PowerShell 5.1 では動作しないため、別途導入してください）
+- WSL2 / Linux は正式な動作対象ではありません。runtime は [ADR-0001](docs/adr/0001-primary-runtime-typescript.md) により TypeScript / Node.js へ段階移行する方針で、移行の一次ターゲットは Windows です
 - Git for Windows
 - GitHub CLI `gh` と GitHub 認証
 - 既定構成では Claude Code CLI `claude` と、その認証（`claude` での OAuth login、または runner の `passEnvironment` に明示追加した `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）
@@ -250,6 +251,8 @@ pwsh -NoProfile -File $hdo help
 - worktree: `%LOCALAPPDATA%\hdo\worktrees\<run-id>`
 - artifact: `%LOCALAPPDATA%\hdo\runs\<run-id>`
 
+`%LOCALAPPDATA%` が未定義の環境では .NET の既知フォルダーへ fallback します（[docs/configuration.md](docs/configuration.md) 9 節）。
+
 full run は作成直後に `HDO_PROGRESS` JSONをstderrへ出し、run ID とartifact pathを表示します。agent subprocessの待機中も30秒ごとに同じchannelへheartbeatを出します。最終 `-Json` resultはstdoutだけへ出すため、機械的なJSON consumerを壊しません。呼び出し元のIPCや待機turnが途中で失われた場合は、同じIssueを再実行せず、最初のprogress recordのrun IDで保存済みstateを確認します。
 
 ```powershell
@@ -333,7 +336,7 @@ pwsh -NoProfile -File tools/check-plugin-version.ps1 -BaseRef origin/main
 
 実 Ollama provider の smoke（`tests/test-ollama-smoke.ps1 -Run`）など外部 provider を必要とする検査は通常 CI には含めず、明示的な opt-in のまま維持します。`.github/workflows/plugin-version.yml` は plugin version guard のみを担当し、本体 regression gate とは責務を分離します。
 
-将来 Issue #15 で WSL2/Linux を正式対応する際は、test-suite workflow の OS matrix に `ubuntu-latest` を追加して同じ suite を実行できる構成です。
+WSL2 / Linux の正式対応は ADR-0001 に基づき TypeScript 実装側で扱い、TypeScript 実装が Windows parity に到達した後に別 Issue で検討します。PowerShell test suite の OS matrix に `ubuntu-latest` を追加する予定はありません。
 
 ## 安全境界
 
