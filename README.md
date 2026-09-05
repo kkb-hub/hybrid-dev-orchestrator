@@ -351,6 +351,21 @@ WSL2 / Linux の正式対応は ADR-0001 に基づき TypeScript 実装側で扱
 
 MVP の command adapter と validation command に対して、HDO 自身が OS firewall、任意 filesystem access の遮断、command interception を提供するわけではありません。信頼できない repository では low-privilege account、VM/container、runner sandbox、実行環境側の policy を構成してください。
 
+## TypeScript 実装（進行中の移行）
+
+`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。現在の移行フェーズは **フェーズ1（core contracts / config / state）** で、`src/core/`・`src/platform/`・`src/git/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
+
+```sh
+npm ci
+npm run typecheck
+npm test
+node src/cli/main.ts config -Json
+```
+
+- `node src/cli/main.ts config -Json` は `pwsh -NoProfile -File hdo.ps1 config -Json` と意味的に等価な出力を返します（オプション名は `hdo.ps1` と同じ `-Json`/`-Config`/`-Profile`/`-IgnoreRepositoryConfig`/`-RepositoryPath` 等）。`-Json` を付けない `config` も同じ JSON を stdout に出力します（PowerShell 版の非`-Json`テーブル表示は再現していません）。
+- PowerShell 実装は、Migration strategy フェーズ7の parity 到達まで **canonical CLI であり続けます**。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
+- CI は `.github/workflows/typescript.yml` が `windows-latest` で `npm ci` → typecheck → test → `config -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows で `ubuntu-latest` は gate にしていません）。
+
 ## 詳細文書
 
 - [要件](docs/requirements.md)

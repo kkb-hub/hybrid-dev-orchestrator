@@ -1,0 +1,70 @@
+name: typescript
+
+# CI for the production TypeScript implementation (ADR-0001). Windows-only per
+# ADR-0001 Amendment 2026-09-05: the migration's first target is Windows, so
+# ubuntu-latest is intentionally not a gate here (unlike poc-typescript.yml, which
+# keeps its ubuntu-latest job as PoC-only informational evidence and is not touched
+# by this workflow). This workflow is the regression gate for phase 1 (core
+# contracts / config / state) and will grow to cover later migration phases in
+# place, without renaming.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "schemas/**"
+      - "config/**"
+      - "tests/fixtures/**"
+      - ".hdo/**"
+      - "hdo.ps1"
+      - ".github/workflows/typescript.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.json"
+      - "schemas/**"
+      - "config/**"
+      - "tests/fixtures/**"
+      - ".hdo/**"
+      - "hdo.ps1"
+      - ".github/workflows/typescript.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: typescript-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typescript:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Config preflight
+        run: node src/cli/main.ts config -Json

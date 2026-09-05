@@ -325,3 +325,63 @@ MVP の境界:
 `tests/test-schemas.ps1` は bundled config/project/Issue/task/worker/review fixture と fail-safe negative fixture を検査する。実 provider/GitHub cycle は credential を持つ integration environment で別途行う。
 
 `tests/test-ollama-smoke.ps1` は `-Run` を付けた場合だけ実Ollamaを呼ぶ。通常のsuite/CIには含めず、隔離repository、実model応答、変更なし、cloud parent routingの不変をlocal hostで確認する。親の待機状態と独立したreceiptへheartbeatと最終検証結果を保存する。
+
+## 16. TypeScript 実装（Migration strategy フェーズ1）
+
+ADR-0001（`docs/adr/0001-primary-runtime-typescript.md`）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として strangler-style で段階移行している。PowerShell 実装（本ドキュメントの1〜15節）は移行完了まで正典であり続け、本節はその上に追加された TypeScript 実装の配置のみを記す。
+
+### 16.1 レイアウト
+
+```text
+src/
+  core/       純粋なロジックのみ。node:path・ajv・ajv-formats 以外の非相対 import、
+              および src/core/ 外への相対 import を持たない（src/core/boundary.test.ts
+              が機械的に検査する）
+    contracts/  schemas/*.json を名前で解決する SchemaRegistry + Ajv wrapper
+    config/     deep merge・%VAR% 展開・repository config 制約・
+                Test-HdoConfiguration 相当の意味検証・Get-HdoConfig 相当の解決・
+                executionPlan.ts（Get-HdoExecutionPlan 相当）・projectContract.ts
+                （Get-HdoProjectContract がファイル読み込み・schema検証の後に行う
+                意味検証のみを移植。file 未検出/schema 失敗時の throw は phase 1 の
+                `config` サブコマンドからは到達しないため未移植）
+    state/      RunState union + 遷移表 + transition(from, to) / isValidTransition
+  platform/   PlatformAdapter の Windows/POSIX 実装（userConfigDir・defaultDataDir・
+              pathEquals・isPathWithinRoot。killProcessTree・resolveExecutable・
+              isReparsePointInPath はフェーズ2で追加する）
+  git/        GitClient（rev-parse・show の read-only wrapper）+
+              repositoryConfigSnapshot（Get-HdoRepositoryConfigSnapshot 相当）
+  cli/        main.ts が composition root（現在 config/help のみ実装）
+```
+
+依存方向は `core <- platform, git <- cli` で、`core` は上位レイヤーに一切依存しない。既存 PowerShell module（`src/HybridDevOrchestrator/`）は変更していない。
+
+### 16.2 フェーズと終了条件
+
+Migration strategy（ADR-0001）はフェーズ1（core contracts / config / state）から順に7フェーズで進む。フェーズ1の終了条件は、`config/hdo.default.json`・`config/examples/*.json`・`.hdo/project.json`・`tests/fixtures/schema/**` の valid/invalid 判定が `tests/test-schemas.ps1` と一致することであり、`src/core/contracts/schemaFixtures.test.ts` で検証している。`node src/cli/main.ts config -Json` の出力は、`pwsh -NoProfile -File hdo.ps1 config -Json` と同一入力に対して意味的に等価であることを `src/cli/configParity.test.ts` が pwsh を oracle にして検証する（`pwsh` が無い環境では skip）。
+
+process/platform（フェーズ2）以降は ADR-0001 の Migration strategy 節を参照。移行の一次ターゲットは Windows（2026-09-05 Amendment）であり、WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない。
+
+### 16.3 実行方法
+
+```sh
+npm ci
+npm run typecheck
+npm test
+node src/cli/main.ts config -Json
+```
+
+PoC（`poc/typescript/`）は評価時点の実証根拠として凍結し、本番実装の出発点にした後は変更していない。
+
+### 16.4 PowerShell 実装との意図的な差異
+
+フェーズ1の TypeScript 実装は原則として PowerShell を rule-for-rule で移植するが、以下は意図的に挙動を変えている（または変える予定がない）既知の差異である。
+
+1. **`isPathWithinRoot` とドライブルート**: `root` がファイルシステムのルート（`C:\`）の場合、PowerShell の `Test-HdoPathWithinRoot` は常に `$fullRoot + [System.IO.Path]::DirectorySeparatorChar`（`C:\\`）を要求するプレフィックス比較になり、どんな実在のパスもこれで始まることはないため常に `$false` を返す（`root` の真の子孫であっても弾かれる、PowerShell 側の不具合）。TS 版はこの二重区切り文字を作らないため、正しく `true` を返す（TS が正しい挙動）。`config` では `paths.worktreeRoot`/`paths.artifactRoot` を `C:/`（ドライブルート）にした場合にのみ観測できる差異。詳細は `src/platform/paths.ts` の G-04 コメントを参照。
+2. **committed `.hdo/config.json` に credential らしき文字列が含まれる場合の sha256**: PowerShell の `Get-HdoRepositoryConfigSnapshot` は `Invoke-HdoProcess` 経由で `git show` の stdout を取得する際、その stdout に `Protect-HdoText`（credential-pattern redaction）を適用してから schema検証・`ConvertFrom-Json`・sha256計算を行う。そのため、committed された `.hdo/config.json` の値に credential pattern に一致する文字列（例: `"model": "sk-ant-..."` や `"mytoken:latest"` のような値）が含まれていると、PowerShell 側では redaction によって JSON 構造が壊れて失敗するか、あるいは `[REDACTED]` に置換された文字列に対して schema検証・sha256計算が行われる。TS の `getRepositoryConfigSnapshot`（`src/git/repositoryConfig.ts`）は `git show` の生の stdout をそのまま parse・sha256計算するため、このケースでは両実装の `sha256`（および場合によっては `loaded`/エラーの有無）が一致しない。これは PowerShell 側の不具合として Issue #42 で扱う（TS 側の挙動を変える予定はない）。
+3. **JSON パーサーの寛容さ**: PowerShell の `ConvertFrom-Json`（内部的に Newtonsoft.Json を使用）はコメント・末尾カンマ・単一引用符などの非標準 JSON を許容する場合があるが、TS 側は厳密な JSON（`JSON.parse`）のみを受理する。非標準 JSON を含む設定ファイルは PowerShell では読めても TS では `Invalid JSON in '<path>': ...` で失敗しうる。
+4. **`-Config` / `-Profile` の繰り返し**: PowerShell の `[CmdletBinding()]` パラメーターバインダーは、任意の named parameter への重複指定をバインディングエラー（exit 1、`parameter 'Config' is specified more than once`）として拒否する。`-Config` が `[string[]]`（配列型）で宣言されていても例外ではなく、2回目の `-Config` は同様に拒否される（配列型は単一指定の値をコンマ区切りにするためのものであり、フラグ自体の繰り返しを許すものではない）。TS の `parseArgs`（`src/cli/args.ts`）は複数回の `-Config` を受理し、値をコンマ区切りリストとして連結する（単発の `-Config` の挙動は変えないため、ADR-0001 が許容する superset な拡張）。`-Profile` は最後に指定した値が勝つ（後勝ち）。
+5. **schema validation 失敗メッセージの末尾**: `Configuration schema validation failed:` および `Repository configuration schema validation failed for '<path>' at <commit>:` のプレフィックス（末尾の半角スペースを含む）は両実装で一致するが、その後ろのメッセージ本文（Ajv のエラーメッセージ vs. PowerShell `Test-Json`/Newtonsoft.Json のエラーメッセージ）は文言・形式が異なる。`src/cli/configParity.test.ts` と `src/core/config/resolve.ts` はこれを明示的に許容されたプレフィックスのみの一致としてテストしている。
+6. **非 object の JSON を `-Config` に渡した場合**: `[]`・`5`・`null`・空 file のような、トップレベルが JSON object ではない値（または空）を `-Config` に渡すと、両実装とも exit 2 で失敗する点は一致するが、メッセージ文言は異なる。PowerShell は parameter binding error の文言（`ConvertFrom-Json` の戻り値の型が期待と合わないことに起因する内部的なエラー）を出すのに対し、TS の `readJsonFile`（`src/cli/configCommand.ts`）は `Invalid JSON in '<path>': expected a JSON object` という専用メッセージを出す。
+7. **`Expand-HdoPath`/`expandPath` と末尾区切り文字**: .NET `[System.IO.Path]::GetFullPath` は入力に末尾区切り文字があればそれを保持するのに対し、Node の `path.resolve`（TS の `expandPath` が最終ステップで使う）は末尾区切り文字を落とす（詳細は `src/core/config/expand.ts` のコメントを参照）。そのため `paths.worktreeRoot`/`paths.artifactRoot` を `{repository}/`（末尾スラッシュ付き）にすると、PowerShell 側は `C:\repo\` に展開され `worktreeRoot -eq repositoryPath`（`C:\repo`）が `false` になり、この誤設定（実質的に repository 直下を worktree root にしてしまう設定）を **受理してしまう**。TS 側は `path.resolve` が末尾区切りを落として `C:\repo` になり、`pathEquals` で repositoryPath と一致するため `paths.worktreeRoot must be outside repositoryPath.` として **正しく拒否する**（この差異では TS の挙動が正しい）。
+8. **unknown command/option の exit code**: 未知の command / 未知の option を渡した場合、PowerShell は `[CmdletBinding()]`/`ValidateSet` のパラメーターバインディングエラーとして exit 1 になるのに対し、TS の `parseArgs`/`main`（`src/cli/main.ts`）は exit 2 を返す。これは Migration strategy フェーズ7（CLI 移植）で PowerShell 側の挙動に揃える予定の既知の差異であり、フェーズ1時点では未対応（なお `help` コマンド自体の出力先は両実装とも stdout で一致している）。
+9. **8.3 短縮名（`RUNNER~1` 等）を含む path の `Expand-HdoPath`/`expandPath` 展開**: .NET `[System.IO.Path]::GetFullPath` は path に `~` が含まれる場合、既存部分の 8.3 短縮名を `GetLongPathNameW` で展開する（`~` を含まない path では何もしないのが .NET 自身の高速パス）。TS の core `expandPath`（`src/core/config/expand.ts`）は最終ステップで `path.resolve` を呼ぶだけでこの展開を行わないため、`src/platform/windows.ts` の Windows adapter が同じ条件（`~` を含む場合のみ）で post-step を追加する: 最長の既存祖先を `fs.realpathSync.native` で展開し、存在しない末尾セグメントをそのまま再連結する。この post-step は `~` を含まない path には適用されず（`GetFullPath` の高速パスと同じ）、また `realpathSync.native` は reparse point（symlink/junction）も解決してしまう（`GetLongPathNameW` は解決しない）ため、既存祖先に reparse point が含まれる場合にのみ両者の結果が異なりうる近似実装である。GitHub Actions の `windows-latest` は `%TEMP%` が `C:\Users\RUNNER~1\...` という短縮名になるため、この差は CI で実際に観測された（`src/cli/configParity.test.ts` の `-Config` 存在しないファイルを指す negative case、および `src/git/repositoryConfig.test.ts` の一時リポジトリに対する `snapshot.path` の期待値）。POSIX adapter に変更はない。単体テストは `src/platform/windows.test.ts`（Windows限定、`C:\PROGRA~1` が存在しない環境ではskip）。
