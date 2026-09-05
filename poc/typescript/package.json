@@ -1,0 +1,20 @@
+{
+  "name": "hdo-poc-typescript",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hybrid Dev Orchestrator - TypeScript/Node.js runtime PoC (Issue #18)",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "cli": "node src/cli/main.ts"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

@@ -1,0 +1,54 @@
+# Linux verification image for the TypeScript/Node.js PoC (Issue #18, AC-03).
+#
+# Build from the REPOSITORY ROOT (not this directory), because the PoC reads
+# ../../config, ../../schemas, and ../../tests/fixtures relative to poc/typescript:
+#
+#   docker build -f poc/typescript/scripts/Dockerfile.ubuntu -t hdo-poc-ubuntu .
+#
+# Node is installed from the official nodejs.org linux-x64 tarball (no NodeSource
+# repo, no nvm) per the fixed decision to keep the image minimal and reproducible.
+FROM ubuntu:24.04
+
+ARG NODE_VERSION=24.9.0
+ARG NODE_ARCH=x64
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# F-10: verify the downloaded tarball's checksum against the official SHASUMS256.txt
+# for this exact version before extracting anything, instead of trusting an
+# unauthenticated HTTPS download outright. The local filename is kept identical to the
+# one listed in SHASUMS256.txt so `sha256sum -c` can match it directly by name.
+RUN NODE_TARBALL="node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
+    && cd /tmp \
+    && curl -fsSLo "${NODE_TARBALL}" "https://nodejs.org/dist/v${NODE_VERSION}/${NODE_TARBALL}" \
+    && curl -fsSLo SHASUMS256.txt "https://nodejs.org/dist/v${NODE_VERSION}/SHASUMS256.txt" \
+    && grep " ${NODE_TARBALL}\$" SHASUMS256.txt | sha256sum -c --ignore-missing - \
+    && mkdir -p /opt/node \
+    && tar -xJf "${NODE_TARBALL}" -C /opt/node --strip-components=1 \
+    && rm "${NODE_TARBALL}" SHASUMS256.txt
+ENV PATH="/opt/node/bin:${PATH}"
+
+RUN git config --global user.email "hdo-poc@example.invalid" \
+    && git config --global user.name "HDO PoC" \
+    && git config --global init.defaultBranch main
+
+WORKDIR /work
+
+# Explicit COPY lines (rather than a root .dockerignore) so only what the PoC reads
+# at runtime - config/, schemas/, tests/fixtures/, and poc/typescript/ itself - ends
+# up in the image, and node_modules on the host is never copied in.
+COPY config/ /work/config/
+COPY schemas/ /work/schemas/
+COPY tests/fixtures/ /work/tests/fixtures/
+COPY .hdo/project.json /work/.hdo/project.json
+COPY poc/typescript/package.json poc/typescript/package-lock.json poc/typescript/tsconfig.json /work/poc/typescript/
+COPY poc/typescript/src/ /work/poc/typescript/src/
+COPY poc/typescript/fixtures/ /work/poc/typescript/fixtures/
+
+WORKDIR /work/poc/typescript
+
+RUN node --version && npm --version && git --version
+
+CMD ["bash"]

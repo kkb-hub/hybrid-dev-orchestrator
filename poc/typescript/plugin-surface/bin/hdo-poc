@@ -1,0 +1,8 @@
+#!/bin/sh
+# POSIX launcher wrapper for the TypeScript/Node.js HDO PoC (Issue #18, AC-05).
+# Resolves its own directory so it works regardless of the caller's cwd, then execs
+# `node` against the CLI entry point with all arguments passed through unchanged.
+set -eu
+
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec node "${SCRIPT_DIR}/../../src/cli/main.ts" "$@"

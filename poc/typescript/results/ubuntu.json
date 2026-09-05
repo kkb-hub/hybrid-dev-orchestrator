@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux",
+  "release": "5.15.167.4-microsoft-standard-WSL2",
+  "nodeVersion": "v24.9.0",
+  "pathSep": "/",
+  "pathDelimiter": ":",
+  "caseSensitiveTempFs": true,
+  "executableResolution": {
+    "git": "/usr/bin/git",
+    "node": "/opt/node/bin/node",
+    "nonexistent": null
+  },
+  "userConfigDir": "/root/.config",
+  "defaultDataDir": "/root/.local/share",
+  "processGroupKillSupported": true,
+  "processTreeKillStrategy": "process.kill(-pid, 'SIGKILL') on a detached process group leader",
+  "osEolEscaped": "\"\\n\"",
+  "symlinkCreationSucceeded": true,
+  "pathext": null,
+  "homedir": "/root",
+  "tmpdir": "/tmp",
+  "envVarCount": 6,
+  "envPathUpperKeyDefined": true,
+  "envPathMixedKeyDefined": false,
+  "envPathUpperAndMixedKeysAlias": false,
+  "explicitEnvExtraKeys": []
+}

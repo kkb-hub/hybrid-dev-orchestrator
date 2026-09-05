@@ -1,0 +1,71 @@
+name: poc-typescript
+
+# CI for the TypeScript/Node.js runtime-evaluation PoC (Issue #18). Scoped to only run
+# when files it actually reads/depends on change, so it does not run on every PR to
+# the (still primary) PowerShell implementation.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "poc/typescript/**"
+      - "schemas/**"
+      - "config/**"
+      - "tests/fixtures/**"
+      - ".hdo/**"
+      - ".github/workflows/poc-typescript.yml"
+  push:
+    branches: [main]
+    paths:
+      - "poc/typescript/**"
+      - "schemas/**"
+      - "config/**"
+      - "tests/fixtures/**"
+      - ".hdo/**"
+      - ".github/workflows/poc-typescript.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-typescript-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  poc-typescript:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: poc/typescript
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: poc/typescript/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Probe observed OS/runtime differences
+        run: node src/cli/main.ts probe --json
+
+      - name: Doctor preflight
+        run: node src/cli/main.ts doctor --json

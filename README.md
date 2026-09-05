@@ -355,3 +355,6 @@ MVP の command adapter と validation command に対して、HDO 自身が OS f
 - [アーキテクチャ](docs/architecture.md)
 - [GitHub Issue 契約](docs/issue-contract.md)
 - [レビュー基盤](docs/review-platform.md)
+- [ランタイム評価: PowerShell vs TypeScript](docs/evaluation/powershell-vs-typescript.md)
+- [TypeScript 採用時の architecture proposal](docs/evaluation/typescript-architecture-proposal.md)
+- [ADR](docs/adr/README.md)

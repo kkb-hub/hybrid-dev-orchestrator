@@ -1,0 +1,104 @@
+
+> hdo-poc-typescript@0.1.0 test
+> node --test "src/**/*.test.ts"
+
+Usage: main.ts validate <schemaName> <jsonFile> [--json]
+Usage: main.ts <command> [options]
+
+Commands:
+  doctor                          Environment/config preflight (exit 3 on failure)
+  probe                           Print observed OS/runtime differences as JSON
+  validate <schemaName> <file>    Validate a JSON file against schemas/<schemaName>.schema.json
+  config                          Print the resolved, merged, validated configuration
+
+Options:
+  --json                          Machine-readable JSON on stdout
+  --config a.json,b.json          Explicit config overlays, merged left to right (config command only)
+✔ doctor --json reports node/git/config checks and exits 0 in a healthy environment (243.366306ms)
+✔ probe --json prints a JSON object with the documented fields and exits 0 (126.474092ms)
+✔ validate exits 0 for a conforming fixture and 2 for a non-conforming one (304.677405ms)
+✔ validate exits 2 with a usage message when arguments are missing (97.455352ms)
+✔ config --json prints resolved absolute paths and an explicit overlay is applied (156.307013ms)
+✔ an unknown subcommand prints usage and exits 2 (106.389977ms)
+✔ every schema fixture validates with the expected valid/invalid outcome (172.531912ms)
+✔ the default config and this repository's project contract validate against their schemas (45.961156ms)
+✔ core does not import host-specific or outer-layer modules (whole-file scan) (25.45058ms)
+✔ findBoundaryViolations detects every bypass form on synthetic snippets (self-test, not files) (1.026546ms)
+✔ expandTokens substitutes %VAR% tokens (2.708074ms)
+✔ expandTokens leaves an undefined token as the resolver's own fallback text (0.372538ms)
+✔ expandTokens expands a bare ~ and ~/ prefix (0.351197ms)
+✔ expandPathTemplate roots a relative path under the repository path (0.493749ms)
+✔ expandPathTemplate substitutes {repository} and leaves absolute paths rooted at the drive/root (0.328437ms)
+✔ expandPathTemplate falls back through the injected resolver for LOCALAPPDATA on POSIX (0.410212ms)
+✔ deepMergeConfig merges nested objects and lets the override win on scalars (2.982908ms)
+✔ deepMergeConfig replaces arrays wholesale instead of concatenating (0.324137ms)
+✔ deepMergeConfig lets a scalar override replace an object, and vice versa (0.544667ms)
+✔ buildEffectiveConfig applies overlays left to right, later wins (1.282078ms)
+✔ buildEffectiveConfig with no overlays returns the default config (0.421593ms)
+✔ validateAgainstSchema accepts a conforming document (57.494645ms)
+✔ validateAgainstSchema rejects a missing required property with a readable error (24.11247ms)
+✔ ajv-formats is wired up: format: date-time rejects a non-date string (16.051647ms)
+✔ compileSchema returns a reusable validator across multiple calls (16.269319ms)
+✔ redacts GitHub and provider token prefixes (3.958932ms)
+✔ redacts an Authorization header while keeping the scheme text out of the match (0.39688ms)
+✔ redacts a JSON key/value pair that looks like a credential (0.465008ms)
+✔ redacts a plain key=value credential pair (0.309051ms)
+✔ passes null through untouched (0.370055ms)
+✔ leaves ordinary text untouched (0.219385ms)
+✔ redactObject redacts values under credential-shaped keys and recurses (1.276982ms)
+✔ blocks the exact deny-listed names (case-insensitively) (3.229668ms)
+✔ blocks any name matching the (?i)(TOKEN|SECRET|PASSWORD|API_KEY)$ suffix pattern (0.43406ms)
+✔ passEnvironment allow-lists an otherwise-blocked name (0.340873ms)
+✔ allow-list match is case-insensitive (0.220529ms)
+✔ drops undefined-valued entries and leaves an otherwise-empty environment empty (0.256185ms)
+✔ the documented happy path is legal (1.467726ms)
+✔ PREFLIGHT can skip ISSUE_CLAIMED directly to WORKTREE_READY (NoWriteBack) (0.304376ms)
+✔ CHANGES_REQUESTED can loop back to IMPLEMENTING or escalate (0.230651ms)
+✔ any non-terminal state can move to FAILED or CANCELLED (0.287044ms)
+✔ illegal transitions throw IllegalStateTransitionError (0.709083ms)
+✔ terminal states have no outgoing transitions (1.193215ms)
+✔ worktree add/list/remove and untracked file detection (98.701746ms)
+✔ isPathWithinRoot: '..' traversal above root is rejected even when the target does not exist (1.986253ms)
+✔ isPathWithinRoot: a '..' segment that stays inside root is accepted (1.409853ms)
+✔ isPathWithinRoot: a sibling directory that merely shares root as a string prefix is rejected (1.250688ms)
+✔ isPathWithinRoot: a candidate equal to root itself is rejected (matches Test-HdoPathWithinRoot's StartsWith(root + separator)) (1.179257ms)
+✔ isPathWithinRoot: a non-existent nested candidate under an existing root is accepted (1.992357ms)
+✔ isPathWithinRoot: a symlinked root resolves consistently with its target (2.776469ms)
+﹣ comparableFullPath: a drive root is left as 'C:\', not collapsed to drive-relative 'C:' (0.255105ms) # drive-letter root handling is Windows-only
+﹣ isPathWithinRoot: 'C:\' itself is never within an unrelated root (0.348794ms) # drive-letter root handling is Windows-only
+﹣ isPathWithinRoot: a real path under the drive root is within root 'C:\' (0.357487ms) # drive-letter root handling is Windows-only
+✔ isPathWithinRoot (POSIX): '/' itself is never within an unrelated root (0.388573ms)
+✔ isPathWithinRoot (POSIX): a real path under '/' is within root '/' (0.381469ms)
+﹣ isPathWithinRoot: 'C:\' is not within root 'C:\' (filesystem root compared to itself) (0.157217ms) # drive-letter root handling is Windows-only
+✔ isPathWithinRoot (POSIX): '/' is not within root '/' (filesystem root compared to itself) (0.156467ms)
+✔ pathEquals: identical path in a different case (7.199157ms)
+✔ pathEquals: trailing separator does not affect equality (1.730878ms)
+✔ resolveExecutable finds node and git, and returns undefined for a bogus command (0.923432ms)
+✔ isReparsePointInPath: false for a plain nested directory (3.670963ms)
+✔ isReparsePointInPath: true when a symlink sits between root and child (POSIX) (4.013001ms)
+﹣ isReparsePointInPath: true when a junction sits between root and child (Windows) (0.430422ms) # Windows-only case: junctions do not exist on POSIX
+﹣ isReparsePointInPath: true when a directory symlink sits between root and child (Windows) (0.331517ms) # Windows-only case: exercises Windows directory-symlink reparse points specifically
+✔ userConfigDir and defaultDataDir return non-empty absolute-looking paths (0.317354ms)
+﹣ resolveExecutable('npm') is either undefined or resolves only to a .exe/.com target (Windows) (0.24549ms) # Windows-only case: .cmd/.bat shim filtering is a Windows-specific concern
+✔ resolveToken falls back for LOCALAPPDATA on POSIX instead of leaving a literal token (0.629805ms)
+✔ propagates exit code, captures stdout/stderr separately, and round-trips UTF-8 stdin (35.975806ms)
+✔ enforces bounded stdout and retains only a diagnostic tail once truncated (44.578987ms)
+✔ explicit env replaces the inherited environment (allow-list only) (28.327146ms)
+✔ timeout terminates the whole process tree: exit code 124 and the grandchild is dead afterwards (2005.450228ms)
+✔ stdin write failure (child exits immediately) is reported as 126, not a host crash (18.107647ms)
+✔ bounded output drain: a surviving detached grandchild does not block the result (2021.41204ms)
+✔ bounded output drain: timer is cleared once close arrives first, no drain timeout is reported (540.032053ms)
+﹣ running a .cmd path directly returns 127, not a rejection (Windows) (0.273779ms) # Windows-only case: this EINVAL behaviour is specific to Windows spawn()
+✔ nonexistent command is reported as 127 with a non-empty stderr (2.094026ms)
+✔ nonexistent cwd is reported as 127 with a non-empty stderr (0.542867ms)
+✔ stdoutPath pointing at an existing directory is reported as 127, host stays alive, no file is created (7.718302ms)
+✔ stdoutPath whose parent directory cannot be created (ancestor is a file) is reported as 127, run() does not reject (1.372699ms)
+✔ file output is bounded to maximumOutputBytes, not the full received chunk (37.795533ms)
+ℹ tests 80
+ℹ suites 0
+ℹ pass 72
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 8
+ℹ todo 0
+ℹ duration_ms 4938.855055

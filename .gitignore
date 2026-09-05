@@ -1,3 +1,4 @@
 artifacts/
 test-results/
 *.tmp
+node_modules/

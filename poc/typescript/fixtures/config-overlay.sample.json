@@ -1,0 +1,8 @@
+{
+  "workflow": {
+    "maxFixAttempts": 1
+  },
+  "paths": {
+    "artifactRoot": "{repository}/.tmp/hdo-poc-artifacts"
+  }
+}

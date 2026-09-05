@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "platform": "win32",
+  "release": "10.0.26200",
+  "nodeVersion": "v24.19.0",
+  "pathSep": "\\",
+  "pathDelimiter": ";",
+  "caseSensitiveTempFs": false,
+  "executableResolution": {
+    "git": "C:\\Program Files\\Git\\mingw64\\bin\\git.exe",
+    "node": "C:\\Program Files\\nodejs\\node.exe",
+    "nonexistent": null
+  },
+  "userConfigDir": "C:\\Users\\redacted\\AppData\\Roaming",
+  "defaultDataDir": "C:\\Users\\redacted\\AppData\\Local",
+  "processGroupKillSupported": false,
+  "processTreeKillStrategy": "taskkill /T /F /PID (PID tree walk; libuv job covers direct children only)",
+  "osEolEscaped": "\"\\r\\n\"",
+  "symlinkCreationSucceeded": true,
+  "pathext": ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC",
+  "homedir": "C:\\Users\\redacted",
+  "tmpdir": "C:\\Users\\redacted\\AppData\\Local\\Temp",
+  "envVarCount": 100,
+  "envPathUpperKeyDefined": true,
+  "envPathMixedKeyDefined": true,
+  "envPathUpperAndMixedKeysAlias": true,
+  "explicitEnvExtraKeys": [
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LOGONSERVER",
+    "PATH",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "USERDOMAIN",
+    "USERNAME",
+    "USERPROFILE",
+    "WINDIR"
+  ]
+}

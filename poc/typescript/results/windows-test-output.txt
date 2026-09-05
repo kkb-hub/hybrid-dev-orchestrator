@@ -1,0 +1,104 @@
+
+> hdo-poc-typescript@0.1.0 test
+> node --test "src/**/*.test.ts"
+
+Usage: main.ts validate <schemaName> <jsonFile> [--json]
+Usage: main.ts <command> [options]
+
+Commands:
+  doctor                          Environment/config preflight (exit 3 on failure)
+  probe                           Print observed OS/runtime differences as JSON
+  validate <schemaName> <file>    Validate a JSON file against schemas/<schemaName>.schema.json
+  config                          Print the resolved, merged, validated configuration
+
+Options:
+  --json                          Machine-readable JSON on stdout
+  --config a.json,b.json          Explicit config overlays, merged left to right (config command only)
+✔ doctor --json reports node/git/config checks and exits 0 in a healthy environment (311.3466ms)
+✔ probe --json prints a JSON object with the documented fields and exits 0 (293.6827ms)
+✔ validate exits 0 for a conforming fixture and 2 for a non-conforming one (339.6035ms)
+✔ validate exits 2 with a usage message when arguments are missing (128.2998ms)
+✔ config --json prints resolved absolute paths and an explicit overlay is applied (175.2215ms)
+✔ an unknown subcommand prints usage and exits 2 (121.9575ms)
+✔ every schema fixture validates with the expected valid/invalid outcome (171.7062ms)
+✔ the default config and this repository's project contract validate against their schemas (40.4843ms)
+✔ core does not import host-specific or outer-layer modules (whole-file scan) (12.293ms)
+✔ findBoundaryViolations detects every bypass form on synthetic snippets (self-test, not files) (0.8563ms)
+✔ expandTokens substitutes %VAR% tokens (1.5485ms)
+✔ expandTokens leaves an undefined token as the resolver's own fallback text (0.281ms)
+✔ expandTokens expands a bare ~ and ~/ prefix (0.3195ms)
+✔ expandPathTemplate roots a relative path under the repository path (0.2776ms)
+✔ expandPathTemplate substitutes {repository} and leaves absolute paths rooted at the drive/root (0.2582ms)
+✔ expandPathTemplate falls back through the injected resolver for LOCALAPPDATA on POSIX (0.3141ms)
+✔ deepMergeConfig merges nested objects and lets the override win on scalars (1.8155ms)
+✔ deepMergeConfig replaces arrays wholesale instead of concatenating (0.2413ms)
+✔ deepMergeConfig lets a scalar override replace an object, and vice versa (0.5154ms)
+✔ buildEffectiveConfig applies overlays left to right, later wins (0.3597ms)
+✔ buildEffectiveConfig with no overlays returns the default config (0.191ms)
+✔ validateAgainstSchema accepts a conforming document (55.3234ms)
+✔ validateAgainstSchema rejects a missing required property with a readable error (19.7328ms)
+✔ ajv-formats is wired up: format: date-time rejects a non-date string (12.3378ms)
+✔ compileSchema returns a reusable validator across multiple calls (11.0556ms)
+✔ redacts GitHub and provider token prefixes (1.2762ms)
+✔ redacts an Authorization header while keeping the scheme text out of the match (0.1602ms)
+✔ redacts a JSON key/value pair that looks like a credential (0.1305ms)
+✔ redacts a plain key=value credential pair (0.1398ms)
+✔ passes null through untouched (0.1122ms)
+✔ leaves ordinary text untouched (0.167ms)
+✔ redactObject redacts values under credential-shaped keys and recurses (1.3783ms)
+✔ blocks the exact deny-listed names (case-insensitively) (1.6493ms)
+✔ blocks any name matching the (?i)(TOKEN|SECRET|PASSWORD|API_KEY)$ suffix pattern (0.254ms)
+✔ passEnvironment allow-lists an otherwise-blocked name (0.1629ms)
+✔ allow-list match is case-insensitive (0.1291ms)
+✔ drops undefined-valued entries and leaves an otherwise-empty environment empty (0.1658ms)
+✔ the documented happy path is legal (1.0456ms)
+✔ PREFLIGHT can skip ISSUE_CLAIMED directly to WORKTREE_READY (NoWriteBack) (0.1614ms)
+✔ CHANGES_REQUESTED can loop back to IMPLEMENTING or escalate (0.1306ms)
+✔ any non-terminal state can move to FAILED or CANCELLED (0.121ms)
+✔ illegal transitions throw IllegalStateTransitionError (0.4233ms)
+✔ terminal states have no outgoing transitions (0.8237ms)
+✔ worktree add/list/remove and untracked file detection (750.5225ms)
+✔ isPathWithinRoot: '..' traversal above root is rejected even when the target does not exist (1.183ms)
+✔ isPathWithinRoot: a '..' segment that stays inside root is accepted (1.5006ms)
+✔ isPathWithinRoot: a sibling directory that merely shares root as a string prefix is rejected (0.9154ms)
+✔ isPathWithinRoot: a candidate equal to root itself is rejected (matches Test-HdoPathWithinRoot's StartsWith(root + separator)) (0.9033ms)
+✔ isPathWithinRoot: a non-existent nested candidate under an existing root is accepted (0.95ms)
+✔ isPathWithinRoot: a symlinked root resolves consistently with its target (2.2848ms)
+✔ comparableFullPath: a drive root is left as 'C:\', not collapsed to drive-relative 'C:' (0.2344ms)
+✔ isPathWithinRoot: 'C:\' itself is never within an unrelated root (0.8259ms)
+✔ isPathWithinRoot: a real path under the drive root is within root 'C:\' (0.3443ms)
+﹣ isPathWithinRoot (POSIX): '/' itself is never within an unrelated root (0.0948ms) # POSIX root handling does not apply on Windows
+﹣ isPathWithinRoot (POSIX): a real path under '/' is within root '/' (0.0519ms) # POSIX root handling does not apply on Windows
+✔ isPathWithinRoot: 'C:\' is not within root 'C:\' (filesystem root compared to itself) (0.254ms)
+﹣ isPathWithinRoot (POSIX): '/' is not within root '/' (filesystem root compared to itself) (0.075ms) # POSIX root handling does not apply on Windows
+✔ pathEquals: identical path in a different case (4.1852ms)
+✔ pathEquals: trailing separator does not affect equality (1.0676ms)
+✔ resolveExecutable finds node and git, and returns undefined for a bogus command (6.6531ms)
+✔ isReparsePointInPath: false for a plain nested directory (2.3178ms)
+﹣ isReparsePointInPath: true when a symlink sits between root and child (POSIX) (0.1833ms) # POSIX-only case: Windows uses junctions/dir-symlinks, covered by separate cases below
+✔ isReparsePointInPath: true when a junction sits between root and child (Windows) (36.43ms)
+✔ isReparsePointInPath: true when a directory symlink sits between root and child (Windows) (3.9659ms)
+✔ userConfigDir and defaultDataDir return non-empty absolute-looking paths (0.3035ms)
+✔ resolveExecutable('npm') is either undefined or resolves only to a .exe/.com target (Windows) (3.8603ms)
+﹣ resolveToken falls back for LOCALAPPDATA on POSIX instead of leaving a literal token (0.2637ms) # POSIX-only case: Windows always has a real LOCALAPPDATA, no fallback path to exercise
+✔ propagates exit code, captures stdout/stderr separately, and round-trips UTF-8 stdin (91.786ms)
+✔ enforces bounded stdout and retains only a diagnostic tail once truncated (186.5219ms)
+✔ explicit env replaces the inherited environment (allow-list only) (74.6859ms)
+✔ timeout terminates the whole process tree: exit code 124 and the grandchild is dead afterwards (2466.2459ms)
+✔ stdin write failure (child exits immediately) is reported as 126, not a host crash (66.477ms)
+✔ bounded output drain: a surviving detached grandchild does not block the result (2669.2577ms)
+✔ bounded output drain: timer is cleared once close arrives first, no drain timeout is reported (817.8587ms)
+✔ running a .cmd path directly returns 127, not a rejection (Windows) (1.1246ms)
+✔ nonexistent command is reported as 127 with a non-empty stderr (4.0721ms)
+✔ nonexistent cwd is reported as 127 with a non-empty stderr (0.4927ms)
+✔ stdoutPath pointing at an existing directory is reported as 127, host stays alive, no file is created (65.3795ms)
+✔ stdoutPath whose parent directory cannot be created (ancestor is a file) is reported as 127, run() does not reject (2.2452ms)
+✔ file output is bounded to maximumOutputBytes, not the full received chunk (77.162ms)
+ℹ tests 80
+ℹ suites 0
+ℹ pass 75
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 5
+ℹ todo 0
+ℹ duration_ms 7043.4991
