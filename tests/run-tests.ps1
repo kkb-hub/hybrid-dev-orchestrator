@@ -1090,7 +1090,7 @@ Keep the cycle bounded.
         $longPathArtifactRoot = Join-Path $repositoryRoot "test-results/longpath-artifacts-$([guid]::NewGuid().ToString('N'))"
         $longPathGlobalConfig = Join-Path $repositoryRoot "test-results/longpath-gitconfig-$([guid]::NewGuid().ToString('N'))"
         $savedGitEnvironment = @{}
-        foreach ($name in @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0')) {
+        foreach ($name in @('GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM')) {
             $savedGitEnvironment[$name] = [Environment]::GetEnvironmentVariable($name)
         }
         New-Item -ItemType Directory -Path $longPathRepository -Force | Out-Null
@@ -1163,12 +1163,21 @@ Keep the cycle bounded.
             Assert-Hdo (-not (Test-Path -LiteralPath $longPathWorktree.path)) 'the long-path worktree directory no longer exists on disk after cleanup (issue #25)'
             Assert-Hdo ((& $listedWorktreeCount $longPathWorktree.path) -eq 0) 'git no longer lists the long-path worktree after cleanup (issue #25)'
 
-            # Case 2: a config-level core.longpaths=false (GIT_CONFIG_COUNT is parsed after -c
-            # and overrides it, exactly like a file-level setting does) makes `git worktree
-            # remove` fail after unregistering the worktree; the filesystem fallback finishes.
-            $env:GIT_CONFIG_COUNT = '1'
-            $env:GIT_CONFIG_KEY_0 = 'core.longpaths'
-            $env:GIT_CONFIG_VALUE_0 = 'false'
+            # Case 2: a global config FILE with core.longpaths=false beats the -c that
+            # Invoke-HdoGit prepends (git fixes the value while it is still reading its config
+            # files; GIT_CONFIG_COUNT would NOT override -c), so `git worktree remove` fails with
+            # "Filename too long" after unregistering the worktree and the filesystem fallback
+            # has to finish the job. The raw-git probe first proves that this environment really
+            # produces the failure, so the fallback assertions below cannot pass vacuously.
+            $longPathFalseConfig = Join-Path $repositoryRoot "test-results/longpath-gitconfig-false-$([guid]::NewGuid().ToString('N'))"
+            [IO.File]::WriteAllText($longPathFalseConfig, "[core]`n`tlongpaths = false`n")
+            $env:GIT_CONFIG_GLOBAL = $longPathFalseConfig
+            $probeWorktree = & $newLongPathRun 'issue-25-probe'
+            & git -C $longPathRepository -c core.longpaths=true worktree remove --force $probeWorktree.path 2>$null
+            Assert-Hdo (Test-Path -LiteralPath $probeWorktree.path -PathType Container) 'a global core.longpaths=false makes git worktree remove fail on the long path even with -c core.longpaths=true (fallback precondition)'
+            Assert-Hdo ((& $listedWorktreeCount $probeWorktree.path) -eq 0) 'git unregistered the worktree before failing on the long path (fallback precondition)'
+            Remove-Item -LiteralPath $probeWorktree.path -Recurse -Force
+            & git -C $longPathRepository worktree prune
             $fallbackWorktree = & $newLongPathRun 'issue-25-fallback'
             $fallbackResult = Remove-HdoRunWorktree -RunId 'issue-25-fallback' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false
             Assert-Hdo ($fallbackResult.removed -eq $true) 'cleanup falls back to a filesystem delete when git fails with Filename too long after unregistering the worktree (issue #25)'
@@ -1191,9 +1200,7 @@ Keep the cycle bounded.
             $orphanResult = Remove-HdoRunWorktree -RunId 'issue-25-orphan' -RepositoryPath $longPathRepository -ConfigPath $longPathConfigOverride -IgnoreRepositoryConfig -Force -Confirm:$false
             Assert-Hdo ($orphanResult.removed -eq $true) 'an orphaned HDO worktree is removed with -Force (issue #25 recovery)'
             Assert-Hdo (-not (Test-Path -LiteralPath $orphanWorktree.path)) 'the orphaned worktree directory is gone after -Force cleanup (issue #25 recovery)'
-            $env:GIT_CONFIG_COUNT = $null
-            $env:GIT_CONFIG_KEY_0 = $null
-            $env:GIT_CONFIG_VALUE_0 = $null
+            $env:GIT_CONFIG_GLOBAL = $longPathGlobalConfig
 
             # Case 4: the orphan path only ever removes HDO's own worktree slot. A directory at
             # that path that is a Git checkout of its own, or whose run branch is gone, is refused
@@ -1249,7 +1256,9 @@ Keep the cycle bounded.
                 }
                 catch { Write-Host "WARN: failed to clean up '$cleanupPath': $($_.Exception.Message)" -ForegroundColor Yellow }
             }
-            if (Test-Path -LiteralPath $longPathGlobalConfig) { Remove-Item -LiteralPath $longPathGlobalConfig -Force -ErrorAction SilentlyContinue }
+            foreach ($configFile in @($longPathGlobalConfig, (Get-Variable -Name longPathFalseConfig -ValueOnly -ErrorAction SilentlyContinue))) {
+                if ($configFile -and (Test-Path -LiteralPath $configFile)) { Remove-Item -LiteralPath $configFile -Force -ErrorAction SilentlyContinue }
+            }
         }
     }
     else {
