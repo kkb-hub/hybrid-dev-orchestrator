@@ -404,7 +404,7 @@ src/
 
 ### 16.2 フェーズと終了条件
 
-Migration strategy（ADR-0001）はフェーズ1（core contracts / config / state）から順に7フェーズで進む。フェーズ1の終了条件は、`config/hdo.default.json`・`config/examples/*.json`・`.hdo/project.json`・`tests/fixtures/schema/**` の valid/invalid 判定が `tests/test-schemas.ps1` と一致することであり、`src/core/contracts/schemaFixtures.test.ts` で検証している。`node src/cli/main.ts config -Json` の出力は、`pwsh -NoProfile -File hdo.ps1 config -Json` と同一入力に対して意味的に等価であることを `src/cli/configParity.test.ts` が pwsh を oracle にして検証する（`pwsh` が無い環境では skip）。
+Migration strategy（ADR-0001）はフェーズ1（core contracts / config / state）から順に進む（フェーズ1〜7、および ADR-0001 Amendment 2026-09-06 で追加された、フェーズ7の cut-over 後に行うフェーズ8 - workers: `workers/hdo-ollama-worker.ps1` の TypeScript 移植、ADR-0003 参照）。フェーズ1の終了条件は、`config/hdo.default.json`・`config/examples/*.json`・`.hdo/project.json`・`tests/fixtures/schema/**` の valid/invalid 判定が `tests/test-schemas.ps1` と一致することであり、`src/core/contracts/schemaFixtures.test.ts` で検証している。`node src/cli/main.ts config -Json` の出力は、`pwsh -NoProfile -File hdo.ps1 config -Json` と同一入力に対して意味的に等価であることを `src/cli/configParity.test.ts` が pwsh を oracle にして検証する（`pwsh` が無い環境では skip）。
 
 **フェーズ2（process / platform）は完了した。** 終了条件（ADR-0001 Migration strategy）は次の通り満たしている:
 
@@ -426,7 +426,7 @@ WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない（ADR-00
 
 `Invoke-HdoRun -DryRun` 自体の組み立て（`execution` + `preflight` + フェーズ4の GitHub/contract object の合成）と `Invoke-HdoValidation` の実行はフェーズ6に委譲する（ADR-0001 Migration strategy フェーズ6:「plan→implement→validate→review→fix の bounded loop、`.hdo/project.json` の gate 実行を実装する」。gate 実行はフェーズ6の deliverable として明示されており、setup failure と product failure の分類（Issue #16）もフェーズ6が初日から行う）。Ollama 対応のスコープ（Issue #37）は `docs/adr/0001-primary-runtime-typescript.md` の Amendments に記録した。
 
-フェーズ6（workflow）以降は ADR-0001 の Migration strategy 節を参照。
+フェーズ6（workflow）以降は ADR-0001 の Migration strategy 節を参照。フェーズ6の outer workflow の書き方（自作 dispatch loop、XState は採らない）と、フェーズ8での lean worker 移植の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`）に記録した。フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（lean worker）を使うには引き続き `pwsh` が PATH 上に必要である。
 
 ### 16.3 実行方法
 

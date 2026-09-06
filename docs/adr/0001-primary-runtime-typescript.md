@@ -101,6 +101,7 @@ TypeScript / Node.js 24 LTS を HDO の中長期 primary implementation language
 5. **runners**: Codex/Claude/command adapter を実装する。終了条件: 同一 prompt/schema に対する `hdo run -DryRun` の execution plan が両実装で一致する。Ollama 対応（route 1/2、`contextTokens`、doctor 検査）のスコープと完了条件の詳細は Amendments の「Ollama 対応の移行スコープ（Issue #37）」を参照。
 6. **workflow**: plan→implement→validate→review→fix の bounded loop、`.hdo/project.json` の gate 実行を実装する。終了条件: `NoWriteBack` full run が両実装で同じ state 遷移・同じ diff・同じ review 判定に到達する。判定には `tests/fixtures/runtime/mock-agent.ps1`/`mock-claude.cmd`/`validation-pass.ps1` 相当の決定論的な mock runner を使用し、実 agent（Claude/Codex/Ollama）には依存しない。
 7. **cli / plugin**: まず `hdo` CLIコマンド群（`help`/`doctor`/`config`/`issues`/`inspect`/`run`/`status`/`cleanup`/`labels`）を TypeScript 実装へ移植し、parity を確認する。終了条件（この順で満たす）: (i) `doctor`・`config`・`inspect`・`run -DryRun` の4コマンドについて `-Json` 出力が両実装で意味的に等価になる、(ii) `status`・`cleanup -WhatIf`・`labels -WhatIf` についても `-Json` 出力が共有 fixture に対して両実装で意味的に等価になることを追加で確認する。(i)・(ii) の parity 確認が両方完了して初めて、全8個の `commands/*.md`・全8個の `skills/*/SKILL.md` の呼び出し経路を TypeScript 実装へ切り替える（`allowed-tools` を `Bash(pwsh:*)` から `Bash(node:*)` へ、`plugin.json` の `description`/`keywords` も同時に更新し、片方だけ pwsh 呼び出しが残る中間状態を作らない）。
+8. **workers**（Amendment 2026-09-06「フェーズ8（workers）の追加と lean worker 移植の位置づけ」で追加。ADR-0003 と対で読む）: フェーズ7の cut-over 完了後に、route 2 の lean worker `workers/hdo-ollama-worker.ps1` を TypeScript へ移植する。順序は (a) 依存 0（Node 24 native `fetch` で Ollama `/api/chat` を呼ぶ）の `node` 版 worker をベースラインとして実装する → (b) `poc/ai-sdk/` に AI SDK（`ai` + Ollama provider）版の比較 PoC を置き、Issue #48 の指標（token 消費、completion rate、tool call 精度、32K context での安定性、実装量、security/auditability）で (a) と比較する → (c) 採否を ADR-0003 の Amendment または新 ADR に記録する。`command` runner の token 契約（`{hdoRoot}`/`{promptFile}`/`{outputFile}`/`{schemaFile}`/`{model}`/`{contextTokens}`）と `schemas/*.json` は変更しない。終了条件（すべて満たす）: (i) `tests/test-lean-worker.ps1` の全ケースを TypeScript へ移植したテストが `node` 版 worker に対して pass する（mock Ollama、CI gate。PR #55 の token-aware compaction - context accounting、working summary、worker-verified state - のケースを含む）、(ii) `tests/test-lean-worker-smoke.ps1` の TypeScript 相当（実 Ollama、opt-in、CI gate にしない）が PowerShell worker と同じ assertion を `node` 版 worker に対して pass する、(iii) `config/examples/ollama-lean-worker.json` が `pwsh` ではなく `node` 版 worker を起動する形に更新され、`src/cli/configParity.test.ts` の execution plan parity が引き続き pass する、(iv) (b) の比較結果と (c) の採否決定が記録されている。(i)〜(iv) を満たした時点で `pwsh` を TypeScript runtime の route 2 要件から外し、PowerShell worker は maintenance mode へ移行する。
 
 **両実装をまたぐ契約（変更しない）**:
 
@@ -175,23 +176,39 @@ AC-05: 本 Issue の範囲内では PowerShell 7 実装を維持し、次を実�
 
 repository owner の決定により、TypeScript 移行の一次ターゲットは Windows とする。Migration strategy の各フェーズの終了条件のうち `ubuntu-latest` / Linux に関する部分（フェーズ 2 の Linux CI、フェーズ 1・7 の Linux 上での起動確認など）は初期フェーズの gate とせず、TypeScript 実装が Windows parity（フェーズ 7）に到達した後に起票する WSL2 / Linux 対応 Issue で扱う。`poc-typescript.yml` の `ubuntu-latest` job は PoC の情報提供として維持するが、移行フェーズの終了条件には含めない。Issue #15 はこの前提で再スコープ済み（PowerShell 側の portability fix のみ。「Issue #15 への影響」節）。
 
+また bucket (a) の「`config/hdo.default.json` の `%LOCALAPPDATA%` 固定値を変更する」は、同ファイルが両実装共通の契約であるため値は変更せず、`Expand-HdoPath` 側で `%LOCALAPPDATA%` / `%APPDATA%` を .NET の既知フォルダーへ fallback させる方式で満たした（`docs/configuration.md` 9 節）。
+
 ### 2026-09-06: Ollama 対応の移行スコープ（Issue #37）
 
 Issue #37 の AC-01〜AC-05 が問う「Ollama 対応をどのフェーズでどこまで移植するか」を、Migration strategy フェーズ5（runners）の一部として次のとおり確定する。
 
 **route 1（claude+ollama、`type: claude` / `provider: ollama`）はフェーズ5で完全に実装した。** `ANTHROPIC_BASE_URL` のloopback固定・非secretトークン注入（`src/core/runners/runnerEnvironment.ts`）、prompt に埋め込む正規化 transport schema（`src/core/runners/claudeArguments.ts`。npm SDK が任意 model ID に対して `--json-schema` を拒否するため、cloud route と異なりこちらは prompt 埋め込みを使う）、`ollama create` による派生 context model `hdo-ctx-<sanitized>-<sha256[0:8]>-<contextTokens>` の解決（`src/runners/ollamaContextModel.ts`）、structured-output prose 回復（`src/core/runners/claudeOutput.ts` の `recoverOllamaStructuredOutput` + `src/runners/ollamaStructuredOutput.ts` の artifact 書き込み）、context-overflow の診断（`src/core/runners/failureDetail.ts`）、doctor の `provider:ollama`/`ollama-model:*`/`ollama-context:*` 検査（`src/workflow/preflight.ts`）をすべて含む。
 
-**route 2（lean worker、`type: command` / `provider: ollama`）は、汎用 command adapter（token 展開・`promptTransport: file|stdin`・output-file-or-stdout、`src/runners/agentStep.ts`）としてのみフェーズ5に含む。** worker 本体である `workers/hdo-ollama-worker.ps1`（1222行、専用の715行テスト `tests/test-lean-worker.ps1` を持つ）は、フェーズ7（cli/plugin、PowerShell 実装が maintenance mode へ移行する時点）まで PowerShell のまま維持し、TypeScript へ移植しない。理由: (1) worker は HDO の runtime state に一切触れない独立した harness であり、(2) `{hdoRoot}`/`{promptFile}`/`{outputFile}`/`{schemaFile}`/`{model}`/`{contextTokens}` という token 契約（`config/examples/ollama-lean-worker.json`: `"command": "pwsh"`, `"args": ["-File", "{hdoRoot}/workers/hdo-ollama-worker.ps1", ...]`）そのものが、`command`/`extraArgs` を差し替えるだけで将来の `node` 版 worker に置き換え可能な抽象を既に提供しており、schema 変更なしに移行できる。結果として、TypeScript runtime 上で route 2 を使うには引き続き `pwsh` が PATH 上に必要になる（既知の制限として記録）。worker 自体の TypeScript 移植はフェーズ7より後の別 Issue で扱う。
+**route 2（lean worker、`type: command` / `provider: ollama`）は、汎用 command adapter（token 展開・`promptTransport: file|stdin`・output-file-or-stdout、`src/runners/agentStep.ts`）としてのみフェーズ5に含む。** worker 本体である `workers/hdo-ollama-worker.ps1`（1222行、専用の715行テスト `tests/test-lean-worker.ps1` を持つ）は、フェーズ7（cli/plugin、PowerShell 実装が maintenance mode へ移行する時点）まで PowerShell のまま維持し、TypeScript へ移植しない。理由: (1) worker は HDO の runtime state に一切触れない独立した harness であり、(2) `{hdoRoot}`/`{promptFile}`/`{outputFile}`/`{schemaFile}`/`{model}`/`{contextTokens}` という token 契約（`config/examples/ollama-lean-worker.json`: `"command": "pwsh"`, `"args": ["-File", "{hdoRoot}/workers/hdo-ollama-worker.ps1", ...]`）そのものが、`command`/`extraArgs` を差し替えるだけで将来の `node` 版 worker に置き換え可能な抽象を既に提供しており、schema 変更なしに移行できる。結果として、TypeScript runtime 上で route 2 を使うには引き続き `pwsh` が PATH 上に必要になる（既知の制限として記録）。worker 自体の TypeScript 移植はフェーズ7より後の別 Issue で扱う。→ フェーズ8として確定（下記 Amendment「2026-09-06: フェーズ8（workers）の追加と lean worker 移植の位置づけ」、および ADR-0003）。
 
 **doctor の Ollama 関連検査はフェーズ5で実装した**（`src/workflow/preflight.ts`、`Test-HdoEnvironment` 相当）: `ollama` command の存在、`ollama list` の成功、runner が指定する model の存在、（`contextTokens` 設定時）派生 context model が実際に `ollama create` できること、（`contextTokens` 未設定時）長時間 run で失敗しやすい構成である旨の warning。
 
 **`contextTokens` の扱いは route ごとに異なる**: route 1 は `ollama create` で焼き込む Modelfile の `num_ctx` パラメータと、Claude CLI 側の `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（auto-compaction 基準）の2 lever を1つの値から導出する（`docs/configuration.md` §4.3 参照）。route 2 は `{contextTokens}` token 経由でリクエスト単位の `num_ctx` として渡すのみで、派生モデルは不要である。
 
-**完了マッピング**: フェーズ5は fixture/mock ベースの parity で測定する - prose 回復は `tests/fixtures/runtime/claude-ollama-*.json`（`src/runners/ollamaStructuredOutput.test.ts`・`src/runners/runnersParity.test.ts`）と `mock-claude-ollama-prose.cmd`（`src/runners/agentStep.integration.test.ts`）、派生 context model の実 process 実行は `ollama.cmd` mock（`src/runners/ollamaContextModel.test.ts`）。実 provider を用いた TypeScript 側の opt-in smoke（`tests/test-ollama-smoke.ps1`/`tests/test-lean-worker-smoke.ps1` の TS 相当）はフェーズ6（TS 側の `run` が存在してから）に委譲し、CI gate にはしない。
+**完了マッピング**: フェーズ5は fixture/mock ベースの parity で測定する - prose 回復は `tests/fixtures/runtime/claude-ollama-*.json`（`src/runners/ollamaStructuredOutput.test.ts`・`src/runners/runnersParity.test.ts`）と `mock-claude-ollama-prose.cmd`（`src/runners/agentStep.integration.test.ts`）、派生 context model の実 process 実行は `ollama.cmd` mock（`src/runners/ollamaContextModel.test.ts`）。実 provider を用いた TypeScript 側の opt-in smoke（`tests/test-ollama-smoke.ps1`/`tests/test-lean-worker-smoke.ps1` の TS 相当）はフェーズ6（TS 側の `run` が存在してから）に委譲し、CI gate にはしない。→ 補足: このうち `node` 版 worker 自体を対象にする `test-lean-worker-smoke.ps1` の TS 相当はフェーズ8の終了条件 (ii)（下記 Amendment）。フェーズ6で行う route 2 の smoke は TS 側の `run` が PowerShell worker を `command` runner 経由で起動する形を対象にする。
 
 **execution plan parity（フェーズ5の終了条件の半分）は Ollama の2例を含む**: `config/examples/ollama-hybrid.json`（route 1）と `config/examples/ollama-lean-worker.json`（route 2）は `src/cli/configParity.test.ts` の `CASES` に含まれており、Ollama 固有の runner 設定も execution plan parity の対象である。
 
-また bucket (a) の「`config/hdo.default.json` の `%LOCALAPPDATA%` 固定値を変更する」は、同ファイルが両実装共通の契約であるため値は変更せず、`Expand-HdoPath` 側で `%LOCALAPPDATA%` / `%APPDATA%` を .NET の既知フォルダーへ fallback させる方式で満たした（`docs/configuration.md` 9 節）。
+### 2026-09-06: フェーズ8（workers）の追加と lean worker 移植の位置づけ
+
+repository owner の決定（2026-09-06）により、Migration strategy に **フェーズ8（workers）** を追加する。上の Amendment「Ollama 対応の移行スコープ（Issue #37）」が「フェーズ7より後の別 Issue で扱う」とした `workers/hdo-ollama-worker.ps1` の TypeScript 移植は、このフェーズ8として確定する。trade-off の詳細と inner tool loop の framework 採否の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`、Proposed）に記録した。
+
+**フェーズ7と並行ではなく、フェーズ7の後に置く理由**:
+
+1. フェーズ7は cut-over の瞬間（`commands/*.md`・`skills/*/SKILL.md` の呼び出し経路が `pwsh` から `node` へ切り替わる）であり、7コマンド parity に注意を集中させる。
+2. worker は `command` adapter の向こう側にいて、フェーズ6（mock runner による `NoWriteBack` full run）とフェーズ7（7コマンドの `-Json` parity）のどちらの parity にも現れない。並行させてもフェーズ7の parity を助けず、review の焦点だけが割れる。
+3. 移植は大きい（worker 1222行 + 専用テスト `tests/test-lean-worker.ps1` 715行 + PR #55 で追加された token-aware compaction）うえ、完了判定に実 Ollama の opt-in smoke という、フェーズ6/7の mock ベース parity とは異なる検証方法を要する。
+
+**maintenance mode の条件の明確化**: Decision 節のとおり、PowerShell orchestrator（`hdo.ps1` + `src/HybridDevOrchestrator/`）はフェーズ6・7の終了条件を満たした時点で maintenance mode へ移行する。この決定は変えない。ただし PowerShell worker（`workers/hdo-ollama-worker.ps1`）は、フェーズ8が完了するまで live のまま残る唯一のコンポーネントであり（route 2 を使う限り実際に実行される。compaction 等の不具合修正はこの間も worker に対して行う）、`pwsh` が TypeScript runtime の要件（route 2 に限る）から外れるのはフェーズ8完了時である。
+
+**帰結（既知の制限）**: フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（`config/examples/ollama-lean-worker.json`）を使うには `pwsh` が PATH 上に必要である。route 1（claude+ollama）と cloud route には影響しない。opt-in の経路に限られた制限として記録する。
+
+**依存の扱い**: owner は比較 PoC のための依存追加（`ai` + Ollama provider、推移的に約12 package）を認めた。これは `poc/ai-sdk/` 配下の `package.json` に閉じ、フェーズ8 (c) の採否決定を経るまで repository root の `dependencies` には入れない。`poc/typescript/` は凍結のまま変更しない。security boundary（workspace guard、`.git` 保護、sandbox による write 権限、audit artifacts、`num_ctx` 予算）はどの構成でも HDO 所有とする（ADR-0003 D3）。
 
 ## References
 
@@ -202,4 +219,6 @@ Issue #37 の AC-01〜AC-05 が問う「Ollama 対応をどのフェーズでど
 - GitHub Issue #18（本 ADR の対象）
 - GitHub Issue #15（WSL2/Linux 正式対応、影響を受ける）
 - GitHub Issue #25（`hdo cleanup` の Windows longpath 障害、Migration strategy フェーズ2 で参照）
+- GitHub Issue #37（Ollama 対応の移行スコープ、Amendment 2026-09-06）
+- GitHub Issue #48（エージェントハーネス軽量化の検討）、ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`、Migration strategy フェーズ8 と対で読む）
 - Issue #18 のコメント（Node/Bun 両対応のための tsconfig・wrapper 規約）
