@@ -12,6 +12,10 @@
     agent step 経路全体（command adapter、schema validation、credential redaction）
     を通すので、worker が本番と同じ契約で動くことまで検査できる。
 
+    2 つ目の scenario は context compaction（issue #47）を実 model で踏ませる。停止
+    条件が model の振る舞いに依存するため、agent step ではなく worker を直接起動し、
+    圧縮が必ず起きる狭い window を渡す。
+
 .EXAMPLE
     pwsh -NoProfile -File tests/test-lean-worker-smoke.ps1 -Run
 #>
@@ -20,6 +24,10 @@ param(
     [switch]$Run,
     [string]$Model = 'qwen3.8:27b-q4_K_M',
     [int]$ContextTokens = 32768,
+    # Deliberately far below anything an operator would configure. The point is to reach the
+    # compaction threshold with a task small enough to stay a smoke test: at a realistic
+    # window the same task finishes in four turns without ever compacting.
+    [int]$CompactionContextTokens = 4096,
     [switch]$KeepArtifacts
 )
 
@@ -108,6 +116,66 @@ function Get-Sum {
     $diff = (& git -C $smokeRepository diff --name-only) -join ' '
     Assert-Smoke ($diff -match 'calc\.ps1') 'git sees exactly the expected file change'
     Assert-Smoke (@(& git -C $smokeRepository status --porcelain).Count -eq 1) 'the worker did not touch any other file'
+
+    # --- context compaction against the real model -------------------------------------
+    # Three files rather than one, so the tool loop cannot finish inside a single exchange,
+    # and a window small enough that the threshold is crossed while the work is unfinished.
+    # The worker is started directly here: the agent step takes its window from the profile,
+    # and the whole point of this scenario is a window no profile would ever declare.
+    $compactionWorkspace = Join-Path $smokeRoot 'compaction'
+    New-Item -ItemType Directory -Path $compactionWorkspace -Force | Out-Null
+    foreach ($module in 'a', 'b', 'c') {
+        $upper = $module.ToUpper()
+        $lines = [Collections.Generic.List[string]]::new()
+        $lines.Add("# Module $upper - numeric helpers for the reporting pipeline.")
+        $lines.Add('')
+        # Padding, so reading a whole file costs real context and the model is pushed toward
+        # the narrow reads the system prompt asks for.
+        1..25 | ForEach-Object { $lines.Add("function Get-${upper}Constant${_} { return $($_ * 7) }") }
+        $lines.Add('')
+        $lines.Add("function Get-${upper}Total {")
+        $lines.Add('    param([int[]]$Values)')
+        $lines.Add('    $total = 0')
+        $lines.Add('    for ($i = 0; $i -lt $Values.Count - 1; $i++) { $total += $Values[$i] }')
+        $lines.Add('    return $total')
+        $lines.Add('}')
+        $lines.Add('')
+        1..25 | ForEach-Object { $lines.Add("function Get-${upper}Label${_} { return '$module-label-$_' }") }
+        Set-Content -LiteralPath (Join-Path $compactionWorkspace "module-$module.ps1") -Value $lines -Encoding utf8NoBOM
+    }
+
+    $compactionPrompt = Join-Path $smokeRoot 'compaction-prompt.md'
+    $compactionOutput = Join-Path $smokeRoot 'compaction-result.json'
+    Set-Content -LiteralPath $compactionPrompt -Encoding utf8NoBOM -Value @'
+Three files in this workspace each define a Get-*Total function whose for-loop bound is
+off by one: it uses "$i -lt $Values.Count - 1", so the last element is never added.
+
+Fix all three files: module-a.ps1, module-b.ps1, module-c.ps1. In each one, change the
+loop bound to "$i -lt $Values.Count". Change nothing else.
+'@
+
+    $compactionStdout = & pwsh -NoProfile -File (Join-Path $repositoryRoot 'workers/hdo-ollama-worker.ps1') `
+        -PromptFile $compactionPrompt -OutputFile $compactionOutput `
+        -SchemaFile (Join-Path $repositoryRoot 'schemas/worker-result.schema.json') `
+        -WorkingDirectory $compactionWorkspace -Model $Model `
+        -ContextTokens $CompactionContextTokens -CompactAtPercent 35 -KeepRecentMessages 4 `
+        -MaxTurns 20 2>&1 | Out-String
+    $compactionExitCode = $LASTEXITCODE
+    Write-Host $compactionStdout
+
+    $thresholdMatch = [regex]::Match($compactionStdout, 'compaction: turn=(\d+) reason=threshold prompt_tokens_before~\d+ prompt_tokens_after~\d+ messages=\d+->\d+')
+    $finalMatch = [regex]::Match($compactionStdout, 'final: .*turns=(\d+) .*compactions=(\d+)')
+
+    Assert-Smoke ($compactionExitCode -eq 0) 'the worker completes a multi-file task inside a window too small to hold its history'
+    Assert-Smoke ($thresholdMatch.Success) 'the reported prompt token count triggers a compaction, with the turn and both token counts in the diagnostic'
+    Assert-Smoke ($finalMatch.Success -and $thresholdMatch.Success -and [int]$finalMatch.Groups[1].Value -gt [int]$thresholdMatch.Groups[1].Value) 'the tool loop keeps making progress after its history was rewritten'
+    Assert-Smoke ($finalMatch.Success -and [int]$finalMatch.Groups[2].Value -ge 1) 'the final line reports how many compactions the run needed'
+
+    $stillBroken = @(Select-String -Path (Join-Path $compactionWorkspace 'module-*.ps1') -Pattern '\$Values\.Count - 1')
+    Assert-Smoke ($stillBroken.Count -eq 0) 'every file is fixed even though the history was compacted mid-task'
+    $compactionResult = Get-Content -LiteralPath $compactionOutput -Raw | ConvertFrom-Json
+    Assert-Smoke ([int]$compactionResult.schemaVersion -eq 1) 'the final report is still schema-shaped after the history was reduced'
+    Assert-Smoke ([string]$compactionResult.summary -ne '') 'the final report carries a summary written from the compacted state'
 }
 finally {
     if ($KeepArtifacts) { Write-Host "artifacts retained at $smokeRoot" }

@@ -384,6 +384,64 @@ model がなければ導入方法を自動実行せず fail する。Ollama が�
 - **tool boundary は同じ**: 公開するのは workspace 配下の `read_file` / `list_files` / `search_files`（および read-only でない場合は `write_file` / `edit_file`）だけで、shell、git、build、validation gate は実行しない。workspace 外への path は拒否する。read-only の制約は tool 一覧から外すだけでなく、実際に file system へ触れる dispatch 地点でも強制する
 - **tool result に上限がある**: 1 回の tool result は既定 20000 文字で切り詰め、切り詰めた事実をモデルへ返す。4.3 で述べた「単一ターンの巨大な tool result が黙って切り詰められて誤答になる」問題を、harness 側で制御できる形にしている
 - **turn 上限**: 既定 40 ターンで打ち切り、未完了分を `blockers` として報告させる
+- **取得量を model 側から絞れる**: `read_file` は `start_line` と `max_lines`、`search_files` は `max_results`（既定 100 件）を取り、必要な範囲だけを返す。system prompt でも「既存 file の変更は `write_file` ではなく `edit_file`」「まず `search_files`、次に範囲指定の `read_file`」を指示する
+- **context を使い切る前に履歴を圧縮する**: 下記の automatic context compaction
+
+### automatic context compaction
+
+固定費が小さいことは会話が伸びないことを意味しない。tool result と tool arguments は turn ごとに積み上がり、実測では 1 ターンあたり +8,000〜16,000 tokens で、`contextTokens: 65536` でも 6 ターン程度で天井に達する（issue #47）。worker は Ollama が返す `prompt_eval_count` に「まだ送っていない直近 message の推定分」を足した値を監視し、`contextTokens` の `-CompactAtPercent`（既定 65）に達した時点で、provider 側の silent truncation より先に履歴を書き換える。
+
+圧縮後の履歴は次の 4 つだけになる。
+
+1. 元の system prompt（無変更）
+2. 元の task message（無変更。compaction が書き換えたり失われたりすることはない）
+3. 圧縮 block 1 通
+4. 直近 `-KeepRecentMessages`（既定 6）message。境界が tool result の場合は、その tool call を出した assistant turn まで巻き戻すので、tool result が呼び出し元から切り離されることはない
+
+圧縮 block は 2 つの節を明示的に分けて持つ。前半は **worker 自身が観測した事実**（読んだ file、変更した file と操作回数、検索した pattern、tool error、直近の action、turn 数、compaction 回数）で、model の記憶には依存しない。後半は **model が生成した working summary**（goal / constraints / files inspected / files changed / decisions / failed attempts / current state / remaining work）で、schema を強制した別会話として取得する。要約要求は session の続きではなく毎回新規の 2 message 会話であり、入力は破棄対象を切り詰めた digest（window の約 35% を上限）に限られるため、上限付近で compaction 自体が失敗することはない。要約が失敗・空・不正 JSON の場合は観測事実だけの block へ縮退し、step は落とさない。
+
+保持した直近 message だけで閾値を超える場合（巨大な tool result や `write_file` の full content が 1 通に入っている場合）は、閾値を下回るまで保持数を半減する。そうしないと reclaim できないまま毎 turn 圧縮を試み、要約呼び出しだけを繰り返すことになる。保持境界は要約より **先に** 決める。後から決めると、要約対象からも保持対象からも外れる message が黙って消える。
+
+置換 block 自体にも上限がある（閾値の 35%、観測事実と model summary で折半）。上限が無いと、compaction のたびに前回の summary を含めて要約するため block が成長し、やがて block だけで閾値を超えて圧縮が何も回収できなくなる。この値は保持量を決めるときの予約枠でもあるため、`contextTokens` ではなく閾値に対する比率で決めている。window 基準にすると `CompactAtPercent` が低い構成で予約枠が使える枠の過半を占め、直近 message を 1 通も残せなくなる。
+
+なお window が極端に狭く、system prompt と tool 定義と 1 往復だけで閾値に届く構成では、保持できる直近 message が 0 通になることがある。これは計算どおりの結果であって、その場合は置換 block だけで継続する。
+
+`read_file` を範囲指定または途中打ち切りで読んだ場合、観測事実には `(partial)` を付けて記録する。system prompt は「full で読んだ file を読み直すな」と指示しているため、部分読みを「読んだ file」として記録すると、圧縮で本文が消えたあと再取得もできなくなる。
+
+なお使用量の推定は文字数ではなく **UTF-8 byte 数 / 3** で行う。「1 token = 4 文字」は ASCII でしか成り立たず、この repository のように prompt や issue 本文が日本語だと 4 倍近い過小評価になって compaction が間に合わない。byte / 3 は日本語でほぼ 1 文字 1 token、ASCII では 3 割ほど過大に見積もる。過大側は「少し早めに圧縮する」だけで害が無く、過小側だけが失敗になる。
+
+保持境界は「tool result を呼び出し元の assistant turn から切り離さない位置」＝ tool 以外の message の位置から、**保持量が最大になるもの** を選ぶ。1 回の assistant turn が大量の並列 tool call を返した場合など、どの位置でも収まらないときは何も保持せず、置換 block だけで継続する。
+
+閾値到達で起動した compaction は、必ず最低 1 往復を落とす。起動の根拠は provider 自身の `prompt_eval_count` であり、window の逼迫について権威があるのは HDO 側の推定ではなくそちらである。両者が食い違ったときに「推定ではまだ余裕がある」として圧縮を見送ると、window を超えた request がそのまま送られてしまう。
+
+model が tool を一切呼ばず終了 turn を返した場合も、loop を抜ける直前に同じ閾値判定を行う。tool result と違い assistant の返答本文には `MaxToolResultChars` のような上限が無いため、饒舌な local model は最後の 1 turn だけで閾値を超えうる。この判定を loop の break より後回しにすると、その turn は in-loop compaction からも最終縮約からも漏れて未圧縮のまま最終 request に載ってしまう。
+
+tool loop 終了後、schema を強制する最終 turn の前にも同じ縮約を行う。最終 turn は済んだ作業を整形するだけなので、長い run で最も無駄な再送になりやすい。ただし縮約するのは **すでに 1 回でも compaction が起きたか、履歴（または保護 prefix 直後の 1 通）が閾値に達している場合だけ** である。まだ十分収まっている履歴を捨てると、model 側の summary が未生成のまま観測事実だけで最終報告を書かせることになり、実際のコストより大きい損をする。message 数だけでこの判定をすると、system・task に続く 1 通の巨大な終了 turn（合計 3 通、閾値超）を「短い session」と誤認して見送ってしまうため、token 推定も必ず併用する。
+
+1 通だけ落として block と入れ替えても、その 1 通が並より小さければ差し引きゼロで要約呼び出しだけが無駄になるため、そのケースはスキップする。ただし、その 1 通が置換 block の上限を超えて巨大な場合は別で、そこでは実際に縮まるのでスキップしない。
+
+実際に message を落とす場合は要約を 1 回取得する。落とす対象は定義上「前回 compaction 以降の turn」であって既存 summary の範囲外なので、既存 summary を使い回すと最終報告が途中までの経緯しか語らなくなる。ただし tool 呼び出しの無い終了 turn 自体が閾値超で、その場で in-loop compaction が実際に走った場合（保護 prefix 直後の 1 通だけでなく、それ以前の turn も含めて複数 message を落とせた場合）は、直後の最終縮約を重ねて行わない。保持境界の決定時点で置換 block の上限を差し引いた余裕を確保しているため、直後に再度縮約しても通常は何も削れず、要約呼び出しだけが無駄になる。
+
+`read_file` の結果を「full で読んだ」か「部分的にしか読んでいないか」の判定は、返却テキストを正規表現で走査するのではなく、`Invoke-WorkerTool` 側が読み取りの分岐そのものから構造的に確定する。テキスト側で判定すると、この worker 自身の source のように truncation marker の文言をたまたま含むファイルを検査対象にした場合、full 読みが誤って partial と記録される。また同一 path に対する記録は 1 file 1 entry に統合し、「一度でも full で読んだ」を優先する。path 文字列で区別せず「path」と「path (partial)」を別々の list entry として両方保持すると、同じ file について矛盾した状態が block に同時に現れる。
+
+診断は stdout に出る。
+
+~~~text
+turn 5: prompt_tokens=21980 tool_calls=1
+compaction: turn=5 reason=threshold prompt_tokens_before~23110 prompt_tokens_after~4820 messages=12->5 kept_recent=2
+final: prompt_tokens=5210 turns=9 num_ctx=32768 compactions=1
+~~~
+
+`-CompactAtPercent 0` を渡すと compaction は完全に無効になり、閾値未到達の場合と同じく従来どおりの動作になる。
+
+調整は runner の `extraArgs` に引数を足して行う。HDO の config schema には現れない worker 自身の引数である。
+
+| 引数 | 既定 | 意味 |
+| --- | --- | --- |
+| `-CompactAtPercent` | 65 | compaction を起動する `contextTokens` の使用率（%）。0 で無効 |
+| `-KeepRecentMessages` | 6 | compaction 後に残す直近 message 数 |
+| `-MaxToolResultChars` | 20000 | 1 回の tool result の文字数上限 |
+| `-MaxTurns` | 40 | tool loop の turn 上限 |
 
 制約:
 
