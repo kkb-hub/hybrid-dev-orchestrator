@@ -8,13 +8,17 @@ import { getPlatform } from "../platform/index.ts";
 import { parseArgs } from "./args.ts";
 import { buildConfigCommandOutput, nowIso, resolveCliConfig } from "./configCommand.ts";
 import { runDoctorCommand } from "./doctorCommand.ts";
+import { runRunCommand } from "./runCommand.ts";
+import { runStatusCommand } from "./statusCommand.ts";
 import { loadSchemaRegistry } from "./schemaLoader.ts";
 
 const USAGE_TEXT = [
-  "Hybrid Dev Orchestrator (TypeScript, phase 1-5: config / doctor)",
+  "Hybrid Dev Orchestrator (TypeScript, phase 1-6: config / doctor / run / status)",
   "",
   "  node src/cli/main.ts doctor [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]",
   "  node src/cli/main.ts config  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-RepositoryPath <path>] [-Json]",
+  "  node src/cli/main.ts run     (-Issue <number> | -Pick) [-Config <path>[,<path>...]] [-Profile <name>] [-SetStep implement=<runner>] [-IgnoreRepositoryConfig] [-DryRun] [-NoWriteBack] [-Json]",
+  "  node src/cli/main.ts status  -RunId <id> [-Json]",
   "  node src/cli/main.ts help",
   "",
   "PowerShell (hdo.ps1) remains the canonical CLI for every other command until",
@@ -59,6 +63,22 @@ async function main(argv: string[]): Promise<number> {
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return exitCode;
     }
+    case "run": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const { result, exitCode } = await runRunCommand({ parsed, platform, schemas });
+      // Mirrors hdo.ps1's `run` case: prints the run (or DryRun execution-plan)
+      // object as JSON with or without `-Json` (same rationale as `config`/`doctor`).
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return exitCode;
+    }
+    case "status": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const result = await runStatusCommand({ parsed, platform, schemas });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
     default:
       printUsageToStderr();
       return 2;
@@ -70,7 +90,9 @@ main(process.argv.slice(2))
     process.exitCode = exitCode;
   })
   .catch((error: unknown) => {
-    // Mirrors hdo.ps1's top-level catch: write the message to stderr, exit 2.
-    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
-    process.exitCode = 2;
+    // Mirrors hdo.ps1's top-level catch: write the message to stderr, exit 2 (4 for
+    // "No eligible HDO Issue*", hdo.ps1:155 - matched by prefix, like PS's `-like`).
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`${message}\n`);
+    process.exitCode = message.startsWith("No eligible HDO Issue") ? 4 : 2;
   });

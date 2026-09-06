@@ -53,6 +53,52 @@ export interface ResolveCliConfigOptions {
   schemas: SchemaRegistry;
   /** Overridable for tests; defaults to a real `git` on PATH. */
   git?: GitClient;
+  /**
+   * Overrides `parsed.profile` (needed by `selectIssue`'s route-hint re-resolution,
+   * Workflow.ps1:246, which calls `Get-HdoConfig` again with the Issue's
+   * `preferredExecution` rather than the CLI's original `-Profile`). Behaviour is
+   * unchanged when absent - `parsed.profile` is used exactly like before.
+   */
+  profile?: string;
+  /**
+   * `-SetStep` overrides, already parsed (`parseSetStepOverrides`). `config`
+   * (hdo.ps1's `Get-HdoCliConfig`) never threads `-SetStep` through; `run` does.
+   * Behaviour is unchanged (empty) when absent.
+   */
+  stepOverrides?: Record<string, string>;
+  /**
+   * When set, a `git rev-parse --show-toplevel` failure is rethrown instead of
+   * being swallowed into `isGitRepository = false`. `run` (Workflow.ps1:244,
+   * `Get-HdoRepositoryRoot` -> `Invoke-HdoGit ... -ThrowOnError`) must abort
+   * before any GitHub access when `-RepositoryPath` is not a git repository;
+   * `config`/`doctor`/`status` keep the fallback behaviour (absent/false).
+   */
+  requireGitRepository?: boolean;
+}
+
+const SET_STEP_PATTERN = /^(plan|implement|review|fix)=(?<runner>[A-Za-z0-9._-]+)$/i;
+
+/**
+ * Port of hdo.ps1's `-SetStep` parsing loop (hdo.ps1:93-99): each `step=runner`
+ * string is matched case-insensitively against the four step names, the runner name
+ * captured, and the result accumulated into an object keyed by the STEP NAME AS
+ * WRITTEN ON THE COMMAND LINE (mirrors `$stepOverrides[$override.Split('=')[0]] =
+ * $Matches.runner` - the key is the raw prefix before `=`, not a normalized-case step
+ * name; `resolveHdoConfig`'s `setKeyIgnoreCase` already treats step names
+ * case-insensitively when applying them to `config.steps`).
+ */
+export function parseSetStepOverrides(setStep: string[]): Record<string, string> {
+  const overrides: Record<string, string> = {};
+  for (const entry of setStep) {
+    const match = entry.match(SET_STEP_PATTERN);
+    if (!match?.groups) {
+      // Oracle: hdo.ps1:96, "Invalid -SetStep '$override'. Expected step=runner."
+      throw new Error(`Invalid -SetStep '${entry}'. Expected step=runner.`);
+    }
+    const stepName = entry.split("=")[0];
+    overrides[stepName] = match.groups.runner;
+  }
+  return overrides;
 }
 
 export async function resolveCliConfig(options: ResolveCliConfigOptions): Promise<JsonObject> {
@@ -64,7 +110,8 @@ export async function resolveCliConfig(options: ResolveCliConfigOptions): Promis
   let isGitRepository = true;
   try {
     repositoryPath = await git.repositoryRoot(requestedRepositoryPath);
-  } catch {
+  } catch (error) {
+    if (options.requireGitRepository) throw error;
     isGitRepository = false;
   }
 
@@ -111,9 +158,10 @@ export async function resolveCliConfig(options: ResolveCliConfigOptions): Promis
     repositorySnapshot,
     explicitConfigs,
     overrides: {},
-    profile: parsed.profile,
-    // hdo.ps1's `config` subcommand never threads -SetStep into Get-HdoConfig either.
-    stepOverrides: {},
+    profile: options.profile !== undefined ? options.profile : parsed.profile,
+    // hdo.ps1's `config` subcommand never threads -SetStep into Get-HdoConfig either;
+    // `run` (WP-F2) passes `parseSetStepOverrides(parsed.setStep)` here instead.
+    stepOverrides: options.stepOverrides ?? {},
     repositoryPath,
     host,
     schemas,

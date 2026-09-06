@@ -49,7 +49,7 @@ function Get-HdoRepositoryConfigSnapshot {
         throw "Repository configuration schema validation failed for '$workingTreePath' at $commit`: $($schemaValidation.error)"
     }
     try {
-        $value = ConvertTo-HdoHashtable ($content | ConvertFrom-Json -Depth 100)
+        $value = ConvertTo-HdoHashtable (ConvertFrom-HdoJson -Json $content -Depth 100)
     }
     catch {
         throw "Invalid repository configuration JSON in '$workingTreePath' at $commit`: $($_.Exception.Message)"

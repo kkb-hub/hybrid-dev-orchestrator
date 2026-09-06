@@ -450,6 +450,48 @@ function Merge-HdoHashtable {
     return $result
 }
 
+$script:HdoConvertFromJsonSupportsDateKind = (Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')
+
+function ConvertFrom-HdoJson {
+    # ConvertFrom-Json converts every ISO-8601-shaped string value to [DateTime],
+    # regardless of field name or schema. Values carrying a numeric offset (the
+    # shape Get-HdoUtcTimestamp produces) come back with Kind=Local, and a
+    # subsequent ConvertTo-Json then silently rewrites them into the local time
+    # zone and drops fractional-second precision on every read-modify-write round
+    # trip (issue #62). `-DateKind String` (pwsh 7.5+) disables that conversion;
+    # this wrapper applies it when available and is a no-op fallback otherwise.
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Json,
+        [int]$Depth = 100,
+        [switch]$AsHashtable,
+        [switch]$NoEnumerate
+    )
+
+    $parameters = @{ InputObject = $Json; Depth = $Depth; AsHashtable = $AsHashtable; NoEnumerate = $NoEnumerate }
+    if ($script:HdoConvertFromJsonSupportsDateKind) { $parameters['DateKind'] = 'String' }
+    $converted = ConvertFrom-Json @parameters
+    # The output shape must depend on the CALLER's -NoEnumerate switch, not on the
+    # runtime type of $converted, so this helper is a true drop-in for
+    # ConvertFrom-Json in both modes:
+    #   - Without -NoEnumerate, $converted is already the enumerated shape
+    #     ConvertFrom-Json produces ([] -> AutomationNull/$null, [x] -> scalar,
+    #     [x,y] -> Object[]); a plain `return` re-enumerates it through the
+    #     function's own output stream exactly like the cmdlet does, so a
+    #     multi-element top-level array unrolls into multiple pipeline objects
+    #     instead of being re-wrapped as one (issue #50/#62 stay fixed via
+    #     -DateKind String above; this branch does not touch the -NoEnumerate case).
+    #   - With -NoEnumerate, $converted is the bare, un-enumerated value (the raw
+    #     array, or a single object/scalar/$null). `return ,$converted` wraps it in a
+    #     one-element array that `return` unrolls exactly once, so the caller receives
+    #     the bare array (not its elements) AND a non-array value stays bare.
+    #     `Write-Output -NoEnumerate $converted` would instead wrap every non-array
+    #     result in a 1-element List (verified on pwsh 7.6.5) - not a drop-in.
+    if ($NoEnumerate) {
+        return ,$converted
+    }
+    return $converted
+}
+
 function Read-HdoJsonFile {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -457,7 +499,7 @@ function Read-HdoJsonFile {
         throw "JSON file was not found: $Path"
     }
     try {
-        return ConvertTo-HdoHashtable (Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -Depth 100)
+        return ConvertTo-HdoHashtable (ConvertFrom-HdoJson -Json (Get-Content -LiteralPath $Path -Raw) -Depth 100)
     }
     catch {
         throw "Invalid JSON in '$Path': $($_.Exception.Message)"
@@ -695,7 +737,13 @@ function Get-HdoSha256 {
 }
 
 function Get-HdoUtcTimestamp {
-    return [DateTimeOffset]::UtcNow.ToString('o')
+    # [DateTime]::UtcNow (Kind=Utc) formats with 'o' as a Z-suffixed string
+    # ("2026-09-06T11:35:51.2262005Z"), which ConvertFrom-Json/ConvertTo-HdoJson
+    # round-trips byte for byte. [DateTimeOffset]::UtcNow.ToString('o') instead
+    # produces a "+00:00" numeric-offset string, which ConvertFrom-Json parses as
+    # Kind=Local and then ConvertTo-Json silently rewrites into the local time
+    # zone on the next save (issue #62).
+    return [DateTime]::UtcNow.ToString('o')
 }
 
 function New-HdoRunId {
@@ -721,7 +769,7 @@ function Get-HdoSafeEnvironment {
     $environment = [ordered]@{}
     foreach ($entry in Get-ChildItem Env:) {
         if ($blockedNames -contains $entry.Name -and -not $allowed.Contains($entry.Name)) { continue }
-        if ($entry.Name -match '(?i)(TOKEN|SECRET|PASSWORD|API_KEY)$' -and -not $allowed.Contains($entry.Name)) { continue }
+        if ($entry.Name -match '(?i)(TOKEN|SECRET|PASSWORD|API_KEY|_KEY)$' -and -not $allowed.Contains($entry.Name)) { continue }
         $environment[$entry.Name] = $entry.Value
     }
     return $environment

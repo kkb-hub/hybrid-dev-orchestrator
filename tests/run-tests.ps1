@@ -30,7 +30,8 @@ function Assert-Hdo {
 
 function Copy-HdoObject {
     param($Value)
-    return ($Value | ConvertTo-Json -Depth 100 | ConvertFrom-Json -AsHashtable -Depth 100)
+    $json = $Value | ConvertTo-Json -Depth 100
+    return (& $module { param($Json) ConvertFrom-HdoJson -Json $Json -Depth 100 -AsHashtable } $json)
 }
 
 function Remove-HdoTestDirectory {
@@ -466,6 +467,35 @@ Keep the cycle bounded.
     }
     finally { $env:PATH = $originalGhPath }
 
+    # Regression coverage for review finding B-4: without -NoEnumerate, ConvertFrom-HdoJson
+    # must be a true drop-in for ConvertFrom-Json, i.e. a multi-element top-level JSON array
+    # comes back as a genuine multi-element array (not re-wrapped as a single nested array).
+    $multiElementArrayResult = @(& $module { param($Json) ConvertFrom-HdoJson -Json $Json } '[1,2]')
+    Assert-Hdo ($multiElementArrayResult.Count -eq 2) 'ConvertFrom-HdoJson without -NoEnumerate returns a genuine 2-element array for a multi-element JSON array, matching ConvertFrom-Json (issue B-4)'
+    # R2-1: with -NoEnumerate a JSON object / scalar / null must come back bare, not
+    # wrapped in a 1-element collection (the caller-facing shape of ConvertFrom-Json).
+    $noEnumerateObject = & $module { param($Json) $v = ConvertFrom-HdoJson -Json $Json -NoEnumerate; return [pscustomobject]@{ isCollection = ($v -is [System.Collections.IEnumerable] -and $v -isnot [string]); a = $v.a } } '{"a":1}'
+    Assert-Hdo ((-not $noEnumerateObject.isCollection) -and $noEnumerateObject.a -eq 1) 'ConvertFrom-HdoJson -NoEnumerate returns a JSON object bare (not wrapped in a collection)'
+    $noEnumerateScalar = & $module { param($Json) $v = ConvertFrom-HdoJson -Json $Json -NoEnumerate; return [pscustomobject]@{ type = $v.GetType().Name; value = $v } } '7'
+    Assert-Hdo ($noEnumerateScalar.type -in @('Int64', 'Int32') -and $noEnumerateScalar.value -eq 7) 'ConvertFrom-HdoJson -NoEnumerate returns a JSON scalar bare'
+    $noEnumerateArray = & $module { param($Json) $v = ConvertFrom-HdoJson -Json $Json -NoEnumerate; return [pscustomobject]@{ count = $v.Count; isArray = ($v -is [array]) } } '[1,2]'
+    Assert-Hdo ($noEnumerateArray.isArray -and $noEnumerateArray.count -eq 2) 'ConvertFrom-HdoJson -NoEnumerate returns a two-element array as one bare array'
+
+    # Regression coverage for issue #62: ConvertFrom-Json converts every ISO-8601-shaped
+    # string value to [DateTime] regardless of field name, and a value with a numeric
+    # offset (the shape Get-HdoUtcTimestamp produced before #62) round-trips through
+    # ConvertTo-Json in the LOCAL time zone with fewer fractional digits. Read-HdoJsonFile /
+    # Write-HdoJsonFile's read-modify-write cycle must preserve such strings byte for byte.
+    $dateRoundTripPath = Join-Path $testAppData 'date-roundtrip.json'
+    '{"t":"2026-01-01T00:00:00.0000000+00:00","u":"2026-01-01T00:00:00.1234567Z","v":"2026-01-01T00:00:00Z"}' |
+        Set-Content -LiteralPath $dateRoundTripPath -Encoding utf8NoBOM
+    $dateRoundTripValue = & $module { param($Path) Read-HdoJsonFile $Path } $dateRoundTripPath
+    & $module { param($Path, $Value) Write-HdoJsonFile $Path $Value } $dateRoundTripPath $dateRoundTripValue
+    $dateRoundTripText = Get-Content -LiteralPath $dateRoundTripPath -Raw
+    Assert-Hdo ($dateRoundTripText -match [regex]::Escape('2026-01-01T00:00:00.0000000+00:00')) 'Read-HdoJsonFile/Write-HdoJsonFile preserve a numeric-offset timestamp byte for byte across a read-modify-write cycle (issue #62)'
+    Assert-Hdo ($dateRoundTripText -match [regex]::Escape('2026-01-01T00:00:00.1234567Z')) 'Read-HdoJsonFile/Write-HdoJsonFile preserve a Z-suffixed timestamp with 7 fractional digits byte for byte (issue #62)'
+    Assert-Hdo ($dateRoundTripText -match [regex]::Escape('2026-01-01T00:00:00Z')) 'Read-HdoJsonFile/Write-HdoJsonFile preserve a Z-suffixed timestamp with no fractional digits byte for byte (issue #62)'
+
     $badConfig = Copy-HdoObject $config
     $badConfig.steps.review = 'claude-implementer'
     $badConfigResult = Test-HdoConfiguration $badConfig
@@ -652,6 +682,42 @@ Keep the cycle bounded.
         Assert-Hdo ($ps1OnlyPlannerCheck.Count -eq 1 -and $ps1OnlyPlannerCheck[0].status -eq 'fail') 'doctor no longer false-passes a runner that only resolves to a non-launchable .ps1 (AC-04)'
     }
     finally { $env:PATH = $originalShimPath }
+
+    # Regression coverage for issue #8: doctor checked runner commands but never
+    # validationGates[].command, so a gate whose command cannot be started sailed
+    # through preflight and only surfaced as a confusing failure at run time.
+    # The overall `ok` flag also depends on unrelated environmental checks (e.g.
+    # github:authentication, which fails on a machine where `gh auth login` was never
+    # run). Rather than assert on `.ok` directly, compare the set of *required* failures
+    # before/after the new gate:<id> checks are added: since they are always
+    # required=false, they must never change that set.
+    $defaultDoctorResult = Test-HdoEnvironment -Config $config -ReadOnly
+    $gateTestsCheck = @($defaultDoctorResult.checks | Where-Object name -eq 'gate:tests')
+    $gateSchemasCheck = @($defaultDoctorResult.checks | Where-Object name -eq 'gate:schemas')
+    Assert-Hdo ($gateTestsCheck.Count -eq 1 -and $gateTestsCheck[0].status -eq 'pass' -and $gateTestsCheck[0].required -eq $false) "doctor reports gate:tests as a non-required pass when its command (pwsh) resolves (issue #8; got: $($gateTestsCheck | ConvertTo-Json -Compress))"
+    Assert-Hdo ($gateSchemasCheck.Count -eq 1 -and $gateSchemasCheck[0].status -eq 'pass') 'doctor reports gate:schemas as pass when its command resolves (issue #8)'
+    $defaultRequiredFailureNames = @($defaultDoctorResult.checks | Where-Object { $_.required -and $_.status -eq 'fail' } | ForEach-Object { $_.name }) | Sort-Object
+
+    $bogusGateProjectPath = Join-Path $testAppData 'hdo-bogus-gate-project.json'
+    $bogusGateProject = Copy-HdoObject (& $module { param($Config) Get-HdoProjectContract $Config } $config)
+    $bogusGateProject.validationGates = @([ordered]@{
+        id = 'bogus'
+        command = 'hdo-gate-command-that-does-not-exist'
+        args = @()
+        workingDirectory = '.'
+        timeoutSeconds = 30
+        required = $true
+        exitCodes = [ordered]@{ passed = @(0); failed = @(1); indeterminate = @(2, 124, 125, 126, 127) }
+        continueAfterFailure = $true
+    })
+    $bogusGateProject | ConvertTo-Json -Depth 30 | Set-Content -LiteralPath $bogusGateProjectPath -Encoding utf8NoBOM
+    $bogusGateConfig = Copy-HdoObject $config
+    $bogusGateConfig.projectContractPath = $bogusGateProjectPath
+    $bogusGateDoctorResult = Test-HdoEnvironment -Config $bogusGateConfig -ReadOnly
+    $bogusGateCheck = @($bogusGateDoctorResult.checks | Where-Object name -eq 'gate:bogus')
+    Assert-Hdo ($bogusGateCheck.Count -eq 1 -and $bogusGateCheck[0].status -eq 'warning' -and $bogusGateCheck[0].required -eq $false) "doctor reports an unresolvable gate command as a non-required warning, not a hard failure, so #16's runtime setup-failure guard stays reachable (issue #8; got: $($bogusGateCheck | ConvertTo-Json -Compress))"
+    $bogusRequiredFailureNames = @($bogusGateDoctorResult.checks | Where-Object { $_.required -and $_.status -eq 'fail' } | ForEach-Object { $_.name }) | Sort-Object
+    Assert-Hdo ((@($defaultRequiredFailureNames) -join ',') -eq (@($bogusRequiredFailureNames) -join ',')) 'a warning-level gate:<id> check for an unresolvable command introduces no new required failure, so it never flips overall preflight ok to false (issue #8, §7 Q1)'
 
     $ollamaClaudeInput = & $module {
         param($Runner)
@@ -986,6 +1052,42 @@ Keep the cycle bounded.
     $emptyHash = & $module { Get-HdoSha256 '' }
     Assert-Hdo ($emptyHash -eq 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855') 'an unchanged worktree can hash an empty diff'
 
+    # Regression coverage for issue #62: Get-HdoUtcTimestamp must produce a Z-suffixed
+    # (Kind=Utc) timestamp, not a "+00:00" numeric-offset one, so it survives a
+    # ConvertFrom-Json/ConvertTo-Json round trip without sliding into the local time zone.
+    $utcTimestamp = & $module { Get-HdoUtcTimestamp }
+    Assert-Hdo ($utcTimestamp -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$') "Get-HdoUtcTimestamp produces a Z-suffixed timestamp with 7 fractional digits, not a numeric UTC offset (issue #62; got: $utcTimestamp)"
+
+    # Regression coverage for issue #63: names ending in a bare "_KEY" (e.g. an admin key
+    # that is not literally an API_KEY) previously passed the safe-environment filter and
+    # would be forwarded to gate/agent child processes.
+    $originalAdminKey = $env:ANTHROPIC_ADMIN_KEY
+    $originalSigningKey = $env:SOME_SIGNING_KEY
+    $originalKeyboard = $env:KEYBOARD
+    try {
+        $env:ANTHROPIC_ADMIN_KEY = 'admin-secret'
+        $env:SOME_SIGNING_KEY = 'signing-secret'
+        $env:KEYBOARD = 'not-a-secret'
+        $safeEnvironment = & $module { Get-HdoSafeEnvironment }
+        Assert-Hdo (-not $safeEnvironment.Contains('ANTHROPIC_ADMIN_KEY')) 'Get-HdoSafeEnvironment blocks a variable ending in "_KEY" (issue #63)'
+        Assert-Hdo (-not $safeEnvironment.Contains('SOME_SIGNING_KEY')) 'Get-HdoSafeEnvironment blocks any variable name ending in "_KEY", not just a fixed list (issue #63)'
+        Assert-Hdo ($safeEnvironment.Contains('KEYBOARD') -and $safeEnvironment.KEYBOARD -eq 'not-a-secret') 'Get-HdoSafeEnvironment still forwards a variable that merely contains "KEY" without a "_KEY" suffix'
+        $allowedEnvironment = & $module { Get-HdoSafeEnvironment @('ANTHROPIC_ADMIN_KEY') }
+        Assert-Hdo ($allowedEnvironment.Contains('ANTHROPIC_ADMIN_KEY') -and $allowedEnvironment.ANTHROPIC_ADMIN_KEY -eq 'admin-secret') '-PassEnvironment re-allows a variable that would otherwise be blocked by the "_KEY" suffix'
+    }
+    finally {
+        if ($null -eq $originalAdminKey) { Remove-Item -LiteralPath Env:ANTHROPIC_ADMIN_KEY -ErrorAction SilentlyContinue } else { $env:ANTHROPIC_ADMIN_KEY = $originalAdminKey }
+        if ($null -eq $originalSigningKey) { Remove-Item -LiteralPath Env:SOME_SIGNING_KEY -ErrorAction SilentlyContinue } else { $env:SOME_SIGNING_KEY = $originalSigningKey }
+        if ($null -eq $originalKeyboard) { Remove-Item -LiteralPath Env:KEYBOARD -ErrorAction SilentlyContinue } else { $env:KEYBOARD = $originalKeyboard }
+    }
+
+    # Regression coverage for issue #61 item 4 (same shape as #50): a 0-element result
+    # must round-trip as a genuine empty array, not collapse to $null one level up.
+    $noLabels = & $module { param($Labels) Get-HdoLabelNames $Labels } @()
+    Assert-Hdo ($null -ne $noLabels -and $noLabels.Count -eq 0) 'Get-HdoLabelNames returns an empty array instead of $null when an Issue has no labels'
+    $oneLabel = & $module { param($Labels) Get-HdoLabelNames $Labels } @('hdo:ready')
+    Assert-Hdo ($oneLabel.Count -eq 1 -and $oneLabel[0] -eq 'hdo:ready') 'Get-HdoLabelNames still returns a genuine 1-element array for a single label'
+
     $redactedJson = & $module { Protect-HdoText '{"password":"json-secret","api_key":"opaque-value","token":"plain-token"}' }
     Assert-Hdo ($redactedJson -notmatch 'json-secret|opaque-value|plain-token') 'quoted JSON credential values are redacted'
 
@@ -1015,6 +1117,95 @@ Keep the cycle bounded.
     }
     finally {
         Remove-HdoTestDirectory $validationArtifact
+    }
+
+    # Regression coverage for issue #16: a setup failure (the gate command itself could
+    # not be started) must be distinguished from a product failure (the gate started and
+    # its exit code is classified 'failed'), and a setup failure must always stop
+    # remaining gates regardless of continueAfterFailure (AC-01/AC-02/AC-05/AC-06), while
+    # an ordinary product failure still follows continueAfterFailure (AC-03).
+    $setupFailureArtifact = Join-Path $repositoryRoot "test-results/validation-setup-failure-$([guid]::NewGuid().ToString('N'))"
+    try {
+        $setupFailureIssue = [ordered]@{ validationGates = @('missing', 'after') }
+        $setupFailureProject = [ordered]@{
+            validationGates = @(
+                [ordered]@{
+                    id = 'missing'
+                    command = 'hdo-gate-command-that-does-not-exist'
+                    args = @()
+                    workingDirectory = '.'
+                    timeoutSeconds = 30
+                    required = $true
+                    exitCodes = [ordered]@{ passed = @(0); failed = @(1); indeterminate = @(2, 124, 125, 126, 127) }
+                    continueAfterFailure = $true
+                },
+                [ordered]@{
+                    id = 'after'
+                    command = 'pwsh'
+                    args = @('-NoProfile', '-File', 'tests/fixtures/runtime/validation-pass.ps1')
+                    workingDirectory = '.'
+                    timeoutSeconds = 30
+                    required = $true
+                    exitCodes = [ordered]@{ passed = @(0); failed = @(1); indeterminate = @(2, 124, 125, 126, 127) }
+                    continueAfterFailure = $true
+                }
+            )
+        }
+        $setupFailureResult = & $module {
+            param($IssueContract, $ProjectContract, $Worktree, $Artifact)
+            Invoke-HdoValidation $IssueContract $ProjectContract $Worktree $Artifact
+        } $setupFailureIssue $setupFailureProject $repositoryRoot $setupFailureArtifact
+        Assert-Hdo ($setupFailureResult.gates[0].status -eq 'indeterminate' -and $setupFailureResult.gates[0].failureClass -eq 'setup' -and $null -eq $setupFailureResult.gates[0].exitCode -and -not $setupFailureResult.gates[0].skipped) "a gate command that cannot be started is classified indeterminate/setup, not folded into a generic indeterminate (issue #16 AC-01/AC-05; got status=$($setupFailureResult.gates[0].status) failureClass=$($setupFailureResult.gates[0].failureClass))"
+        Assert-Hdo ($setupFailureResult.gates[1].status -eq 'indeterminate' -and $setupFailureResult.gates[1].failureClass -eq 'skipped' -and $setupFailureResult.gates[1].skipped -eq $true) 'a later gate is skipped after a setup failure even though continueAfterFailure is true (issue #16 AC-02/AC-06)'
+        Assert-Hdo ($setupFailureResult.indeterminate -eq 2 -and $setupFailureResult.passed -eq 0 -and $setupFailureResult.failed -eq 0) 'the validation summary counts both the setup failure and the gate it skipped as indeterminate'
+        $skippedLogText = Get-Content -LiteralPath (Join-Path $setupFailureArtifact 'after.log') -Raw
+        Assert-Hdo ($skippedLogText -match "(?m)^reason: skipped after a previous gate failed to start\r?$") "the skipped-gate log names the setup failure as the reason, on its own line (issue #16 AC-05; got: $skippedLogText)"
+    }
+    finally {
+        Remove-HdoTestDirectory $setupFailureArtifact
+    }
+
+    $productFailureArtifact = Join-Path $repositoryRoot "test-results/validation-product-failure-$([guid]::NewGuid().ToString('N'))"
+    $productFailureGateScript = Join-Path $testAppData 'gate-fail.ps1'
+    try {
+        Set-Content -LiteralPath $productFailureGateScript -Value "Write-Output 'validation failed'`nexit 1`n" -Encoding utf8NoBOM
+        $productFailureIssue = [ordered]@{ validationGates = @('fails', 'passes') }
+        $productFailureProject = [ordered]@{
+            validationGates = @(
+                [ordered]@{
+                    id = 'fails'
+                    command = 'pwsh'
+                    args = @('-NoProfile', '-File', $productFailureGateScript)
+                    workingDirectory = '.'
+                    timeoutSeconds = 30
+                    required = $true
+                    exitCodes = [ordered]@{ passed = @(0); failed = @(1); indeterminate = @(2, 124, 125, 126, 127) }
+                    continueAfterFailure = $true
+                },
+                [ordered]@{
+                    id = 'passes'
+                    command = 'pwsh'
+                    args = @('-NoProfile', '-File', 'tests/fixtures/runtime/validation-pass.ps1')
+                    workingDirectory = '.'
+                    timeoutSeconds = 30
+                    required = $true
+                    exitCodes = [ordered]@{ passed = @(0); failed = @(1); indeterminate = @(2, 124, 125, 126, 127) }
+                    continueAfterFailure = $true
+                }
+            )
+        }
+        $productFailureResult = & $module {
+            param($IssueContract, $ProjectContract, $Worktree, $Artifact)
+            Invoke-HdoValidation $IssueContract $ProjectContract $Worktree $Artifact
+        } $productFailureIssue $productFailureProject $repositoryRoot $productFailureArtifact
+        Assert-Hdo ($productFailureResult.gates[0].status -eq 'fail' -and $productFailureResult.gates[0].failureClass -eq 'product') 'an exit code explicitly in exitCodes.failed is classified fail/product (issue #16 AC-03)'
+        Assert-Hdo ($productFailureResult.gates[1].status -eq 'pass' -and $null -eq $productFailureResult.gates[1].failureClass -and -not $productFailureResult.gates[1].skipped) 'a product failure with continueAfterFailure=true still runs the next gate, and a passing gate has a null failureClass (issue #16 AC-03)'
+        Assert-Hdo ($productFailureResult.failed -eq 1 -and $productFailureResult.passed -eq 1 -and $productFailureResult.indeterminate -eq 0) 'the validation summary counts the product failure and the subsequent pass correctly'
+        $productFailureLogText = Get-Content -LiteralPath (Join-Path $productFailureArtifact 'fails.log') -Raw
+        Assert-Hdo ($productFailureLogText -match "(?m)^failureClass: product$") "the gate log records failureClass on its own line after status (issue #16 AC-05; got: $productFailureLogText)"
+    }
+    finally {
+        Remove-HdoTestDirectory $productFailureArtifact
     }
 
     $redactedObject = & $module { Protect-HdoObject ([ordered]@{ apiKey = 'plain-secret'; argument = 'ghp_abcdefghijklmnopqrstuvwxyz123456' }) }
@@ -1429,6 +1620,151 @@ Keep the cycle bounded.
     }
     else {
         Write-Host 'SKIP: long-path worktree cleanup regression test (issue #25) only runs on Windows.' -ForegroundColor Yellow
+    }
+
+    # ADR-0001 phase-6 PS oracle self-check: runs the full plan -> implement -> validate ->
+    # review -> fix loop in-process through Invoke-HdoRun -NoWriteBack against the shared
+    # workflow fixtures (tests/fixtures/workflow/**), using scenario b (fix-then-approve,
+    # exercises the CHANGES_REQUESTED -> IMPLEMENTING fix loop) and scenario g (a validation
+    # gate setup failure, issue #16 AC-02/AC-06) - so this oracle is pinned BEFORE any TS
+    # implementation is compared against it (§3.6 of the phase-6 plan).
+    $workflowFixturesRoot = Join-Path $repositoryRoot 'tests/fixtures/workflow'
+    $originalWorkflowPath = $env:PATH
+    $originalWorkflowGhToken = $env:GH_TOKEN
+    $originalWorkflowGitHubToken = $env:GITHUB_TOKEN
+    $workflowTestRoot = Join-Path $testAppData "workflow-oracle-$([guid]::NewGuid().ToString('N'))"
+    try {
+        function New-HdoWorkflowFixtureRepository {
+            param([Parameter(Mandatory)][string]$Path)
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+            & git -C $Path init -q
+            & git -C $Path config user.email 'hdo-tests@example.invalid'
+            & git -C $Path config user.name 'HDO Tests'
+            & git -C $Path config commit.gpgSign false
+            & git -C $Path config core.autocrlf false
+            New-Item -ItemType Directory -Path (Join-Path $Path '.hdo') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $Path 'tools') -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'project.json') -Destination (Join-Path $Path '.hdo/project.json') -Force
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'tools/gate-pass.ps1') -Destination (Join-Path $Path 'tools/gate-pass.ps1') -Force
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'tools/gate-fail.ps1') -Destination (Join-Path $Path 'tools/gate-fail.ps1') -Force
+            Set-Content -LiteralPath (Join-Path $Path 'README.md') -Value 'fixture' -Encoding utf8NoBOM
+            Set-Content -LiteralPath (Join-Path $Path 'tracked.txt') -Value 'baseline' -Encoding utf8NoBOM
+            & git -C $Path add -A
+            & git -C $Path commit -q -m baseline
+        }
+
+        function New-HdoWorkflowMockGhDirectory {
+            param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string[]]$Gates)
+            New-Item -ItemType Directory -Path $Path -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'gh/gh.cmd') -Destination (Join-Path $Path 'gh.cmd') -Force
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'gh/issue-events.json') -Destination (Join-Path $Path 'issue-events.json') -Force
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'gh/issue-comments.json') -Destination (Join-Path $Path 'issue-comments.json') -Force
+            Copy-Item -LiteralPath (Join-Path $workflowFixturesRoot 'gh/graphql-last-edited.json') -Destination (Join-Path $Path 'graphql-last-edited.json') -Force
+            $gateLines = ($Gates | ForEach-Object { "- $_" }) -join '\n'
+            $template = Get-Content -LiteralPath (Join-Path $workflowFixturesRoot 'gh/issue-view.template.json') -Raw
+            Set-Content -LiteralPath (Join-Path $Path 'issue-view.json') -Value ($template.Replace('__VALIDATION_GATES__', $gateLines)) -Encoding utf8NoBOM
+        }
+
+        function New-HdoWorkflowOverlay {
+            param(
+                [Parameter(Mandatory)][string]$Path,
+                [Parameter(Mandatory)][string]$ScenarioId,
+                [Parameter(Mandatory)][string]$WorktreeRoot,
+                [Parameter(Mandatory)][string]$ArtifactRoot,
+                [string]$OnNoDiff = 'fail',
+                [string]$OnValidationFailure = 'request-changes',
+                [string]$OnMaxFixAttempts = 'escalate'
+            )
+            $mockRunnerArgs = @(
+                '-NoProfile', '-File', '{hdoRoot}/tests/fixtures/workflow/mock-workflow-agent.ps1',
+                '-SchemaFile', '{schemaFile}', '-OutputFile', '{outputFile}',
+                '-Scenario', "{hdoRoot}/tests/fixtures/workflow/scenarios/$ScenarioId.json"
+            )
+            $overlay = [ordered]@{
+                activeProfile = 'mock'
+                profiles = [ordered]@{ mock = [ordered]@{ steps = [ordered]@{ plan = 'mock-plan'; implement = 'mock-implement'; review = 'mock-review'; fix = 'mock-implement' } } }
+                runners = [ordered]@{
+                    'mock-plan' = [ordered]@{ type = 'command'; provider = 'custom'; command = 'pwsh'; sandbox = 'read-only'; timeoutSeconds = 60; passEnvironment = @(); extraArgs = $mockRunnerArgs; promptTransport = 'stdin' }
+                    'mock-implement' = [ordered]@{ type = 'command'; provider = 'custom'; command = 'pwsh'; sandbox = 'workspace-write'; timeoutSeconds = 60; passEnvironment = @(); extraArgs = $mockRunnerArgs; promptTransport = 'stdin' }
+                    'mock-review' = [ordered]@{ type = 'command'; provider = 'custom'; command = 'pwsh'; sandbox = 'read-only'; timeoutSeconds = 60; passEnvironment = @(); extraArgs = $mockRunnerArgs; promptTransport = 'stdin' }
+                }
+                github = [ordered]@{ writeBack = 'status'; trustedActors = @(); assignOnClaim = $false }
+                workflow = [ordered]@{ maxFixAttempts = 2; implicitFallback = $false; onNoDiff = $OnNoDiff; onValidationFailure = $OnValidationFailure; onMaxFixAttempts = $OnMaxFixAttempts }
+                paths = [ordered]@{ worktreeRoot = $WorktreeRoot; artifactRoot = $ArtifactRoot }
+                projectContractPath = '.hdo/project.json'
+            }
+            $overlay | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding utf8NoBOM
+        }
+
+        function Invoke-HdoWorkflowOracleScenario {
+            param(
+                [Parameter(Mandatory)][string]$ScenarioId,
+                [Parameter(Mandatory)][string[]]$Gates,
+                [string]$OnNoDiff = 'fail',
+                [string]$OnValidationFailure = 'request-changes',
+                [string]$OnMaxFixAttempts = 'escalate'
+            )
+            $scenarioRoot = Join-Path $workflowTestRoot $ScenarioId
+            $fixtureRepository = Join-Path $scenarioRoot 'repo'
+            $mockGhDirectory = Join-Path $scenarioRoot 'gh'
+            $overlayPath = Join-Path $scenarioRoot 'overlay.json'
+            $worktreeRoot = Join-Path $scenarioRoot 'worktrees'
+            $artifactRoot = Join-Path $scenarioRoot 'runs'
+            New-HdoWorkflowFixtureRepository -Path $fixtureRepository
+            New-HdoWorkflowMockGhDirectory -Path $mockGhDirectory -Gates $Gates
+            New-HdoWorkflowOverlay -Path $overlayPath -ScenarioId $ScenarioId -WorktreeRoot $worktreeRoot -ArtifactRoot $artifactRoot `
+                -OnNoDiff $OnNoDiff -OnValidationFailure $OnValidationFailure -OnMaxFixAttempts $OnMaxFixAttempts
+            $env:PATH = "$mockGhDirectory;$originalWorkflowPath"
+            $env:GH_TOKEN = $null
+            $env:GITHUB_TOKEN = $null
+            Remove-Item -LiteralPath Env:GH_TOKEN -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath Env:GITHUB_TOKEN -ErrorAction SilentlyContinue
+            return & $module {
+                param($IssueNumber, $Repository, $RepositoryPath, $ConfigPath)
+                Invoke-HdoRun -IssueNumber $IssueNumber -Repository $Repository -RepositoryPath $RepositoryPath -ConfigPath $ConfigPath -NoWriteBack
+            } 7 'hdo-fixture/repo' $fixtureRepository $overlayPath
+        }
+
+        # Scenario b (fix-then-approve): round 1 request_changes -> fix iteration 2 ->
+        # round 2 approve. Exercises the CHANGES_REQUESTED -> IMPLEMENTING fix loop and the
+        # transition list, fixAttempts, and diffHash contract of §2.2-2.4 of the plan.
+        $scenarioBRun = Invoke-HdoWorkflowOracleScenario -ScenarioId 'b' -Gates @('gate-pass')
+        Assert-Hdo ($scenarioBRun.state -eq 'APPROVED') "scenario b (fix-then-approve) reaches APPROVED (got state=$($scenarioBRun.state), error=$($scenarioBRun.error | ConvertTo-Json -Compress))"
+        Assert-Hdo ([int]$scenarioBRun.iteration -eq 2 -and [int]$scenarioBRun.fixAttempts -eq 1) "scenario b runs exactly 2 iterations with 1 fix attempt (got iteration=$($scenarioBRun.iteration) fixAttempts=$($scenarioBRun.fixAttempts))"
+        Assert-Hdo ($null -eq $scenarioBRun.github.claim) 'scenario b: -NoWriteBack leaves github.claim null even though the overlay sets github.writeBack to "status"'
+        Assert-Hdo ($scenarioBRun.Contains('activity') -and $null -eq $scenarioBRun.activity) 'scenario b: the activity key is present (an agent step ran) and null (no step is currently running) once the run is terminal'
+        Assert-Hdo ($scenarioBRun.result.decision -eq 'approve' -and $scenarioBRun.result.summary -eq 'Mock review round 2: approve.') "scenario b result is approve with the round-2 mock summary (got: $($scenarioBRun.result | ConvertTo-Json -Compress -Depth 6))"
+        $scenarioBEventLines = Get-Content -LiteralPath (Join-Path $scenarioBRun.artifactPath 'events.jsonl')
+        $scenarioBEvents = @($scenarioBEventLines | ForEach-Object { & $module { param($Line) ConvertFrom-HdoJson -Json $Line -AsHashtable } $_ })
+        $scenarioBTransitions = @($scenarioBEvents | Where-Object { $_.type -eq 'state.transition' } | ForEach-Object { "$($_.from)->$($_.to)" })
+        $expectedScenarioBTransitions = @(
+            'CREATED->ISSUE_SELECTED', 'ISSUE_SELECTED->PREFLIGHT', 'PREFLIGHT->WORKTREE_READY', 'WORKTREE_READY->PLANNING',
+            'PLANNING->IMPLEMENTING', 'IMPLEMENTING->VALIDATING', 'VALIDATING->REVIEWING', 'REVIEWING->CHANGES_REQUESTED',
+            'CHANGES_REQUESTED->IMPLEMENTING', 'IMPLEMENTING->VALIDATING', 'VALIDATING->REVIEWING', 'REVIEWING->APPROVED'
+        )
+        Assert-Hdo ((($scenarioBTransitions -join ',') -eq ($expectedScenarioBTransitions -join ','))) "scenario b state.transition events match the plan's happy/fix-loop sequence exactly (got: $($scenarioBTransitions -join ' -> '))"
+        Assert-Hdo (@($scenarioBEvents | ForEach-Object { $_.type }) -contains 'run.created') 'scenario b events.jsonl begins with a run.created event'
+        $scenarioBFinalDiff = & $module { param($Path) Read-HdoJsonFile $Path } (Join-Path $scenarioBRun.artifactPath 'iterations/002/diff.json')
+        Assert-Hdo ($scenarioBFinalDiff.hash -eq $scenarioBRun.result.diffHash) 'scenario b result.diffHash equals iterations/002/diff.json hash (the final, second-iteration diff)'
+
+        # Scenario g (gate-setup-failure): the first gate's command cannot be started, so
+        # (issue #16 AC-02/AC-06) the second gate must be skipped even though
+        # continueAfterFailure is true, and validation.allRequiredPassed must be false.
+        $scenarioGRun = Invoke-HdoWorkflowOracleScenario -ScenarioId 'g' -Gates @('gate-setup', 'gate-after') -OnValidationFailure 'escalate'
+        Assert-Hdo ($scenarioGRun.state -eq 'ESCALATED') "scenario g (gate-setup-failure) reaches ESCALATED (got state=$($scenarioGRun.state), error=$($scenarioGRun.error | ConvertTo-Json -Compress))"
+        Assert-Hdo ($scenarioGRun.result.decision -eq 'escalate' -and $scenarioGRun.result.summary -eq 'Required validation did not pass.') "scenario g escalates with the validation-policy summary (got: $($scenarioGRun.result | ConvertTo-Json -Compress -Depth 6))"
+        $scenarioGValidation = & $module { param($Path) Read-HdoJsonFile $Path } (Join-Path $scenarioGRun.artifactPath 'iterations/001/validation/result.json')
+        Assert-Hdo (-not $scenarioGValidation.allRequiredPassed -and [int]$scenarioGValidation.indeterminate -eq 2) "scenario g validation summary: allRequiredPassed=false, indeterminate=2 (got: $($scenarioGValidation | ConvertTo-Json -Compress -Depth 5))"
+        $scenarioGGateSetup = $scenarioGValidation.gates[0]
+        $scenarioGGateAfter = $scenarioGValidation.gates[1]
+        Assert-Hdo ($scenarioGGateSetup.status -eq 'indeterminate' -and $scenarioGGateSetup.failureClass -eq 'setup' -and -not $scenarioGGateSetup.skipped) "scenario g gate-setup is classified indeterminate/setup, not skipped (issue #16; got: $($scenarioGGateSetup | ConvertTo-Json -Compress))"
+        Assert-Hdo ($scenarioGGateAfter.status -eq 'indeterminate' -and $scenarioGGateAfter.failureClass -eq 'skipped' -and $scenarioGGateAfter.skipped -eq $true) "scenario g gate-after is skipped after the setup failure even though continueAfterFailure is true (issue #16 AC-02/AC-06; got: $($scenarioGGateAfter | ConvertTo-Json -Compress))"
+    }
+    finally {
+        $env:PATH = $originalWorkflowPath
+        if ($null -eq $originalWorkflowGhToken) { Remove-Item -LiteralPath Env:GH_TOKEN -ErrorAction SilentlyContinue } else { $env:GH_TOKEN = $originalWorkflowGhToken }
+        if ($null -eq $originalWorkflowGitHubToken) { Remove-Item -LiteralPath Env:GITHUB_TOKEN -ErrorAction SilentlyContinue } else { $env:GITHUB_TOKEN = $originalWorkflowGitHubToken }
+        if (Test-Path -LiteralPath $workflowTestRoot) { Remove-HdoTestDirectory $workflowTestRoot }
     }
 }
 catch {

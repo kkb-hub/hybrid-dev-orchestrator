@@ -47,8 +47,11 @@ export const RUN_STATES: readonly RunState[] = [
 
 export const TERMINAL_STATES: ReadonlySet<RunState> = new Set(["APPROVED", "ESCALATED", "FAILED", "CANCELLED"]);
 
+/** Every non-terminal RunState - the domain of the dispatch loop's handler record (ADR-0003 D1). */
+export type NonTerminalRunState = Exclude<RunState, "APPROVED" | "ESCALATED" | "FAILED" | "CANCELLED">;
+
 /** Explicit successors, before the "any non-terminal -> FAILED | CANCELLED" rule is applied. */
-const EXPLICIT_TRANSITIONS: Record<RunState, readonly RunState[]> = {
+export const EXPLICIT_TRANSITIONS: Record<RunState, readonly RunState[]> = {
   CREATED: ["ISSUE_SELECTED"],
   ISSUE_SELECTED: ["PREFLIGHT"],
   PREFLIGHT: ["ISSUE_CLAIMED", "WORKTREE_READY"],

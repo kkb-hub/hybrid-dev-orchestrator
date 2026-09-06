@@ -263,7 +263,7 @@ repository config は command runner を定義・変更・選択できない（3
 
 ### 4.5 Environment と extraArgs
 
-runner と validation process は、known credential および名前が `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY` で終わる environment を既定で除外する。
+runner と validation process は、known credential および名前が `TOKEN`、`SECRET`、`PASSWORD`、`API_KEY`、`_KEY` で終わる environment を既定で除外する（Issue #63: `API_KEY` だけでなく、任意の `..._KEY` という名前も既定でブロックする。`MONKEY`/`KEYBOARD` のように直前がアンダースコアでないサフィックスは引き続き通過する）。
 
 `passEnvironment` は明示的な opt-in である。ただし `GH_TOKEN` / `GITHUB_TOKEN` は runner へ渡せず configuration error になる。ほかの sensitive 名は warning を出す。secret value を config、model ID、argument、artifact path に直接書いてはならない。
 
@@ -538,6 +538,8 @@ validation は設定で順序変更できず、常に implement/fix の後、rev
 
 `request-changes` policy では validation result を reviewer へ渡す。required gate が不合格のまま approve が返っても、HDO は decision を request_changes へ変更し blocker finding を付ける。
 
+各 validation gate の結果は `status`（`pass`/`fail`/`indeterminate`）に加えて `failureClass`（`product` / `setup` / `timeout` / `unclassified` / `skipped` / `null`、Issue #16）を持つ。gate command 自体が起動できなかった場合（`failureClass: setup`）は、その gate の `continueAfterFailure` の値に関わらず**常に**残りの gate を実行せず `indeterminate`/`skipped` として記録する。timeout（`timeout`）・非0 exit code（`product`）・未知の exit code（`unclassified`）は、引き続き gate ごとの `continueAfterFailure` の指定に従って後続 gate を止めるかどうかを決める。この区別は「product が壊れている」ことと「そもそも壊れているかどうか判定できなかった」ことを取り違えないための分類である。
+
 ## 9. Paths
 
 ~~~json
@@ -624,6 +626,8 @@ artifact/worktree root の書込 probe は通常 doctor/full run で行う。`do
 
 MVP validator は Issue が選んだ gate を順に実行し、各 gate の log と集計を保存する。project contract の変更は対象 base commit に含める。
 
+`doctor` は project contract の各 `validationGates[]` エントリについて `gate:<id>` check を行い、その `command` が実行可能ファイルとして解決できるかを検査する（Issue #8）。解決できない場合は `warning`（`required: false`）を返す - `fail` にすると gate command が見つからないだけで `run` が PREFLIGHT_FAILED になってしまい、実行時の #16 setup-failure 分類（下記）が正常運用では到達しなくなるため。実行時に gate command が起動できなかった場合は `failureClass: setup` として記録し、`continueAfterFailure` の値に関わらず残りの gate を実行しない（Issue #16 AC-02/AC-06）。timeout・非0 exit code（product failure）・未知の exit code（unclassified）は引き続き `continueAfterFailure` に従う。
+
 ### 10.2 Worker/review policy の強制範囲
 
 project contract 全体は plan/implement/fix の task context に含まれる。schema、HDO prompt、runner sandbox、worktree isolation、credential filtering が一部を構造的に補強する。
@@ -675,3 +679,4 @@ secret は user config にも保存しない。runner が authentication を必�
 | GitHub actor rejected | `github.trustedActors` と ready label event / `gh api user` |
 | write-back を止めたい | run に `-NoWriteBack`、または `github.writeBack: none` |
 | `hdo cleanup` が `Filename too long` で失敗する、または失敗後に worktree ディレクトリだけが残る | Windows で worktree 配下（`node_modules/.pnpm` 等）のパスが `MAX_PATH` (260) を超えている。HDO は git 呼び出しに `-c core.longpaths=true` を付けるが、global / system config に `core.longpaths=false` があると git はそちらを優先する。`git worktree remove` が admin entry を消した後に失敗した場合、HDO は同じ cleanup 内でディレクトリを削除し `git worktree prune` する。既に残骸だけになった worktree（`git worktree list` に無い）は、run の branch がまだ存在していれば `hdo cleanup -RunId <id> -Force` で削除できる。恒久対策は `git config --global core.longpaths true` |
+| `run.json`/`events.jsonl` の再読み込みでタイムスタンプが化ける（ローカル時刻へシフトする、小数秒が短縮される） | PowerShell 側の `ConvertFrom-Json` は ISO-8601 らしき文字列値を無条件に `[DateTime]` へ変換する（Issue #62）。`ConvertFrom-HdoJson` は pwsh 7.5 以降でのみ利用できる `-DateKind String` を検出できる場合に付与してこれを防ぐ。pwsh 7.2〜7.4 ではこのオプションが無いため fallback し、この変換問題がそのまま残る - HDO 自身が書く `Z` サフィックス付きタイムスタンプ（`Get-HdoUtcTimestamp`）は通常の read-modify-write では壊れないが、7.5 未満では `DateTime` へ変換されたのち再度文字列化される際に末尾のゼロ埋め小数秒が落ちることがある。最小 PowerShell バージョンは引き続き 7.2 のままなので、`-DateKind String` の有無は環境依存の best-effort 改善として扱う |

@@ -353,7 +353,7 @@ MVP の command adapter と validation command に対して、HDO 自身が OS f
 
 ## TypeScript 実装（進行中の移行）
 
-`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ5（runners）まで完了**しており、`src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/github/`・`src/runners/`・`src/workflow/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
+`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ6（workflow）まで完了**しており、`src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/github/`・`src/runners/`・`src/workflow/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
 
 ```sh
 npm ci
@@ -361,10 +361,13 @@ npm run typecheck
 npm test
 node src/cli/main.ts config -Json
 node src/cli/main.ts doctor -DryRun -Json
+node src/cli/main.ts run -Issue <n> -NoWriteBack -Json
+node src/cli/main.ts status -RunId <id> -Json
 ```
 
 - `node src/cli/main.ts config -Json` は `pwsh -NoProfile -File hdo.ps1 config -Json` と意味的に等価な出力を返します（オプション名は `hdo.ps1` と同じ `-Json`/`-Config`/`-Profile`/`-IgnoreRepositoryConfig`/`-RepositoryPath` 等）。`-Json` を付けない `config` も同じ JSON を stdout に出力します（PowerShell 版の非`-Json`テーブル表示は再現していません）。
 - `node src/cli/main.ts doctor -DryRun -Json` は `pwsh -NoProfile -File hdo.ps1 doctor -DryRun -Json` と意味的に等価な read-only preflight 結果を返します。`src/runners/`（Codex/Claude/command adapter）と `src/workflow/`（preflight、`.hdo/project.json` の読み込み）がフェーズ5で追加され、`src/github/`（Issue 正規化・pickup・claim/label 同期）はフェーズ4で追加されています。
+- `node src/cli/main.ts run -Issue <n> -NoWriteBack -Json` と `node src/cli/main.ts status -RunId <id> -Json` はフェーズ6で追加しました。`config`/`doctor` と同じ理由（フェーズ6の終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たず先行して配線しています。`commands/*.md`・`skills/*/SKILL.md` は引き続き `pwsh`（`hdo.ps1`）を呼び出しており、これらの切り替えはフェーズ7で行います。
 - PowerShell 実装は、Migration strategy フェーズ7の parity 到達まで **canonical CLI であり続けます**。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
 - Windows の process-tree containment（`NodeProcessRunner`）は `koffi`（FFI、`package.json` に exact version pin）経由で Win32 Job Object を保持します。詳細は `docs/adr/0002-windows-job-object-via-koffi.md` を参照してください。koffi の import は `src/platform/**` に限定され、`src/core/**` からは import できません（`src/core/boundary.test.ts` が機械的に検査します）。
 - CI は `.github/workflows/typescript.yml` が **`windows-latest` のみ**で `npm ci` → typecheck → test → `config -Json` → `doctor -DryRun -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows です）。

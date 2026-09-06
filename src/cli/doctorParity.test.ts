@@ -63,6 +63,22 @@ const PWSH_AVAILABLE = detectPwsh();
 const SKIP_REASON = PWSH_AVAILABLE ? false : "pwsh is not on PATH";
 
 /**
+ * The ONE tolerated string difference (ADR-0001 phase 6, Issue #8 `gate:<id>` checks):
+ * a resolved path whose file name is `pwsh.exe`. PowerShell prepends `$PSHOME` to its
+ * own process PATH, so `Get-Command pwsh -CommandType Application` inside `hdo.ps1`
+ * always resolves to the running pwsh itself (e.g. `C:\Program Files\WindowsApps\
+ * Microsoft.PowerShell_<ver>\pwsh.exe` for a Store install), while the Node process
+ * resolves `pwsh` through the ambient PATH (e.g. the `%LOCALAPPDATA%\Microsoft\
+ * WindowsApps\pwsh.exe` app-execution alias). Both name the same binary; only the
+ * spelling differs, and only for `pwsh`, and only on machines where `$PSHOME` is not
+ * itself the first PATH hit (GitHub windows-latest resolves both to
+ * `C:\Program Files\PowerShell\7\pwsh.exe`). Recorded in docs/architecture.md 16.4.
+ */
+function normalizePwshPath(text: string): string {
+  return text.replace(/[A-Za-z]:\\(?:[^\\<>:"|?*\r\n]+\\)*pwsh\.exe/gi, "<PWSH>");
+}
+
+/**
  * Recursively sorts object keys, for an order-independent comparison of object keys -
  * array element ORDER is always preserved (`Array.prototype.map` never reorders),
  * which matters for `checks`: ADR-0001 phase 5 plan §7 risk 5 says its order is
@@ -79,6 +95,7 @@ const SKIP_REASON = PWSH_AVAILABLE ? false : "pwsh is not on PATH";
  * included, so there is no actual TS/PS divergence to tolerate here.
  */
 function canonicalize(value: unknown): unknown {
+  if (typeof value === "string") return normalizePwshPath(value);
   if (Array.isArray(value)) return value.map(canonicalize);
   if (value && typeof value === "object") {
     const out: Record<string, unknown> = {};

@@ -243,7 +243,7 @@ function Get-HdoCodexFailureDetail {
         if ($message -and -not $details.Contains($message)) { $details.Add($message) }
     }
     foreach ($line in @($StandardOutput -split "`r?`n" | Where-Object { $_.Trim() })) {
-        try { $event = $line | ConvertFrom-Json -AsHashtable -Depth 50 }
+        try { $event = ConvertFrom-HdoJson -Json $line -Depth 50 -AsHashtable }
         catch { continue }
         $message = if ([string](Get-HdoValue $event 'type' '') -eq 'turn.failed') {
             [string](Get-HdoValue $event 'error.message' '')
@@ -254,7 +254,7 @@ function Get-HdoCodexFailureDetail {
         else { '' }
         if (-not $message) { continue }
         try {
-            $nested = $message | ConvertFrom-Json -AsHashtable -Depth 20
+            $nested = ConvertFrom-HdoJson -Json $message -Depth 20 -AsHashtable
             $nestedMessage = [string](Get-HdoValue $nested 'error.message' '')
             if ($nestedMessage) { $message = $nestedMessage }
         }
@@ -416,7 +416,7 @@ function Resolve-HdoOllamaContextModel {
 function ConvertFrom-HdoClaudeOutput {
     param([Parameter(Mandatory)][string]$Output)
 
-    $envelope = $Output | ConvertFrom-Json -Depth 100
+    $envelope = ConvertFrom-HdoJson -Json $Output -Depth 100
     if ($envelope.PSObject.Properties.Name -contains 'structured_output' -and $null -ne $envelope.structured_output) {
         if ($envelope.structured_output -is [string]) { return $envelope.structured_output }
         return ($envelope.structured_output | ConvertTo-Json -Depth 100 -Compress)
@@ -435,7 +435,7 @@ function Resolve-HdoOllamaStructuredOutput {
         [Parameter(Mandatory)][string]$ArtifactDirectory
     )
 
-    $envelope = $EnvelopeJson | ConvertFrom-Json -AsHashtable -Depth 100
+    $envelope = ConvertFrom-HdoJson -Json $EnvelopeJson -Depth 100 -AsHashtable
     if ((Get-HdoValue $envelope 'is_error' $false) -eq $true -or
         [string](Get-HdoValue $envelope 'subtype' 'success') -ne 'success') {
         throw "Claude/Ollama envelope failure: $(Get-HdoClaudeFailureDetail $EnvelopeJson '')"
@@ -495,7 +495,7 @@ function Get-HdoClaudeFailureDetail {
     $details = [Collections.Generic.List[string]]::new()
     if ($StandardOutput.Trim()) {
         try {
-            $envelope = $StandardOutput | ConvertFrom-Json -AsHashtable -Depth 100
+            $envelope = ConvertFrom-HdoJson -Json $StandardOutput -Depth 100 -AsHashtable
             $resultValue = Get-HdoValue $envelope 'result'
             if ($null -ne $resultValue) {
                 $resultText = if ($resultValue -is [string]) { $resultValue } else { $resultValue | ConvertTo-Json -Compress -Depth 50 }
@@ -614,7 +614,9 @@ function Invoke-HdoAgentStep {
     $environment = Get-HdoRunnerEnvironment -Runner $runner
     $maximumOutputBytes = 33554432
     $activityArtifactPath = [string](Get-HdoValue $Run 'artifactPath' '')
-    $activityStartedAt = [DateTimeOffset]::UtcNow
+    # Get-HdoUtcTimestamp (not [DateTimeOffset]::UtcNow) so run.json.activity uses the
+    # same timestamp format (Z-suffixed, issue #62) as every other run.json field.
+    $activityStartedAt = Get-HdoUtcTimestamp
     $Run['activity'] = [ordered]@{
         kind = 'agent'
         state = [string]$Run.state
@@ -622,8 +624,8 @@ function Invoke-HdoAgentStep {
         iteration = $Iteration
         runner = [string]$binding.runnerName
         provider = [string](Get-HdoValue $runner 'provider' 'cloud')
-        startedAt = $activityStartedAt.ToString('o')
-        lastHeartbeatAt = $activityStartedAt.ToString('o')
+        startedAt = $activityStartedAt
+        lastHeartbeatAt = $activityStartedAt
         elapsedSeconds = 0
     }
     if ($activityArtifactPath -and (Test-Path -LiteralPath $activityArtifactPath -PathType Container)) {
@@ -632,7 +634,7 @@ function Invoke-HdoAgentStep {
     Invoke-HdoProgressAction $ActivityCallback ([ordered]@{
         type = 'agent.progress'
         phase = 'started'
-        at = $activityStartedAt.ToString('o')
+        at = $activityStartedAt
         runId = [string]$Run.id
         state = [string]$Run.state
         step = $Step
@@ -721,7 +723,7 @@ function Invoke-HdoAgentStep {
 
     $schemaValidation = Test-HdoJsonSchema $finalJson $schemaPath
     if (-not $schemaValidation.valid) { throw "Agent step '$Step' produced invalid structured output: $($schemaValidation.error)" }
-    $structured = Protect-HdoObject (ConvertTo-HdoHashtable ($finalJson | ConvertFrom-Json -Depth 100))
+    $structured = Protect-HdoObject (ConvertTo-HdoHashtable (ConvertFrom-HdoJson -Json $finalJson -Depth 100))
     $redactedValidation = Test-HdoObjectSchema $structured $OutputSchema
     if (-not $redactedValidation.valid) { throw "Agent step '$Step' output became invalid after credential redaction: $($redactedValidation.error)" }
     Write-HdoJsonFile $finalPath $structured
@@ -853,6 +855,7 @@ function Invoke-HdoValidation {
     foreach ($gate in @(Get-HdoValue $ProjectContract 'validationGates' @())) { $gateMap[[string]$gate.id] = $gate }
     $results = @()
     $stopRemaining = $false
+    $stopAfterSetupFailure = $false
     foreach ($gateId in @(Get-HdoValue $IssueContract 'validationGates' @())) {
         if (-not $gateMap.ContainsKey([string]$gateId)) { throw "Unknown validation gate '$gateId'." }
         $gate = $gateMap[[string]$gateId]
@@ -872,13 +875,23 @@ function Invoke-HdoValidation {
         $artifactCommand = Protect-HdoText ([string]$gate.command)
         $artifactArguments = [object[]]@($arguments | ForEach-Object { Protect-HdoText ([string]$_) })
         $timeout = [int](Get-HdoValue $gate 'timeoutSeconds' 900)
+        $required = [bool](Get-HdoValue $gate 'required' $true)
+        $continueAfterFailure = [bool](Get-HdoValue $gate 'continueAfterFailure' $true)
         if ($stopRemaining) {
+            # #16: a setup failure (the gate command itself could not be started) always
+            # stops remaining gates regardless of continueAfterFailure; a product failure
+            # or an unclassified/timeout result stops only when continueAfterFailure is
+            # false. The single-quoted literal here used to write a literal backtick-n
+            # instead of a newline (verified on pwsh 7.6.5) - this double-quoted string
+            # produces a real one.
+            $skipReason = if ($stopAfterSetupFailure) { 'failed to start' } else { 'requested stop' }
             $logPath = Join-Path $ArtifactDirectory "$gateId.log"
-            Set-Content -LiteralPath $logPath -Value 'status: indeterminate`nreason: skipped after a previous gate requested stop' -Encoding utf8NoBOM
+            Set-Content -LiteralPath $logPath -Value "status: indeterminate`nfailureClass: skipped`nreason: skipped after a previous gate $skipReason" -Encoding utf8NoBOM
             $results += [ordered]@{
                 id = [string]$gateId
-                required = [bool](Get-HdoValue $gate 'required' $true)
+                required = $required
                 status = 'indeterminate'
+                failureClass = 'skipped'
                 command = @($artifactCommand) + $artifactArguments
                 exitCode = $null
                 timedOut = $false
@@ -888,27 +901,38 @@ function Invoke-HdoValidation {
             }
             continue
         }
+        $passedCodes = @(Get-HdoValue $gate 'exitCodes.passed' @(0))
+        $failedCodes = @(Get-HdoValue $gate 'exitCodes.failed' @())
         try {
             $processResult = Invoke-HdoProcess -Command ([string]$gate.command) -Arguments $arguments -WorkingDirectory $gateWorkingDirectory `
                 -TimeoutSeconds $timeout -Environment (Get-HdoSafeEnvironment)
-            $passedCodes = @(Get-HdoValue $gate 'exitCodes.passed' @(0))
-            $failedCodes = @(Get-HdoValue $gate 'exitCodes.failed' @())
-            if ($processResult.timedOut) { $status = 'indeterminate' }
-            elseif ($passedCodes -contains $processResult.exitCode) { $status = 'pass' }
-            elseif ($failedCodes -contains $processResult.exitCode) { $status = 'fail' }
-            else { $status = 'indeterminate' }
+            # Classification order (#16 AC-01/AC-03/AC-04): timeout is its own class
+            # (the gate DID start; a hanging product test is a product symptom, not a
+            # setup failure) and follows continueAfterFailure like a product failure;
+            # an exit code explicitly in `failed` is a product failure; anything else
+            # is unclassified. Only a process-start exception below is 'setup'.
+            if ($processResult.timedOut) { $status = 'indeterminate'; $failureClass = 'timeout' }
+            elseif ($passedCodes -contains $processResult.exitCode) { $status = 'pass'; $failureClass = $null }
+            elseif ($failedCodes -contains $processResult.exitCode) { $status = 'fail'; $failureClass = 'product' }
+            else { $status = 'indeterminate'; $failureClass = 'unclassified' }
         }
         catch {
+            # #16 AC-01/AC-02: the gate command itself could not be started (not found,
+            # or ProcessStartInfo could not start it) - a setup/detection failure, never
+            # a product failure. This always stops remaining gates below, regardless of
+            # this gate's own continueAfterFailure.
             $status = 'indeterminate'
+            $failureClass = 'setup'
             $processResult = [ordered]@{ exitCode = $null; timedOut = $false; stdout = ''; stderr = Protect-HdoText $_.Exception.Message; durationMs = 0; startedAt = Get-HdoUtcTimestamp; endedAt = Get-HdoUtcTimestamp }
         }
         $logPath = Join-Path $ArtifactDirectory "$gateId.log"
-        $log = Protect-HdoText "command: $artifactCommand $($artifactArguments -join ' ')`nexitCode: $($processResult.exitCode)`nstatus: $status`n`nSTDOUT`n$($processResult.stdout)`nSTDERR`n$($processResult.stderr)"
+        $log = Protect-HdoText "command: $artifactCommand $($artifactArguments -join ' ')`nexitCode: $($processResult.exitCode)`nstatus: $status`nfailureClass: $failureClass`n`nSTDOUT`n$($processResult.stdout)`nSTDERR`n$($processResult.stderr)"
         Set-Content -LiteralPath $logPath -Value $log -Encoding utf8NoBOM
         $results += [ordered]@{
             id = [string]$gateId
-            required = [bool](Get-HdoValue $gate 'required' $true)
+            required = $required
             status = $status
+            failureClass = $failureClass
             command = @($artifactCommand) + $artifactArguments
             exitCode = $processResult.exitCode
             timedOut = $processResult.timedOut
@@ -916,8 +940,9 @@ function Invoke-HdoValidation {
             durationMs = $processResult.durationMs
             artifact = $logPath
         }
-        if ($status -ne 'pass' -and -not [bool](Get-HdoValue $gate 'continueAfterFailure' $true)) {
+        if ($status -ne 'pass' -and ($failureClass -eq 'setup' -or -not $continueAfterFailure)) {
             $stopRemaining = $true
+            $stopAfterSetupFailure = ($failureClass -eq 'setup')
         }
     }
     $requiredFailures = @($results | Where-Object { $_.required -and $_.status -ne 'pass' })

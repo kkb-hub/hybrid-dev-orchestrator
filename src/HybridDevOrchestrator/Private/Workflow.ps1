@@ -42,6 +42,18 @@ function Test-HdoEnvironment {
     try {
         $projectContract = Get-HdoProjectContract $Config
         Add-HdoPreflightCheck $checks 'project-contract' 'pass' "$(@($projectContract.validationGates).Count) validation gate(s) defined."
+        # #8: doctor previously checked only runner commands, never validationGates[].command,
+        # so a gate whose command cannot be started (typo, not installed, a .ps1 shim that
+        # ProcessStartInfo cannot launch) sailed through preflight and only surfaced as a
+        # confusing 'failed' product result once Invoke-HdoValidation actually ran it. This
+        # is read-only (Get-Command, no process start) and reports 'warning' rather than
+        # 'fail': failing here would change today's PS behaviour (a real run would stop at
+        # PREFLIGHT_FAILED) and make the #16 runtime setup-failure guard unreachable in
+        # normal operation (TOCTOU only) - see the ADR-0001 phase-6 plan §7 Q1.
+        foreach ($gate in @($projectContract.validationGates)) {
+            $gateCommand = Get-Command ([string]$gate.command) -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+            Add-HdoPreflightCheck $checks "gate:$($gate.id)" $(if ($gateCommand) { 'pass' } else { 'warning' }) $(if ($gateCommand) { "Validation gate '$($gate.id)' command '$($gate.command)' resolves to $($gateCommand.Source)." } else { "Validation gate '$($gate.id)' command '$($gate.command)' was not found. The gate would be recorded as a setup failure at run time." }) $false
+        }
     }
     catch { Add-HdoPreflightCheck $checks 'project-contract' 'fail' $_.Exception.Message }
 

@@ -21,7 +21,7 @@ import { getExecutionPlan } from "../core/config/executionPlan.ts";
 import type { SchemaRegistry } from "../core/contracts/schemas.ts";
 import { protectText } from "../core/process/redact.ts";
 import type { ProcessRunner } from "../core/process/types.ts";
-import { asNumber, asString, equalsIgnoreCase, hdoArrayCount, inIgnoreCase } from "../core/runners/psSemantics.ts";
+import { asNumber, asString, equalsIgnoreCase, hdoArrayCount, hdoArrayItems, inIgnoreCase } from "../core/runners/psSemantics.ts";
 import type { PlatformAdapter } from "../platform/types.ts";
 import { GitClient } from "../git/index.ts";
 import { GhClient } from "../github/client.ts";
@@ -119,11 +119,33 @@ export async function runPreflight(options: PreflightOptions): Promise<Preflight
     );
   }
 
-  // 4: project-contract
+  // 4: project-contract, then one `gate:<id>` check per validation gate (Issue #8,
+  // Workflow.ps1 new block after :44; WP-P mirrors this in Test-HdoEnvironment).
+  // `required: false` / `warning` (not `fail`) is a deliberate orchestrator decision
+  // (plan §8 Q1): a `fail` would make `run` stop at PREFLIGHT_FAILED for a gate whose
+  // command cannot be resolved, which would (a) change today's behaviour more than
+  // the Issue asks for and (b) make the Issue #16 runtime "setup failure" guard
+  // unreachable in normal operation (TOCTOU only). `doctor` still surfaces the
+  // problem via this check; the run-time classification in `src/core/workflow/
+  // gates.ts` is what actually protects a run against a missing gate command.
   try {
     const projectContract = loadProjectContract(asString(config.projectContractPath), schemas);
     const gateCount = hdoArrayCount(getValue(projectContract, "validationGates", []));
     addCheck(checks, "project-contract", "pass", `${gateCount} validation gate(s) defined.`);
+    for (const gate of hdoArrayItems(getValue(projectContract, "validationGates", []))) {
+      const gateId = asString(getValue(gate, "id"));
+      const gateCommand = asString(getValue(gate, "command"));
+      const resolvedGateCommand = platform.resolveExecutable(gateCommand);
+      addCheck(
+        checks,
+        `gate:${gateId}`,
+        resolvedGateCommand ? "pass" : "warning",
+        resolvedGateCommand
+          ? `Validation gate '${gateId}' command '${gateCommand}' resolves to ${resolvedGateCommand}.`
+          : `Validation gate '${gateId}' command '${gateCommand}' was not found. The gate would be recorded as a setup failure at run time.`,
+        false,
+      );
+    }
   } catch (error) {
     addCheck(checks, "project-contract", "fail", (error as Error).message);
   }

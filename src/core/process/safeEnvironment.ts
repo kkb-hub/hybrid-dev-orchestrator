@@ -20,8 +20,10 @@ const BLOCKED_NAMES = new Set([
   "PYPI_TOKEN",
 ]);
 
-// Copied verbatim (case-insensitive suffix match) from Common.ps1:724.
-const BLOCKED_NAME_PATTERN = /(TOKEN|SECRET|PASSWORD|API_KEY)$/i;
+// Copied verbatim (case-insensitive suffix match) from Common.ps1:724 (issue #63:
+// added `_KEY` so any `..._KEY` name - not only `..._API_KEY` - is blocked by default;
+// a suffix without a preceding underscore, e.g. `MONKEY`/`KEYBOARD`, still passes).
+const BLOCKED_NAME_PATTERN = /(TOKEN|SECRET|PASSWORD|API_KEY|_KEY)$/i;
 
 function isBlockedName(name: string): boolean {
   const upper = name.toUpperCase();

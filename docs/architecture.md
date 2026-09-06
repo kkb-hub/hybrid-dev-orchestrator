@@ -157,6 +157,8 @@ Policy branch:
 
 terminal state は final artifact の保存後に設定する。最終 artifact の保存に失敗した run を APPROVED として残さない。
 
+validation gate の各結果は `failureClass`（`product` / `setup` / `timeout` / `unclassified` / `skipped` / `null`）で分類する（Issue #16）。gate command 自体が起動できなかった場合（`setup`）は、その gate の `continueAfterFailure` の値に関わらず残りの gate を実行せず `skipped` として記録する - setup failure は「product が壊れているか」を判定すらできていない状態であり、後続 gate を検証されていない worktree/tooling 状態のまま走らせることを避けるため。timeout・product failure（fail exit code）・unclassified（未知の exit code）は引き続き gate ごとの `continueAfterFailure` に従う。
+
 artifact directoryの作成直後にCLIへrun IDとartifact pathを通知する。agent step中は `run.json.activity` にstep、iteration、runner、開始時刻、最終heartbeat、経過秒を保存し、process終了時にnullへ戻す。progress callbackの出力streamが閉じてもrunは失敗させないため、親Codex turnが先に終了した場合もsubprocessとatomicなrun state更新を継続できる。再接続後は通知済みrun IDを `status` へ渡す。
 
 ## 7. State machine
@@ -173,6 +175,48 @@ any non-terminal -> FAILED | CANCELLED
 ~~~
 
 APPROVED、ESCALATED、FAILED、CANCELLED は terminal である。現在の CLI は CANCELLED を生成する cancel command を持たないが、state core は将来用遷移を定義する。
+
+TypeScript 実装（フェーズ6）はこの遷移表を唯一の正典 (`src/core/state/index.ts` の `EXPLICIT_TRANSITIONS`) とし、`toMermaid()`（`src/core/state/mermaid.ts`）が同じ表から次の diagram を機械的に生成する（「図 = 表」、ADR-0003 D1。手書きの複製ではない）:
+
+~~~mermaid
+stateDiagram-v2
+    CREATED --> ISSUE_SELECTED
+    CREATED --> FAILED
+    CREATED --> CANCELLED
+    ISSUE_SELECTED --> PREFLIGHT
+    ISSUE_SELECTED --> FAILED
+    ISSUE_SELECTED --> CANCELLED
+    PREFLIGHT --> ISSUE_CLAIMED
+    PREFLIGHT --> WORKTREE_READY
+    PREFLIGHT --> FAILED
+    PREFLIGHT --> CANCELLED
+    ISSUE_CLAIMED --> WORKTREE_READY
+    ISSUE_CLAIMED --> FAILED
+    ISSUE_CLAIMED --> CANCELLED
+    WORKTREE_READY --> PLANNING
+    WORKTREE_READY --> IMPLEMENTING
+    WORKTREE_READY --> FAILED
+    WORKTREE_READY --> CANCELLED
+    PLANNING --> IMPLEMENTING
+    PLANNING --> FAILED
+    PLANNING --> CANCELLED
+    IMPLEMENTING --> VALIDATING
+    IMPLEMENTING --> FAILED
+    IMPLEMENTING --> CANCELLED
+    VALIDATING --> REVIEWING
+    VALIDATING --> CHANGES_REQUESTED
+    VALIDATING --> FAILED
+    VALIDATING --> CANCELLED
+    REVIEWING --> APPROVED
+    REVIEWING --> ESCALATED
+    REVIEWING --> CHANGES_REQUESTED
+    REVIEWING --> FAILED
+    REVIEWING --> CANCELLED
+    CHANGES_REQUESTED --> IMPLEMENTING
+    CHANGES_REQUESTED --> ESCALATED
+    CHANGES_REQUESTED --> FAILED
+    CHANGES_REQUESTED --> CANCELLED
+~~~
 
 ## 8. Worktree と diff
 
@@ -237,7 +281,9 @@ gate command は executable + args、working directory、timeout、required、ex
 - configured failed code: fail
 - timeout、unknown code、起動失敗: indeterminate
 
-`continueAfterFailure: false` の gate が non-pass なら、残り gate は実行せず indeterminate/skipped として記録する。required gate が1つでも pass でなければ `allRequiredPassed=false` である。
+`continueAfterFailure: false` の gate が non-pass なら、残り gate は実行せず indeterminate/skipped として記録する。gate command が起動できなかった場合（`failureClass: setup`）は `continueAfterFailure` の値に関わらず常に残り gate を止める（Issue #16、`docs/architecture.md` §6）。required gate が1つでも pass でなければ `allRequiredPassed=false` である。
+
+`doctor` は `.hdo/project.json` の各 `validationGates[]` エントリについて `gate:<id>` check を追加で行い、その `command` が実行可能ファイルとして解決できるかを検査する（Issue #8）。解決できない場合は `warning`（`required: false`）を返す - `fail` にすると、gate command が一時的に見つからないだけで `run` が PREFLIGHT_FAILED になり、Issue #16 の setup-failure 分類（実行時の TOCTOU 検出）が到達しなくなるため、意図的に `warning` にとどめている。
 
 worker/review policy は prompt と schema/sandbox に反映するが、validation command 自体は host process であり、arbitrary command の network/command/path policy を syscall level で intercept する機能はない。信頼できない repository の gate は low-privilege account または VM/container 内で実行する。
 
@@ -291,6 +337,8 @@ review は read-only であり、source 修正は fix runner だけが行う。
 step directory の stdout copy は adapter に応じて名前が変わる。Claude adapter は `--output-format json` の単一 envelope object を `envelope.json` として、Codex と command adapter は JSONL event stream を `events.jsonl` として保存する（run root の `events.jsonl` は HDO 自身の run event log であり、adapter に依存しない）。既定 profile は claude-only なので、既定の run では step artifact は `envelope.json` になる。
 
 JSON manifest は temporary file から replace する。config object、stdout/stderr、exception、GitHub summary は known secret pattern を redact する。prompt と source diff 自体は task artifact なので、artifact directory の access control は利用者が管理する。
+
+`validation/result.json` の各 gate エントリは `status` に加えて `failureClass`（`product` / `setup` / `timeout` / `unclassified` / `skipped` / `null`）を持つ（Issue #16、§6/§10 参照）。
 
 ## 13. DryRun と NoWriteBack
 
@@ -362,6 +410,15 @@ src/
                 claudeOutput（recoverOllamaStructuredOutput 含む）・
                 failureDetail・reviewResult・prompts・psSemantics（PS の
                 `-eq`/`-in`/`[bool]` 等の値意味論を再現する共有 helper）
+    state/mermaid.ts  フェーズ6で追加。`EXPLICIT_TRANSITIONS` から Mermaid
+                `stateDiagram-v2` を機械的に生成する toMermaid()（ADR-0003 D1、
+                本ドキュメント §7 に出力を貼り付けている）
+    workflow/   フェーズ6で追加。純粋な workflow ロジック - runRecord.ts
+                （RunRecord/RunResult/RunError 型、createRunRecord、newRunId、
+                isWriteBackEnabled、syntheticTaskContract、classifyRunFailure、
+                REASONS）、decisions.ts（decideNoDiff/decideValidation/
+                decideReview/applyValidationBlocker）、gates.ts
+                （classifyGateOutcome を含む gate 分類、Issue #16）
   platform/   PlatformAdapter の Windows/POSIX 実装。フェーズ1
               （userConfigDir・defaultDataDir・pathEquals・isPathWithinRoot・
               expandPath）に加え、フェーズ2で resolveExecutable・killProcessTree・
@@ -391,13 +448,33 @@ src/
               結果の artifact 書き込み）
   workflow/   フェーズ5で追加。preflight.ts（Add-HdoPreflightCheck /
               Test-HdoEnvironment 相当、`doctor`/`run -DryRun` が共有する
-              read-only 環境検査）、projectContract.ts（loadProjectContract、
-              file 読み込み + schema 検証を追加した Get-HdoProjectContract 相当）
+              read-only 環境検査。フェーズ6で `.hdo/project.json` の各
+              validationGates[] に対する `gate:<id>` check を追加した、Issue
+              #8）、projectContract.ts（loadProjectContract、file 読み込み +
+              schema 検証を追加した Get-HdoProjectContract 相当）。フェーズ6で
+              追加した host 層の workflow モジュール - runStore.ts（RunStore の
+              save/addEvent/setState、readRun。Save-HdoRun/Add-HdoRunEvent/
+              Set-HdoRunState/Get-HdoRun 相当）、worktree.ts（getBaseCommit、
+              createWorktree、assertWorktreeIntegrity、
+              getWorktreeProjectContract、assertRepositoryConfigSnapshot）、
+              validation.ts（runValidation、Invoke-HdoValidation の host 半分）、
+              selectIssue.ts（Invoke-HdoRun のIssue選択 prologue）、run.ts
+              （runWorkflow - DryRun、run record 生成、
+              `Record<NonTerminalRunState, StepHandler>` による dispatch loop
+              - Invoke-HdoRun 本体、ADR-0003 D1）
   cli/        main.ts が composition root。フェーズ1の `config`/`help` に加え、
               フェーズ5で `doctor`（doctorCommand.ts、`-DryRun`/`-Json` を含む
               hdo.ps1 と同名の option をすべて受け付ける。フェーズ7の CLI 移植を
               待たず、run -DryRun の preflight 半分を直接検証する oracle として
-              先行実装した）を実装した
+              先行実装した）を実装した。フェーズ6で `run`（runCommand.ts、
+              `-Issue`/`-Pick`/`-NoWriteBack`/`-DryRun`/`-Json`/`-Config`/
+              `-Profile`/`-SetStep`/`-IgnoreRepositoryConfig`/`-Repository`/
+              `-RepositoryPath` を受け付ける）と `status`（statusCommand.ts、
+              `-RunId`/`-Json`）を、`config`/`doctor` と同じ理由（§16.2参照）で
+              フェーズ7の CLI 移植を待たず先行実装した
+  cli/runParity.test.ts  フェーズ6で追加。pwsh oracle との NoWriteBack
+              full-run parity harness（13シナリオ、tests/fixtures/workflow/
+              の共有 fixture を消費する）
 ```
 
 依存方向は `core <- platform, process, git, github <- runners, workflow <- cli` で、`core` は上位レイヤーに一切依存しない。`platform/jobObject.ts` は `koffi` を `src/platform/**` からのみ import し（`src/core/boundary.test.ts` の allow-list は変更していない）、失敗時は `taskkill /T /F /PID` へフォールバックする（ADR-0002）。既存 PowerShell module（`src/HybridDevOrchestrator/`）は変更していない。
@@ -426,7 +503,9 @@ WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない（ADR-00
 
 `Invoke-HdoRun -DryRun` 自体の組み立て（`execution` + `preflight` + フェーズ4の GitHub/contract object の合成）と `Invoke-HdoValidation` の実行はフェーズ6に委譲する（ADR-0001 Migration strategy フェーズ6:「plan→implement→validate→review→fix の bounded loop、`.hdo/project.json` の gate 実行を実装する」。gate 実行はフェーズ6の deliverable として明示されており、setup failure と product failure の分類（Issue #16）もフェーズ6が初日から行う）。Ollama 対応のスコープ（Issue #37）は `docs/adr/0001-primary-runtime-typescript.md` の Amendments に記録した。
 
-フェーズ6（workflow）以降は ADR-0001 の Migration strategy 節を参照。フェーズ6の outer workflow の書き方（自作 dispatch loop、XState は採らない）と、フェーズ8での lean worker 移植の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`）に記録した。フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（lean worker）を使うには引き続き `pwsh` が PATH 上に必要である。
+**フェーズ6（workflow）は完了した。** 終了条件（ADR-0001 Migration strategy フェーズ6:「`NoWriteBack` full run が両実装で同じ state 遷移・同じ diff・同じ review 判定に到達する」）は `src/cli/runParity.test.ts` が測定する: 決定論的な mock `gh`（`tests/fixtures/workflow/gh/gh.cmd`）・mock plan/implement/fix/review agent（`mock-workflow-agent.ps1`）・mock validation gate script（`tools/gate-pass.ps1`/`gate-fail.ps1`）を用いて、2つの独立した（内容とコミット日時が同一で、`baseCommit` が一致することを assert する）throwaway fixture repository に対し `hdo.ps1 run -Issue 7 -NoWriteBack -Json`（oracle）と `node src/cli/main.ts run -Issue 7 -NoWriteBack -Json` を実行し、13シナリオ（approve-first・fix-then-approve・fix上限escalate/fail・review escalate・no-diff escalate/fail・gate-fail escalate/request-changes・gate setup failure・implement 異常終了・DryRun・preflight failure）それぞれについて exit code、canonicalise した `run.json`、`state.transition` イベント列、iteration ごとの `diff.json`/`validation/result.json`/`review/result.json`、`final/summary.json`、stdout JSON を比較する。実 agent（Claude/Codex/Ollama）・実 GitHub・network には一切依存しない。`run`（`-Issue`/`-Pick`/`-NoWriteBack`/`-DryRun`/`-Json`/`-Config`/`-Profile`/`-SetStep`/`-IgnoreRepositoryConfig`/`-Repository`/`-RepositoryPath`）と `status`（`-RunId`/`-Json`）は、フェーズ1の `config`、フェーズ5の `doctor` と同じ理由（この2コマンドがそれぞれの終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たずフェーズ6の時点で `main.ts` へ配線している。フェーズ6で実装・修正した Issue（#16 gate setup failure 分類、#62 `ConvertFrom-Json`/`Get-HdoUtcTimestamp` の DateTime 破損、#63 `_KEY` サフィックス、#8 doctor の `gate:<id>` check）と、両実装での PS/TS 差異は §16.4「フェーズ6」リストに記録している。 フェーズ6完了後の最初の後続項目は Issue #64（死んだ run が残す active claim の解放/resume 手段と `leaseExpiresAt` の期限判定）で、claim 周りの挙動は両実装とも現状のまま鏡写しにしている。
+
+フェーズ6の outer workflow の書き方（自作 dispatch loop、XState は採らない、ADR-0003 D1）と、フェーズ8での lean worker 移植の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`）に記録した。フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（lean worker）を使うには引き続き `pwsh` が PATH 上に必要である。
 
 ### 16.3 実行方法
 
@@ -475,6 +554,19 @@ PoC（`poc/typescript/`）は評価時点の実証根拠として凍結し、本
 4. **Ollama structured-output 回復のテキスト処理**（`src/core/runners/claudeOutput.ts`）: `subtype: null` は PS の `[string]$null` -> 空文字列と同じ意味論で扱う（`Get-HdoValue` の既定値 `"success"` は key 自体が無い場合のみ適用され、`null` を上書きしない）。prefix 正規表現は PS の `\A`/`\z`（`m` flag 無し）を JS の `^`/`$` に置き換えている。`\s`（.NET は U+0085 NEL を含み U+FEFF を含まない、JS はその逆）と `Trim()`/`trim()`（.NET は U+FEFF を保持、JS は除去する）の Unicode 差はそのまま残る既知差異である。Ajv と PowerShell `Test-Json` の validation エラーは prefix（`Invalid JSON: `/`Schema validation failed: `）のみ契約とし、末尾の文言は一致させない。
 5. **artifact のバイト列**（`src/runners/agentStep.ts`、`src/runners/artifacts.ts`、`src/runners/ollamaContextModel.ts`）: `prompt.md`・`output.schema.json`・`final.json`・Ollama の Modelfile はいずれも PowerShell 側が `Set-Content`/`-Encoding utf8NoBOM` で CRLF（Windows）を書き込むのに対し、TypeScript は常に LF で書き込む。`final.json` は codex/command runner が出力ファイルを直接書く経路や、Ollama route の構造化出力回復のように、schema validation より前に一旦生の text として `writeTextFile` で書かれる場合があるが、この raw 書き込みも `prompt.md` と同じく末尾に LF を1個だけ付与する（review round 1 finding 12 で修正済み。PowerShell 側は `Set-Content` により同じタイミングで CRLF になる点は変わらない）。`Write-HdoJsonFile` 相当（`writeJsonFile`）が出力する pretty JSON も、PowerShell `ConvertTo-Json` が保持する小数点付き数値表現（`1.0`）と TypeScript `JSON.stringify` の表現（`1`）が異なりうる。`startedAt`/`checkedAt` 等のタイムスタンプは16.4フェーズ2項目10と同じ理由（`ToString('o')` vs `toISOString()`）で文字列として一致しない。`agentStep.ts` の `onActivity(activity | null)` コールバックは、started/heartbeat の各呼び出しで同一の mutable object 参照を渡す（PS の `Invoke-HdoAgentStep` が `$Run['activity']` を都度書き換えるのと同じ意味論）。
 6. **preflight のプラットフォーム固有テキスト**（`src/workflow/preflight.ts`）: `paths:*` の probe 失敗メッセージは Node の errno 文言と .NET の例外文言で異なる。`doctor` は `-Json` を付けなくても `config` と同様 JSON を出力し、PowerShell 版のテーブル表示は再現していない（16.4フェーズ2項目相当の既存方針と同じ）。TypeScript の `doctor` サブコマンドは、`config` がフェーズ1で先行実装されたのと同じ理由（`run -DryRun` の preflight 半分の直接 oracle）で、フェーズ7の CLI 移植を待たずに存在する。**（訂正）** 以前の版は `command:git`/`command:gh`/`runner:<r>:shim` の pass メッセージについて、TypeScript の `resolveExecutable` が PATHEXT のエントリそのままの大文字小文字（例: `git.EXE`）を返し、PowerShell の `Get-Command` はディスク上の実際の大文字小文字（例: `git.exe`）を返すという差異があるとしていたが、`windows.ts` の `realCasing` ヘルパー（PATHEXT candidate の実在を確認した後、対象ディレクトリを `readdirSync` して大小文字を無視した一致でディスク上の実際のエントリ名に置き換える）を追加したことでこの差異は解消済みである。TypeScript も `Get-Command` と同じくディスク上の casing（例: `git.exe`）を返す。`src/cli/doctorParity.test.ts` はレビュー round 2 で比較前の小文字化・セパレータ正規化を撤廃し、`doctor -DryRun -Json` の文字列値を大文字小文字・区切り文字ともに完全一致で比較する（`realCasing` の回帰は即座に検出される）。`src/runners/runnersParity.test.ts` の `canonicalize` はキーのソートのみを行い、文字列の大文字小文字正規化は行っていない。
-7. **Codex schema 変換の throw と PowerShell 側の JSON 往復の罠**: `toCodexTransportSchemaJson`（`src/core/runners/codexSchema.ts`）が実際に throw するのは adapter が transport する4種のうち `project-contract`（`$defs.validationGate` が `description`/`workingDirectory` を optional のまま持つため）であり、`issue-contract` は optional な object property を持たないため素通りする（実機検証、`src/runners/runnersParity.test.ts` 参照）。メッセージは `Codex structured output requires every object property: description, workingDirectory.` である。加えて、この harness の作成中に新たに判明した PowerShell 側の罠（TypeScript には無関係）: `ConvertFrom-Json` は ISO-8601 らしき文字列値を field 名やスキーマに関係なく無条件に `[DateTime]` へ変換する。`Get-HdoUtcTimestamp` が生成する数値オフセット付きの形式（例 `2026-09-05T15:43:50.7777426+00:00`）は `Kind=Local` として構築され、`ConvertTo-Json` で再出力すると黙ってローカル時刻へシフトし小数秒桁も短縮される（実機確認: `2026-01-01T00:00:00.0000000+00:00` が UTC+9機で `2026-01-01T09:00:00+09:00` に化ける）。TypeScript の `JSON.parse`/`JSON.stringify` はこの変換を一切行わない。これはフェーズ6の run.json 読み書き（read-modify-write round trip）に影響しうる PowerShell 側の不具合であり、別 Issue として起票する。
-8. **`gh` の空配列 JSON 対応**（#50、コミット `ef5cdfd`）: `Invoke-HdoGhJson`（`GitHub.ps1`）は `-NoEnumerate` の結果を一旦ローカル変数に束縛してから `return` するよう修正した。`return` に直接 `-NoEnumerate` の結果を渡すと、呼び出し側の `@(Invoke-HdoGhJson ...)`（変数を介さない直接呼び出し形の `@()`）がパイプライン出力そのものを1件として再ラップし、空配列・1要素配列がもう一段ネストされてしまうため。TypeScript 側は `JSON.parse('[]')` が元から正しい空配列を返すため対応不要。なお `Get-HdoLabelNames`（`GitHub.ps1`）には `return @($names)` という、`$names` が0要素のとき PowerShell のパイプライン展開により呼び出し側が `$null` を受け取りうる、類似の潜在的な empty-array 落とし穴が残っている（フェーズ5のスコープ外。follow-up として記録するのみ）。
+7. **Codex schema 変換の throw と PowerShell 側の JSON 往復の罠**: `toCodexTransportSchemaJson`（`src/core/runners/codexSchema.ts`）が実際に throw するのは adapter が transport する4種のうち `project-contract`（`$defs.validationGate` が `description`/`workingDirectory` を optional のまま持つため）であり、`issue-contract` は optional な object property を持たないため素通りする（実機検証、`src/runners/runnersParity.test.ts` 参照）。メッセージは `Codex structured output requires every object property: description, workingDirectory.` である。加えて、この harness の作成中に新たに判明した PowerShell 側の罠（TypeScript には無関係）: `ConvertFrom-Json` は ISO-8601 らしき文字列値を field 名やスキーマに関係なく無条件に `[DateTime]` へ変換する。`Get-HdoUtcTimestamp` が生成する数値オフセット付きの形式（例 `2026-09-05T15:43:50.7777426+00:00`）は `Kind=Local` として構築され、`ConvertTo-Json` で再出力すると黙ってローカル時刻へシフトし小数秒桁も短縮される（実機確認: `2026-01-01T00:00:00.0000000+00:00` が UTC+9機で `2026-01-01T09:00:00+09:00` に化ける）。TypeScript の `JSON.parse`/`JSON.stringify` はこの変換を一切行わない。これはフェーズ6の run.json 読み書き（read-modify-write round trip）に影響しうる PowerShell 側の不具合であり、Issue #62 として起票した。**フェーズ6でこの不具合を修正した**（16.4 フェーズ6リスト項目2、および §16.4 フェーズ6リストの `ConvertFrom-HdoJson` 項目参照）: `ConvertFrom-HdoJson`（Common.ps1）が pwsh 7.5+ でのみ利用可能な `-DateKind String` を条件付きで渡すようになり、`Get-HdoUtcTimestamp` は `[DateTime]::UtcNow.ToString('o')` を返すよう変更した。最小 PowerShell バージョンは 7.2 のまま変わらない。
+8. **`gh` の空配列 JSON 対応**（#50、コミット `ef5cdfd`）: `Invoke-HdoGhJson`（`GitHub.ps1`）は `-NoEnumerate` の結果を一旦ローカル変数に束縛してから `return` するよう修正した。`return` に直接 `-NoEnumerate` の結果を渡すと、呼び出し側の `@(Invoke-HdoGhJson ...)`（変数を介さない直接呼び出し形の `@()`）がパイプライン出力そのものを1件として再ラップし、空配列・1要素配列がもう一段ネストされてしまうため。TypeScript 側は `JSON.parse('[]')` が元から正しい空配列を返すため対応不要。なお `Get-HdoLabelNames`（`GitHub.ps1`）には `return @($names)` という、`$names` が0要素のとき PowerShell のパイプライン展開により呼び出し側が `$null` を受け取りうる、類似の潜在的な empty-array 落とし穴が残っていた（フェーズ5のスコープ外として記録していたもの）。**フェーズ6でこれも修正した**（Issue #61 item 4、コミット `92a3b79`）。
 9. **`agentStep.ts` の runner type 検証順序**（`src/runners/agentStep.ts:127-140`）: `runner.type` が `codex`/`claude`/`command` のいずれでもない場合、TypeScript は `Unsupported runner type '<元の casing>'.` を artifact directory の作成（`mkdirSync`）や `prompt.md` の書き込みより前に throw するよう変更した（review round 1 deep-review N-6）。PowerShell の `Invoke-HdoAgentStep` は `[string]$runner.type`（Runner.ps1:547）という直接プロパティ読み取りが strict mode で `New-Item` より前に失敗するため、この順序変更で副作用（artifact directory 不在）が両実装で揃う。`type` の大小文字比較は case-insensitive だが、throw text 自体は正規化前の `rawType`（元の casing）を埋め込む。なお `timeoutSeconds` が欠落した場合は今も揃っていない差異として残る（review round 1 deep-review N-7）: TypeScript は `Math.trunc(asNumber(runnerObject.timeoutSeconds, 0))` が既定値 `0` になった結果を `validateRange` に渡し、明確なメッセージ（`timeoutSeconds must be between 1 and 86400 (got 0).`）で失敗するのに対し、PowerShell は strict mode のプロパティ未検出エラーになる。schema が `timeoutSeconds` を必須にしているため、いずれの実装でも schema-valid な config からは到達しない差異である。
+
+以下はフェーズ6（workflow）で判明した追加の意図的な差異である。
+
+1. **`events.jsonl` の改行コードと `diff.patch` の末尾 CRLF**: PowerShell の `Add-HdoRunEvent`（State.ps1）は `Add-Content` で1行ごとに CRLF を付与し、`diff.patch` も `Set-Content` により末尾へ CRLF が付く（16.4フェーズ5リスト項目5参照）。TypeScript の `runStore.ts`/`run.ts` は常に LF で書き込む。ファイルのバイト列は一致しないが、`events.jsonl` を行ごとに JSON parse した内容、`diff.patch` から計算した `diffHash`（sha256）はいずれも一致する（`runParity.test.ts` は改行コードを比較対象にしない）。
+2. **タイムスタンプの文字列表現（#62 修正後）**: フェーズ6で `ConvertFrom-HdoJson`（`-DateKind String`、pwsh 7.5+）と `Get-HdoUtcTimestamp`（`[DateTime]::UtcNow.ToString('o')`）を修正した結果、PowerShell 側のタイムスタンプは16.4フェーズ2項目10の「7桁小数秒＋タイムゾーンオフセット」形式から「`Z` サフィックス」形式に変わった。ただし小数秒の桁数は PowerShell が7桁（`.ToString('o')`）、TypeScript の `toISOString()` が3桁のまま残り、両者とも `Z` 表記になった点だけが変わっている（本項目は16.4フェーズ2項目10の記述を置き換える）。`Claim-HdoIssue` が書き込む claim marker のタイムスタンプだけは `[DateTimeOffset]::UtcNow.ToString('o')` のままで、引き続き `+00:00` 表記を保持する（write-back 専用の経路であり、`runParity.test.ts` の NoWriteBack harness では観測されない）。全ての parity 比較はこれらのタイムスタンプ系フィールドを比較前に除去する（§3.5 参照）。
+3. **`-Json` 無しでも JSON を出力する**: `run`/`status` は `-Json` を付けなくても常に JSON を出力する。PowerShell 版は `-Json` 無しで `Format-List`（`RunId/State/Issue/Profile/Iterations/Worktree/Artifacts/Summary/Error`）を表示するが、TypeScript はこのテーブル表示を再現していない（`config`/`doctor` と同じ既存方針、16.4フェーズ2項目相当）。`run -DryRun` では両実装に差異がある: TypeScript は `run`/`status` について `-Json` の有無に関わらず常に JSON を出力するが、PowerShell 版は `-DryRun` 単体（`-Json` 無し）では JSON を返さない。`hdo.ps1` の `run` コマンドは `if ($Json -or $DryRun) { Write-HdoCliOutput $result }`（`hdo.ps1:107`）により `-DryRun` 時は上記の `Format-List` 要約をスキップして `Write-HdoCliOutput` を呼ぶが、`Write-HdoCliOutput` 自体（`hdo.ps1:30-34`）は `$Json` だけを見て分岐するため、`-DryRun` のみでは `$result` が `ConvertTo-Json` されずそのまま PowerShell の既定フォーマットで出力される。JSON を得るには `-DryRun -Json` のように明示的に `-Json` を付ける必要がある。
+4. **schema エラーメッセージの末尾と #65 のメッセージ経路**: `Agent step '<step>' produced invalid structured output` および `HDO produced an invalid validation blocker review` というメッセージの「先頭」は両実装で一致するが（16.4フェーズ1項目5と同じ契約）、schema エラー自体の本文（Ajv vs PowerShell `Test-Json`）は文言が異なる。加えて Issue #65（review が `request_changes` + `indeterminate` finding を伴うと常に fail する）について、PowerShell の `Test-HdoObjectSchema` は `Test-Json` のエラー path 表現に既知の誤りがあり、実際には `missingViewpoints` ではない箇所の失敗を `/missingViewpoints` として報告することがある（Ajv は正しい path を報告する）。この誤りは Issue #65 のメッセージ品質の一部として記録するに留め、フェーズ6ではレビュー semantics 自体を変更しない（プラン §7 Q2、§8 決定）。
+5. **`Get-HdoRun`/`readRun` はタイムスタンプを変換しない**: PowerShell 側の `Get-HdoRun`（State.ps1）は `Read-HdoJsonFile` 経由で読み込むため、#62 修正後の `ConvertFrom-HdoJson`（`-DateKind String`）がそのまま適用され、日付らしき文字列を `[DateTime]` へ変換しない。TypeScript の `readRun`（`src/workflow/runStore.ts`）はそもそも `JSON.parse` しかしないため最初から変換しない。両実装とも `run.json` の read-modify-write が値を破壊しないという点で一致している。
+6. **`ConvertTo-Json` の数値・非ASCII表現**: `run.json` に double 値（`1.0` のような小数点付き数値）は現れない（`fixAttempts`/`iteration`/`durationMs`/`reviewRound` はいずれも整数）ため、16.4フェーズ5項目5の数値差異は `run.json` には影響しない。非ASCII文字列（Issue title 等）は PowerShell `ConvertTo-Json` も TypeScript `JSON.stringify` もエスケープせずそのまま出力する（`<>&'` を含む。review の `evidenceDetail`（プラン §2.6/§3.5、`$validation | ConvertTo-Json -Compress -Depth 20` の文字列値）でも同じ挙動を実機確認済み）。
+7. **`.hdo/config.json` の credential 混入時の sha256（#42）は PS 専用のまま**: 16.4フェーズ1項目2で記録した `assertRepositoryConfigSnapshot` の差異はフェーズ6でも未修正である。フェーズ6の fixture は `.hdo/config.json` を含まないため（`repositoryConfig.loaded=false`）、`runParity.test.ts` はこの差異の影響を受けない。
+8. **worktree 作成失敗の failure category**: NoWriteBack モードで worktree 作成に失敗した場合、`run.state` がまだ `PREFLIGHT` であるため（プラン §5 semantic trap 3）両実装とも `PREFLIGHT_FAILED`（exit 3）になる - write-back が有効な場合は同じ失敗が `RUN_FAILED` になる。この分類は PowerShell 側の実装上の偶然（catch 節が `run.state` だけを見る）であり、`claimIssue` の失敗も同様に `PREFLIGHT_FAILED` になる。両実装で意図的に mirror している既知の癖であり、修正予定はない。
+9. **`gate:<id>` doctor check と runParity oracle self-check で判明した `pwsh` 解決差**: `src/cli/doctorParity.test.ts`（Issue #8 の `gate:<id>` check を含む）は、`command:pwsh` を要求する project contract の gate に対して、両実装の `pwsh` 解決結果が実行ファイル名以外は同一パスであっても、ファイル名だけが `pwsh.exe` で異なる1点だけを許容する（`normalizePwshPath` で `<PWSH>` に正規化してから比較する）。原因は PowerShell 自身が `$PSHOME` を自分のプロセス PATH の先頭に追加するため、`hdo.ps1` 内の `Get-Command pwsh -CommandType Application` は常に実行中の pwsh 自身（Store install の場合 `C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>\pwsh.exe`）に解決される一方、Node の `platform.resolveExecutable('pwsh')` は素の PATH（`%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` の App Execution Alias 等）だけを見るため。両者は同じバイナリを指しており、綴りが違うだけである。この機構が持つ実行時の帰結として、pwsh のインストールが2系統ある機械（例: MSI 版 7.4 が PATH の先頭、Store 版 7.6 で `hdo.ps1` を起動）では、`hdo.ps1` から起動される gate/agent は常に「実行中の pwsh」自身の下で動く一方、TypeScript から起動される gate/agent は「PATH 上で最初に見つかる pwsh」の下で動くため、両実装は実際に異なる pwsh バイナリで子プロセスを実行しうる - これは環境依存の正真正銘の差異であり、TypeScript 側では取り除けない。`doctor` の `gate:<id>` メッセージはこの差異が存在する環境ではそれを可視化する（`<PWSH>` への正規化は文字列比較上の許容であり、差異そのものを消してはいない）。GitHub Actions の `windows-latest` では両者とも `C:\Program Files\PowerShell\7\pwsh.exe` に解決されるため、この差は CI では観測されない。詳細は `src/cli/doctorParity.test.ts` のコメントを参照。
+10. **PS oracle self-check**（`tests/run-tests.ps1`）: シナリオ b・g を `Invoke-HdoRun -NoWriteBack` の in-process 呼び出しで実行し、`state.transition` 列・`fixAttempts`・`result.decision`・#16 の gate 分類を検証することで、oracle 自体を TS との比較の前に単独でも pin している（コミット `4918cee`）。

@@ -23,6 +23,23 @@ test("removes any name ending in TOKEN/SECRET/PASSWORD/API_KEY (case-insensitive
   assert.deepEqual(result, { NOT_A_MATCH: "keep" });
 });
 
+// Issue #63: `(TOKEN|SECRET|PASSWORD|API_KEY)$` missed a bare `..._KEY` suffix (only
+// `..._API_KEY` matched), so e.g. `ANTHROPIC_ADMIN_KEY` passed the filter unblocked.
+test("removes any name ending in _KEY, not only _API_KEY (issue #63)", () => {
+  const result = getSafeEnvironment({
+    ANTHROPIC_ADMIN_KEY: "x",
+    SOME_SIGNING_KEY: "y",
+    KEYBOARD: "keep-1",
+    MONKEY: "keep-2",
+  });
+  assert.deepEqual(result, { KEYBOARD: "keep-1", MONKEY: "keep-2" });
+});
+
+test("passEnvironment re-allows a _KEY-suffixed name (issue #63)", () => {
+  const result = getSafeEnvironment({ ANTHROPIC_ADMIN_KEY: "x", PATH: "/usr/bin" }, ["ANTHROPIC_ADMIN_KEY"]);
+  assert.deepEqual(result, { ANTHROPIC_ADMIN_KEY: "x", PATH: "/usr/bin" });
+});
+
 test("passEnvironment allow-lists a blocked name back in, case-insensitively", () => {
   const result = getSafeEnvironment({ GH_TOKEN: "x", PATH: "/usr/bin" }, ["gh_token"]);
   assert.deepEqual(result, { GH_TOKEN: "x", PATH: "/usr/bin" });

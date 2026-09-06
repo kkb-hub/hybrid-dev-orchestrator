@@ -36,7 +36,7 @@ function Invoke-HdoGhJson {
         # variable assignment does not have that pipeline-collection behavior, so storing
         # the converted value here first and returning the variable keeps it a bare array
         # all the way through an outer `@(...)` wrap.
-        $converted = ConvertTo-HdoHashtable ($result.stdout | ConvertFrom-Json -Depth 100 -NoEnumerate)
+        $converted = ConvertTo-HdoHashtable (ConvertFrom-HdoJson -Json $result.stdout -Depth 100 -NoEnumerate)
         return $converted
     }
     catch {
@@ -54,7 +54,7 @@ function Invoke-HdoGhPagedJson {
     $result = Invoke-HdoGh @('api', '--paginate', '--slurp', '-X', 'GET', $Endpoint, '-f', 'per_page=100') $WorkingDirectory $TimeoutSeconds
     if ($result.exitCode -ne 0) { throw "GitHub CLI failed: $($result.stderr.Trim())" }
     try {
-        $pages = $result.stdout | ConvertFrom-Json -AsHashtable -Depth 100
+        $pages = ConvertFrom-HdoJson -Json $result.stdout -Depth 100 -AsHashtable
     }
     catch {
         throw "GitHub CLI returned invalid paginated JSON: $($_.Exception.Message)"
@@ -85,7 +85,13 @@ function Get-HdoLabelNames {
         if ($label -is [string]) { $names += $label }
         elseif ($label -is [System.Collections.IDictionary] -and $label.Contains('name')) { $names += [string]$label.name }
     }
-    return @($names)
+    # `return @($names)` would re-enumerate a 0-element array through the function's
+    # own output stream and collapse it to $null one level up (issue #50/#61 item 4).
+    # An Issue filtered on hdo:ready always carries at least one label in practice, so
+    # this never fires from real `gh` output, but a caller with no labels at all must
+    # still get back a genuine empty array rather than $null.
+    $result = [object[]]@($names)
+    Write-Output -NoEnumerate $result
 }
 
 function Get-HdoIssue {
@@ -486,7 +492,7 @@ function Get-HdoClaimComments {
     $claims = @()
     foreach ($comment in $comments) {
         if ([string]$comment.body -notmatch '<!--\s*hdo:claim:v1\s+(?<marker>\{.*?\})\s*-->') { continue }
-        try { $marker = ConvertTo-HdoHashtable ($Matches.marker | ConvertFrom-Json -Depth 20) } catch { continue }
+        try { $marker = ConvertTo-HdoHashtable (ConvertFrom-HdoJson -Json $Matches.marker -Depth 20) } catch { continue }
         $author = [string](Get-HdoValue $comment 'user.login' '')
         $association = [string](Get-HdoValue $comment 'author_association' '')
         $trustedAuthor = if ($trustedActors.Count -gt 0) {

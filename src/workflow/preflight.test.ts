@@ -109,7 +109,9 @@ function checkByName(result: Awaited<ReturnType<typeof runPreflight>>, name: str
 }
 
 test("runPreflight: default-shaped config produces checks in the exact PS order, provider:ollama skipped, paths:writable skipped in read-only", async () => {
-  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", claude: "C:\\bin\\claude.exe" });
+  // `pwsh` resolved: the repository's own `.hdo/project.json` gates (`tests`,
+  // `schemas`) both run `pwsh` (Issue #8, plan §8 Q1's `gate:<id>` check).
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", claude: "C:\\bin\\claude.exe", pwsh: "C:\\bin\\pwsh.exe" });
   const runner = baseRunner();
   const git = new GitClient({ runner, platform });
   const gh = new GhClient({ runner });
@@ -132,6 +134,8 @@ test("runPreflight: default-shaped config produces checks in the exact PS order,
       "git:repository",
       "github:authentication",
       "project-contract",
+      "gate:tests",
+      "gate:schemas",
       "runner:claude-planner",
       "runner:claude-implementer",
       "runner:claude-reviewer",
@@ -139,6 +143,13 @@ test("runPreflight: default-shaped config produces checks in the exact PS order,
       "paths:writable",
     ],
   );
+  // The repository's own `.hdo/project.json` (Issue #8, plan §8 Q1): both gates run
+  // `pwsh`, which resolves on this machine, so both are `pass`/`required:false`.
+  assert.equal(checkByName(result, "gate:tests")?.status, "pass");
+  assert.equal(checkByName(result, "gate:tests")?.required, false);
+  assert.ok(checkByName(result, "gate:tests")?.message.includes("resolves to"), checkByName(result, "gate:tests")?.message);
+  assert.equal(checkByName(result, "gate:schemas")?.status, "pass");
+  assert.equal(checkByName(result, "gate:schemas")?.required, false);
   assert.equal(checkByName(result, "provider:ollama")?.status, "skipped");
   assert.equal(checkByName(result, "provider:ollama")?.required, false);
   assert.equal(checkByName(result, "paths:writable")?.status, "skipped");
@@ -247,6 +258,109 @@ test("runPreflight: project-contract fails with the thrown message when the cont
   assert.equal(check?.status, "fail");
   assert.equal(check?.message, `Project contract was not found: ${missingPath}`);
   assert.equal(result.ok, false);
+});
+
+/** A schema-valid project contract with a single validation gate, for the `gate:<id>` (Issue #8) tests. */
+function writeProjectContractWithGate(dir: string, gateId: string, gateCommand: string): string {
+  const contractPath = join(dir, "project.json");
+  writeFileSync(
+    contractPath,
+    JSON.stringify({
+      schemaVersion: 1,
+      instructions: { files: [], specificationPaths: [] },
+      validationGates: [
+        {
+          id: gateId,
+          command: gateCommand,
+          args: [],
+          workingDirectory: ".",
+          timeoutSeconds: 60,
+          required: true,
+          exitCodes: { passed: [0], failed: [1], indeterminate: [] },
+          continueAfterFailure: true,
+        },
+      ],
+      workerPolicy: {
+        networkAccess: "denied",
+        oneWriterPerWorktree: true,
+        allowCommit: false,
+        allowPush: false,
+        forbiddenCommands: [],
+        protectedPaths: [],
+      },
+      reviewPolicy: {
+        defaultViewpoints: ["correctness"],
+        highRiskPaths: [],
+        largeChangeLines: 400,
+        onMissingViewpoint: "escalate",
+        stableFindingIds: true,
+        mutation: { enabled: false, oneWriterWindow: true, indeterminateIsSuccess: false },
+      },
+    }),
+    "utf8",
+  );
+  return contractPath;
+}
+
+test("runPreflight: gate:<id> is 'warning' (required:false) when a gate command cannot be resolved, and 'ok' stays true (Issue #8, plan §8 Q1)", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", claude: "C:\\bin\\claude.exe" });
+  const runner = baseRunner();
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+  const dir = mkdtempSync(join(tmpdir(), "hdo-preflight-gate-"));
+  try {
+    const contractPath = writeProjectContractWithGate(dir, "missing-gate", "hdo-gate-command-that-does-not-exist");
+
+    const result = await runPreflight({
+      config: buildConfig({ projectContractPath: contractPath }),
+      readOnly: true,
+      platform,
+      processRunner: runner,
+      git,
+      gh,
+      schemas,
+    });
+
+    const check = checkByName(result, "gate:missing-gate");
+    assert.equal(check?.status, "warning");
+    assert.equal(check?.required, false);
+    assert.equal(
+      check?.message,
+      "Validation gate 'missing-gate' command 'hdo-gate-command-that-does-not-exist' was not found. The gate would be recorded as a setup failure at run time.",
+    );
+    // A warning never flips `ok`.
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("runPreflight: gate:<id> is 'pass' with the resolved path in the message when the gate command resolves", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", claude: "C:\\bin\\claude.exe", pwsh: "C:\\bin\\pwsh.exe" });
+  const runner = baseRunner();
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+  const dir = mkdtempSync(join(tmpdir(), "hdo-preflight-gate-"));
+  try {
+    const contractPath = writeProjectContractWithGate(dir, "pwsh-gate", "pwsh");
+
+    const result = await runPreflight({
+      config: buildConfig({ projectContractPath: contractPath }),
+      readOnly: true,
+      platform,
+      processRunner: runner,
+      git,
+      gh,
+      schemas,
+    });
+
+    const check = checkByName(result, "gate:pwsh-gate");
+    assert.equal(check?.status, "pass");
+    assert.equal(check?.message, "Validation gate 'pwsh-gate' command 'pwsh' resolves to C:\\bin\\pwsh.exe.");
+    assert.equal(result.ok, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("runPreflight: a runner command that does not resolve fails with 'Runner command ... was not found.'", async () => {

@@ -1,0 +1,26 @@
+{
+  "number": 7,
+  "title": "Fixture: deterministic HDO workflow run",
+  "body": "## Problem / Context\n\nThe HDO workflow parity harness needs a deterministic Issue body that drives the full plan -> implement -> validate -> review loop without any real GitHub or agent dependency.\n\n## Goal\n\nExercise the bounded workflow loop end to end using only deterministic mock adapters.\n\n## In scope\n\n- Deterministic fixture-driven workflow scenarios\n\n## Out of scope\n\n- Real GitHub writeback\n\n## Acceptance Criteria\n\n- AC-01: The workflow reaches a terminal state deterministically.\n- AC-02: Validation gate results are classified deterministically.\n\n## Validation Gate IDs\n\n__VALIDATION_GATES__\n\n## Constraints\n\n- Do not require network access.\n\n## Dependencies\n\n_No response_\n\n## Affected Areas\n\n- workflow\n\n## Additional Context\n\n_No response_",
+  "state": "OPEN",
+  "labels": [
+    {
+      "name": "hdo:ready"
+    },
+    {
+      "name": "hdo:priority/p2"
+    },
+    {
+      "name": "hdo:risk/low"
+    }
+  ],
+  "assignees": [],
+  "milestone": null,
+  "author": {
+    "login": "fixture-owner"
+  },
+  "createdAt": "2026-01-01T00:00:00Z",
+  "updatedAt": "2026-01-01T00:00:00Z",
+  "url": "https://github.com/hdo-fixture/repo/issues/7",
+  "comments": []
+}

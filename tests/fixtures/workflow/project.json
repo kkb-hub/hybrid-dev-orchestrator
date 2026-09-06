@@ -1,0 +1,114 @@
+{
+  "$schema": "https://raw.githubusercontent.com/kkb-hub/hybrid-dev-orchestrator/main/schemas/project-contract.schema.json",
+  "schemaVersion": 1,
+  "instructions": {
+    "files": [],
+    "specificationPaths": [
+      "README.md"
+    ]
+  },
+  "validationGates": [
+    {
+      "id": "gate-pass",
+      "description": "Deterministic fixture gate that always passes.",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "tools/gate-pass.ps1"
+      ],
+      "workingDirectory": ".",
+      "timeoutSeconds": 60,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    },
+    {
+      "id": "gate-fail",
+      "description": "Deterministic fixture gate that always fails.",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "tools/gate-fail.ps1"
+      ],
+      "workingDirectory": ".",
+      "timeoutSeconds": 60,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    },
+    {
+      "id": "gate-setup",
+      "description": "Fixture gate whose command cannot be started (issue #16 setup failure).",
+      "command": "hdo-gate-command-that-does-not-exist",
+      "args": [],
+      "workingDirectory": ".",
+      "timeoutSeconds": 60,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    },
+    {
+      "id": "gate-after",
+      "description": "Deterministic fixture gate used to prove a setup failure skips remaining gates (issue #16 AC-06).",
+      "command": "pwsh",
+      "args": [
+        "-NoProfile",
+        "-File",
+        "tools/gate-pass.ps1"
+      ],
+      "workingDirectory": ".",
+      "timeoutSeconds": 60,
+      "required": true,
+      "exitCodes": {
+        "passed": [0],
+        "failed": [1],
+        "indeterminate": [2, 124, 125, 126, 127]
+      },
+      "continueAfterFailure": true
+    }
+  ],
+  "workerPolicy": {
+    "networkAccess": "denied",
+    "oneWriterPerWorktree": true,
+    "allowCommit": false,
+    "allowPush": false,
+    "forbiddenCommands": [
+      "git commit",
+      "git push",
+      "git reset --hard"
+    ],
+    "protectedPaths": [
+      ".git"
+    ]
+  },
+  "reviewPolicy": {
+    "defaultViewpoints": [
+      "correctness",
+      "tests",
+      "security"
+    ],
+    "highRiskPaths": [],
+    "largeChangeLines": 500,
+    "onMissingViewpoint": "escalate",
+    "stableFindingIds": true,
+    "mutation": {
+      "enabled": false,
+      "oneWriterWindow": true,
+      "indeterminateIsSuccess": false
+    }
+  }
+}

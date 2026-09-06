@@ -6,8 +6,9 @@ name: typescript
 # keeps its ubuntu-latest job as PoC-only informational evidence and is not touched
 # by this workflow). This workflow is the regression gate for the Migration
 # strategy phases as they land - phase 1 (core contracts / config / state), phase 2
-# (process / platform), phase 3 (git), phase 4 (github), and now phase 5 (runners) -
-# and will grow to cover later migration phases in place, without renaming.
+# (process / platform), phase 3 (git), phase 4 (github), phase 5 (runners), and now
+# phase 6 (workflow) - and will grow to cover later migration phases in place,
+# without renaming.
 
 on:
   pull_request:
@@ -48,6 +49,12 @@ concurrency:
 jobs:
   typescript:
     runs-on: windows-latest
+    # Phase 6 added src/cli/runParity.test.ts (13 NoWriteBack full-run scenarios,
+    # one pwsh child process + one node child process each, run sequentially per
+    # ADR-0001 phase 6 plan §7 Q3). Measured wall time on the dev machine is
+    # ~3.5-4.5 min for that file alone; give the whole job headroom instead of
+    # relying on the default (unbounded) GitHub Actions job timeout.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
