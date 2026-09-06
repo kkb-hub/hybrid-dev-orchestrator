@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","terminal_reason":"completed","is_error":false,"modelUsage":{"qwen3.8:27b-q4_K_M":{}},"result":"The fixture file is created. Verification is complete.\n\n{\"schemaVersion\":1,\"summary\":\"Created fixture\",\"changedFiles\":[\"hdo-ollama-smoke.txt\"],\"tests\":[\"Verified exact bytes\"],\"notes\":[],\"blockers\":[]}"}

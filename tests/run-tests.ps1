@@ -1054,6 +1054,53 @@ Keep the cycle bounded.
         $claudeEnvelopeArtifact = [string]$claudeStepResult.artifacts.events
         Assert-Hdo (([IO.Path]::GetFileName($claudeEnvelopeArtifact) -eq 'envelope.json') -and (Test-Path -LiteralPath $claudeEnvelopeArtifact -PathType Leaf)) 'Claude adapter stores its single JSON envelope as envelope.json instead of events.jsonl'
 
+        $ollamaRunner = Copy-HdoObject $claudeMockRunner
+        $ollamaRunner.provider = 'ollama'
+        $ollamaRunner.command = Join-Path $repositoryRoot 'tests/fixtures/runtime/mock-claude-ollama-prose.cmd'
+        $ollamaConfig = Copy-HdoObject $claudeRunnerConfig
+        $ollamaConfig.runners['mock-ollama'] = $ollamaRunner
+        $ollamaConfig.steps.implement = 'mock-ollama'
+        $ollamaArtifact = Join-Path $tempRoot 'ollama-prose'
+        $recovered = & $module {
+            param($Config, $Run, $Work, $Artifacts)
+            Invoke-HdoAgentStep $Config $Run 'implement' 0 $Work 'mock prompt' $Artifacts 'worker-result'
+        } $ollamaConfig $run $tempRoot $ollamaArtifact
+        Assert-Hdo ($recovered.status -eq 'succeeded') 'Ollama prose fixture recovers through the real adapter after a file edit'
+        Assert-Hdo ((Get-Content (Join-Path $tempRoot 'hdo-ollama-smoke.txt') -Raw).Trim() -eq 'HDO_OLLAMA_SMOKE_OK') 'response recovery preserves the worker file edit'
+        $diagnostic = Get-Content (Join-Path $ollamaArtifact 'structured-output.json') -Raw | ConvertFrom-Json
+        Assert-Hdo ($diagnostic.recovery -eq 'succeeded' -and $diagnostic.attempts -eq 1) 'recovery is classified and bounded to one attempt'
+        foreach ($name in @('envelope.json', 'result.original.txt', 'recovery.input.txt', 'recovery.output.txt', 'structured-output.json')) {
+            Assert-Hdo (Test-Path (Join-Path $ollamaArtifact $name)) "Ollama recovery preserves $name"
+        }
+        $fixture = Get-Content (Join-Path $repositoryRoot 'tests/fixtures/runtime/claude-ollama-prose.json') -Raw | ConvertFrom-Json -AsHashtable
+        $validJson = $recovered.output | ConvertTo-Json -Compress -Depth 100
+        $schema = Join-Path $repositoryRoot 'schemas/worker-result.schema.json'
+        $inlineEnvelope = Get-Content (Join-Path $repositoryRoot 'tests/fixtures/runtime/claude-ollama-inline-prose.json') -Raw
+        $inlineRecovered = & $module { param($E, $S, $A) Resolve-HdoOllamaStructuredOutput $E $S $A } $inlineEnvelope $schema $ollamaArtifact
+        Assert-Hdo (($inlineRecovered | ConvertFrom-Json).schemaVersion -eq 1) 'real Ollama smoke prose with inline code recovers without changing JSON'
+        $listEnvelope = Get-Content (Join-Path $repositoryRoot 'tests/fixtures/runtime/claude-ollama-list-prose.json') -Raw
+        $listRecovered = & $module { param($E, $S, $A) Resolve-HdoOllamaStructuredOutput $E $S $A } $listEnvelope $schema $ollamaArtifact
+        Assert-Hdo (($listRecovered | ConvertFrom-Json).schemaVersion -eq 1) 'real Ollama smoke prose with bullet formatting recovers without changing JSON'
+        $symbolEnvelope = Get-Content (Join-Path $repositoryRoot 'tests/fixtures/runtime/claude-ollama-symbol-prose.json') -Raw
+        $symbolRecovered = & $module { param($E, $S, $A) Resolve-HdoOllamaStructuredOutput $E $S $A } $symbolEnvelope $schema $ollamaArtifact
+        Assert-Hdo (($symbolRecovered | ConvertFrom-Json).schemaVersion -eq 1) 'real Ollama smoke prose with Unicode symbols recovers without changing JSON'
+        foreach ($bad in @('', ' ', ('```json' + "`n$validJson"), ('Unclosed `token' + "`n$validJson"), "Done.`n{}", "Done.`n$validJson`n{}", "Done.`n$validJson trailing", "[prefix]`n$validJson", "Quoted `"prefix`"`n$validJson", "Done. $validJson", "Done.`n{broken`n$validJson", "Done.`n[$validJson]", (('x' * 1048577) + "`n$validJson"))) {
+            $fixture.result = $bad
+            $failure = ''
+            try {
+                $null = & $module {
+                    param($Envelope, $Schema, $Artifacts)
+                    Resolve-HdoOllamaStructuredOutput $Envelope $Schema $Artifacts
+                } ($fixture | ConvertTo-Json -Depth 100) $schema $ollamaArtifact
+            } catch { $failure = $_.Exception.Message }
+            Assert-Hdo ($failure -match 'structured-output noncompliance; recovery rejected') 'invalid, multiple, ambiguous, and oversized output fails closed with recovery diagnosis'
+            $failedDiagnostic = Get-Content (Join-Path $ollamaArtifact 'structured-output.json') -Raw | ConvertFrom-Json
+            Assert-Hdo ($failedDiagnostic.recovery -eq 'rejected' -and $failedDiagnostic.finalValidationError) 'failed recovery retains final validation error'
+        }
+        $fixture.result = $validJson
+        $unchanged = & $module { param($E, $S, $A) Resolve-HdoOllamaStructuredOutput $E $S $A } ($fixture | ConvertTo-Json -Depth 100) $schema $ollamaArtifact
+        Assert-Hdo ($unchanged -ceq $validJson) 'valid JSON-only Ollama result is unchanged'
+
         $claudeFailureRunner = Copy-HdoObject $claudeMockRunner
         $claudeFailureRunner.command = Join-Path $repositoryRoot 'tests/fixtures/runtime/mock-claude-failure.cmd'
         $claudeFailureRunnerConfig = Copy-HdoObject $claudeRunnerConfig

@@ -1,0 +1,7 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "terminal_reason": "completed",
+  "is_error": false,
+  "result": "All byte-level checks pass. The file has been created and verified:\n\n- **Content**: exactly `HDO_OLLAMA_SMOKE_OK` (19 ASCII bytes)\n- **Line ending**: single LF (`0x0A`) — probe confirmed `OK\\n` present, `OK\\n\\n` absent (no blank line), `OK\\r` absent (no CRLF), no BOM\n- **Total**: 20 bytes — `48 44 4F 5F 4F 4C 4C 41 4D 41 5F 53 4D 4F 4B 45 5F 4F 4B 0A`\n\n{\"schemaVersion\":1,\"summary\":\"Created hdo-ollama-smoke.txt at the repository root containing exactly the 19 ASCII bytes 'HDO_OLLAMA_SMOKE_OK' followed by a single LF newline (0x0A), for a total of 20 bytes.\",\"changedFiles\":[\"hdo-ollama-smoke.txt\"],\"tests\":[\"Read back hdo-ollama-smoke.txt and confirmed it shows exactly one line, 'HDO_OLLAMA_SMOKE_OK', with no additional visible content and no BOM (probed for U+FEFF: no match).\",\"Byte-level probe matched 'HDO_OLLAMA_SMOKE_OK\\\\n' in the file, confirming the string is immediately followed by an LF byte (0x0A).\",\"Byte-level probe for 'HDO_OLLAMA_SMOKE_OK\\\\n\\\\n' found no match, confirming there is no trailing blank line (exactly one LF, not two).\",\"Byte-level probe for 'HDO_OLLAMA_SMOKE_OK\\\\r' found no match, confirming no CR byte is present (line ending is LF, not CRLF).\",\"Resulting exact byte sequence verified: 48 44 4F 5F 4F 4C 4C 41 4D 41 5F 53 4D 4F 4B 45 5F 4F 4B 0A (19 ASCII bytes + 1 LF = 20 bytes).\"],\"notes\":[],\"blockers\":[]}"
+}

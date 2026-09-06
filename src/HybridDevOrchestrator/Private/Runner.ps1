@@ -428,6 +428,64 @@ function ConvertFrom-HdoClaudeOutput {
     return ($envelope | ConvertTo-Json -Depth 100 -Compress)
 }
 
+function Resolve-HdoOllamaStructuredOutput {
+    param(
+        [Parameter(Mandatory)][string]$EnvelopeJson,
+        [Parameter(Mandatory)][string]$SchemaPath,
+        [Parameter(Mandatory)][string]$ArtifactDirectory
+    )
+
+    $envelope = $EnvelopeJson | ConvertFrom-Json -AsHashtable -Depth 100
+    if ((Get-HdoValue $envelope 'is_error' $false) -eq $true -or
+        [string](Get-HdoValue $envelope 'subtype' 'success') -ne 'success') {
+        throw "Claude/Ollama envelope failure: $(Get-HdoClaudeFailureDetail $EnvelopeJson '')"
+    }
+    $original = ConvertFrom-HdoClaudeOutput $EnvelopeJson
+    $validation = if ([string]::IsNullOrWhiteSpace($original)) {
+        [ordered]@{ valid = $false; error = 'Empty structured result.' }
+    } else { Test-HdoJsonSchema $original $SchemaPath }
+    if ($validation.valid) { return $original }
+
+    # Pure, bounded response transformation: no process, model, tool, or repository
+    # access. Only the caller's diagnostic artifact directory is written below.
+    $diagnostic = [ordered]@{
+        classification = 'structured-output noncompliance'
+        strategy = 'single-object-after-plain-prose-v1'
+        maximumAttempts = 1
+        attempts = 1
+        originalValidationError = $validation.error
+        recovery = 'rejected'
+        finalValidationError = 'No unambiguous plain-prose prefix followed by one JSON object.'
+    }
+    Set-Content -LiteralPath (Join-Path $ArtifactDirectory 'result.original.txt') -Value (Protect-HdoText $original) -NoNewline -Encoding utf8NoBOM
+    Set-Content -LiteralPath (Join-Path $ArtifactDirectory 'recovery.input.txt') -Value (Protect-HdoText $original) -NoNewline -Encoding utf8NoBOM
+    $candidate = ''
+    # Require a newline before the object and plain prose without JSON/container,
+    # quoting, or fence delimiters (short inline code tokens are allowed).
+    # Parse the ENTIRE remaining suffix: never search
+    # for a later valid object, strip trailing text, or repair malformed JSON.
+    $offset = $original.IndexOf('{')
+    if ($original.Length -le 1048576 -and $offset -gt 0 -and
+        $null -eq (Get-HdoValue $envelope 'structured_output') -and
+        (Get-HdoValue $envelope 'result') -is [string] -and
+        [string](Get-HdoValue $envelope 'subtype' '') -eq 'success' -and
+        (Get-HdoValue $envelope 'is_error') -eq $false) {
+        $prefix = $original.Substring(0, $offset)
+        if ($prefix -match '\A(?:(?!\x60)[\p{L}\p{N}\p{Pd}\p{S}\s.,!?:;()/_*]|`[\p{L}\p{N} ._/\\-]+`)+\r?\n[ \t]*\z' -and $prefix -match '\p{L}') {
+            $candidate = $original.Substring($offset).Trim()
+            $validation = Test-HdoJsonSchema $candidate $SchemaPath
+            $diagnostic.finalValidationError = $validation.error
+            if ($validation.valid) { $diagnostic.recovery = 'succeeded' }
+        }
+    }
+    Set-Content -LiteralPath (Join-Path $ArtifactDirectory 'recovery.output.txt') -Value (Protect-HdoText $candidate) -NoNewline -Encoding utf8NoBOM
+    Write-HdoJsonFile (Join-Path $ArtifactDirectory 'structured-output.json') (Protect-HdoObject $diagnostic)
+    if ($diagnostic.recovery -ne 'succeeded') {
+        throw "Claude/Ollama structured-output noncompliance; recovery rejected (1/1): $($diagnostic.finalValidationError) See structured-output.json and result.original.txt."
+    }
+    return $candidate
+}
+
 function Get-HdoClaudeFailureDetail {
     param(
         [AllowEmptyString()][string]$StandardOutput,
@@ -650,6 +708,10 @@ function Invoke-HdoAgentStep {
     elseif ($type -eq 'claude') {
         try { $finalJson = ConvertFrom-HdoClaudeOutput (Read-HdoBoundedTextFile $stdoutPath $maximumOutputBytes) }
         catch { throw "Claude step '$Step' returned invalid envelope JSON: $($_.Exception.Message)" }
+        if ($claudeProvider -eq 'ollama') {
+            $finalJson = Resolve-HdoOllamaStructuredOutput -EnvelopeJson (Read-HdoBoundedTextFile $stdoutPath $maximumOutputBytes) `
+                -SchemaPath $schemaPath -ArtifactDirectory $ArtifactDirectory
+        }
         Set-Content -LiteralPath $finalPath -Value $finalJson -Encoding utf8NoBOM
     }
     else {

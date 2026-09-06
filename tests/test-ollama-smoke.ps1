@@ -42,6 +42,7 @@ $receipt = [ordered]@{
         route = $false
         exactBytes = $false
         schema = $false
+        responseRecovery = $false
         modelLoaded = $false
         fileSha256 = $null
     }
@@ -167,7 +168,10 @@ Create exactly one file named hdo-ollama-smoke.txt containing exactly HDO_OLLAMA
     $receipt.checks.exactBytes = $true
     $receipt.checks.fileSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($actualBytes)).ToLowerInvariant()
     $envelope = Get-Content -LiteralPath $stdoutPath -Raw
-    $finalJson = & $module { param($Output) ConvertFrom-HdoClaudeOutput $Output } $envelope
+    $finalJson = & $module {
+        param($Output, $Schema, $Artifacts)
+        Resolve-HdoOllamaStructuredOutput $Output $Schema $Artifacts
+    } $envelope $schemaPath $artifactDirectory
     $schemaValidation = & $module { param($Json, $Schema) Test-HdoJsonSchema $Json $Schema } $finalJson $schemaPath
     if (-not $schemaValidation.valid) {
         throw "Claude-harness/Ollama smoke returned invalid structured output: $($schemaValidation.error)"
@@ -177,6 +181,22 @@ Create exactly one file named hdo-ollama-smoke.txt containing exactly HDO_OLLAMA
         throw "Claude-harness/Ollama smoke returned an unexpected worker result: $finalJson"
     }
     $receipt.checks.schema = $true
+
+    # Deterministically exercise the noncompliance boundary using the real worker
+    # result, even when this particular model invocation returned JSON-only text.
+    $recoveryArtifacts = Join-Path $artifactDirectory 'response-recovery'
+    New-Item -ItemType Directory -Path $recoveryArtifacts -Force | Out-Null
+    $recoveryEnvelope = [ordered]@{ subtype = 'success'; is_error = $false; result = "The fixture file is created.`n$finalJson" } | ConvertTo-Json -Depth 100
+    Set-Content -LiteralPath (Join-Path $recoveryArtifacts 'envelope.json') -Value $recoveryEnvelope -Encoding utf8NoBOM
+    $recoveredJson = & $module {
+        param($Output, $Schema, $Artifacts)
+        Resolve-HdoOllamaStructuredOutput $Output $Schema $Artifacts
+    } $recoveryEnvelope $schemaPath $recoveryArtifacts
+    if ($recoveredJson.Trim() -cne $finalJson.Trim() -or
+        -not [Linq.Enumerable]::SequenceEqual[byte]([IO.File]::ReadAllBytes($smokeFile), $expectedBytes)) {
+        throw 'Response recovery changed the canonical result or worker file bytes.'
+    }
+    $receipt.checks.responseRecovery = $true
 
     $runningModels = (& ollama ps 2>&1 | Out-String)
     if ($LASTEXITCODE -ne 0 -or $runningModels -notmatch "(?m)^$([regex]::Escape($Model))\s") {

@@ -1,0 +1,7 @@
+{
+  "type": "result",
+  "subtype": "success",
+  "terminal_reason": "completed",
+  "is_error": false,
+  "result": "The file is created and verified. The Read output shows exactly one content line `HDO_OLLAMA_SMOKE_OK` with a single trailing LF newline (line 2 is empty), confirming the content is `HDO_OLLAMA_SMOKE_OK` (19 bytes) + 1 LF = 20 bytes total.\n\n{\"schemaVersion\":1,\"summary\":\"Created a single new file hdo-ollama-smoke.txt containing exactly the string HDO_OLLAMA_SMOKE_OK followed by one LF newline, and verified its bytes by reading it back.\",\"changedFiles\":[\"hdo-ollama-smoke.txt\"],\"tests\":[\"Byte verification: file hdo-ollama-smoke.txt contains exactly the ASCII string 'HDO_OLLAMA_SMOKE_OK' (19 bytes) followed by a single LF (0x0A) newline; Read tool shows exactly one content line plus an empty trailing line, confirming a single trailing LF with no extra lines or characters; total size 20 bytes.\"],\"notes\":[],\"blockers\":[]}"
+}

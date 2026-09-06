@@ -43,6 +43,10 @@ external processes
 
 ## 3. CLI
 
+Claude/Ollama の exit-zero 応答が canonical schema に違反した場合は `structured-output noncompliance` と分類する。回復は追加 inference を使わず、1 Mi 文字以内の応答について一度だけ実行する。成功 envelope の文字列 `result` が、引用符・JSON delimiter・code fence を含まない説明文（英数字等からなるインラインコード表記は許可）、改行、単一 JSON object の順である場合だけ、object から末尾まで全体を未変更の canonical schema で検証する。複数 object、末尾説明文、壊れた JSON、曖昧な境界は拒否する。回復処理は shell、network、repository write を行わず、既存 diff を保持する。
+
+違反時は step directory の `envelope.json` に加え、`result.original.txt`、`recovery.input.txt`、`recovery.output.txt`、`structured-output.json` を保存する（既存 credential redaction を適用）。診断 JSON は初回 validation error、試行上限、回復結果、最終 validation error を含む。回復不能時は既存 workflow の例外処理で `FAILED` へ遷移し、status の error に違反分類と回復結果を残す。正常 JSON、cloud Claude、Codex の処理経路は維持する。
+
 実装済み command:
 
 ~~~text
