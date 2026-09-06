@@ -188,3 +188,185 @@ export interface ReviewResult {
   findings: ReviewFinding[];
   escalationReason: string | null;
 }
+
+// ADR-0001 phase 4 (github): types backing `src/github/**`, a port of
+// `src/HybridDevOrchestrator/Private/GitHub.ps1`.
+
+/**
+ * A normalized GitHub Issue as returned by `GhClient.getIssue`/`gh issue list`
+ * (GitHub.ps1: `Get-HdoIssue`, `Get-HdoIssueCandidate`). `labels` is always already
+ * normalized to plain names (`Get-HdoLabelNames`); every other GitHub API field the
+ * CLI's `--json` selection can return is passed through untyped, since callers only
+ * ever read a handful of them by name and the rest exist solely to be handed back to
+ * `gh issue edit`/stored on a run record.
+ */
+export interface GithubIssue {
+  repository: string;
+  number: number;
+  url: string;
+  updatedAt: string;
+  title: string;
+  state: string;
+  labels: string[];
+  body: string;
+  assignees?: JsonValue;
+  author?: JsonValue;
+  createdAt?: JsonValue;
+  milestone?: JsonValue;
+  comments?: JsonValue;
+}
+
+export interface AcceptanceCriterion {
+  id: string;
+  text: string;
+}
+
+export interface IssueDependency {
+  repository: string;
+  number: number;
+}
+
+/** The `issue` sub-object of an `IssueContract` (`schemas/issue-contract.schema.json#/$defs/issue`). */
+export interface IssueContractIssue {
+  repository: string;
+  number: number;
+  url: string;
+  updatedAt: string;
+  title: string;
+  state: string;
+  labels: string[];
+  bodyHash: string;
+}
+
+/** Mirrors `schemas/issue-contract.schema.json` / `ConvertTo-HdoIssueContract` (GitHub.ps1). */
+export interface IssueContract {
+  schemaVersion: 1;
+  issue: IssueContractIssue;
+  goal: string;
+  context: string;
+  scope: { include: string[]; exclude: string[] };
+  acceptanceCriteria: AcceptanceCriterion[];
+  validationGates: string[];
+  constraints: string[];
+  dependencies: IssueDependency[];
+  affectedAreas: string[];
+  additionalContext: string;
+  priority: string;
+  risk: string;
+  preferredExecution: string;
+  capturedAt: string;
+}
+
+export interface IssueContractValidationResult {
+  valid: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+/** Mirrors `Test-HdoReadyContentFreshness`'s `[ordered]@{ fresh; reason }` (GitHub.ps1). */
+export interface ReadyContentFreshnessResult {
+  fresh: boolean;
+  reason: string;
+}
+
+/**
+ * Mirrors `Test-HdoReadyLabelAuthorization`'s return shape (GitHub.ps1). `readyAt`/
+ * `actor` are `null` only in the "no label event was found" branch; `lastEditedAt` is
+ * absent in that same branch (PowerShell's `[ordered]@{}` simply never adds the key).
+ */
+export interface ReadyLabelAuthorizationResult {
+  authorized: boolean;
+  enforced: boolean;
+  actor: string | null;
+  readyAt: string | null;
+  lastEditedAt?: string;
+  reason: string;
+}
+
+/** A `GithubIssue` annotated with its resolved pickup-order rank (`Get-HdoIssueCandidate`, GitHub.ps1). */
+export type IssueCandidate = GithubIssue & { priorityRank: number };
+
+export interface DependencyCheck {
+  repository: string;
+  number: number;
+  state: string;
+  resolved: boolean;
+  error: string | null;
+}
+
+export interface DependencyValidationResult {
+  resolved: boolean;
+  checks: DependencyCheck[];
+  unresolved: DependencyCheck[];
+}
+
+/** The `<!-- hdo:claim:v1 {...} -->` marker embedded in a claim comment body (GitHub.ps1). */
+export interface ClaimMarker {
+  version: number;
+  kind: string;
+  runId: string;
+  issueKey: string;
+  claimedBy: string;
+  claimedAt: string;
+  leaseExpiresAt: string;
+  state: "active" | "released";
+}
+
+/** A parsed, validated claim comment (`Get-HdoClaimComments`, GitHub.ps1). */
+export interface ClaimComment {
+  runId: string;
+  status: string;
+  id: number;
+  createdAt: string;
+  author: string;
+  marker: ClaimMarker;
+  body: string;
+}
+
+export interface ClaimResult {
+  commentId: number;
+  marker: ClaimMarker;
+  claimedAt: string;
+  warning: string | null;
+}
+
+export interface LabelSyncChange {
+  name: string;
+  missing: boolean;
+  applied: boolean;
+}
+
+export interface LabelSyncResult {
+  repository: string;
+  apply: boolean;
+  labels: LabelSyncChange[];
+}
+
+/** One entry of `config/labels.json`'s `staticLabels`. */
+export interface LabelCatalogEntry {
+  name: string;
+  group?: string;
+  value?: string;
+  color: string;
+  description: string;
+}
+
+/** One entry of `config/labels.json`'s `dynamicLabels`. */
+export interface LabelCatalogDynamic {
+  prefix: string;
+  group?: string;
+  valuePattern?: string;
+  color: string;
+  descriptionTemplate: string;
+  examples?: string[];
+}
+
+/** Shape of the parsed `config/labels.json` document, as read by the composition root (see `syncLabels`). */
+export interface LabelCatalog {
+  catalogVersion?: string;
+  namespace?: string;
+  ownership?: JsonObject;
+  groupRules?: JsonObject;
+  staticLabels: LabelCatalogEntry[];
+  dynamicLabels: LabelCatalogDynamic[];
+}
