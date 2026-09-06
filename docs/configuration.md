@@ -398,7 +398,9 @@ model がなければ導入方法を自動実行せず fail する。Ollama が�
 3. 圧縮 block 1 通
 4. 直近 `-KeepRecentMessages`（既定 6）message。境界が tool result の場合は、その tool call を出した assistant turn まで巻き戻すので、tool result が呼び出し元から切り離されることはない
 
-圧縮 block は 2 つの節を明示的に分けて持つ。前半は **worker 自身が観測した事実**（読んだ file、変更した file と操作回数、検索した pattern、tool error、直近の action、turn 数、compaction 回数）で、model の記憶には依存しない。後半は **model が生成した working summary**（goal / constraints / files inspected / files changed / decisions / failed attempts / current state / remaining work）で、schema を強制した別会話として取得する。要約要求は session の続きではなく毎回新規の 2 message 会話であり、入力は破棄対象を切り詰めた digest（window の約 35% を上限）に限られるため、上限付近で compaction 自体が失敗することはない。要約が失敗・空・不正 JSON の場合は観測事実だけの block へ縮退し、step は落とさない。
+圧縮 block は 2 つの節を明示的に分けて持つ。前半は **worker 自身が観測した事実**（変更した file と操作回数、直近の action、tool error、読んだ file、検索した pattern、turn 数、compaction 回数）で、model の記憶には依存しない。後半は **model が生成した working summary**（current state / remaining work / failed attempts / decisions / files changed / files inspected / constraints / goal）で、schema を強制した別会話として取得する。要約要求は session の続きではなく毎回新規の 2 message 会話であり、入力は破棄対象を切り詰めた digest（window の約 35% を上限）に限られるため、上限付近で compaction 自体が失敗することはない。要約が失敗・空・不正 JSON の場合は観測事実だけの block へ縮退し、step は落とさない。
+
+各節の項目は、continuation で重要な情報を先頭に並べている。節ごとの上限（`MaxBlockHalfTokens`）を超えた分は末尾から切り詰められるため、末尾に置いた項目ほど先に失われる。goal / constraints は保護されている元の task message と重複するため末尾に、`current state` / `remaining work` / `files changed` / 直近の action は他では得られないため先頭に置いている。
 
 保持した直近 message だけで閾値を超える場合（巨大な tool result や `write_file` の full content が 1 通に入っている場合）は、閾値を下回るまで保持数を半減する。そうしないと reclaim できないまま毎 turn 圧縮を試み、要約呼び出しだけを繰り返すことになる。保持境界は要約より **先に** 決める。後から決めると、要約対象からも保持対象からも外れる message が黙って消える。
 

@@ -324,21 +324,15 @@ function Get-VerifiedStateBlock {
     <#
     .SYNOPSIS
         Renders the worker's own record of the session as plain text for re-injection.
+    .DESCRIPTION
+        Ordered most operationally important first, not chronologically: New-HistoryBlock
+        caps this text from the end when the budget is tight, so whatever is listed last is
+        what gets cut first. Files changed and recent actions are what a continuing worker
+        most needs; turn/compaction counters are the least essential and go last.
     #>
     param([Parameter(Mandatory)][int]$Turn)
 
     $lines = [Collections.Generic.List[string]]::new()
-    $lines.Add("Turns used: $Turn of $MaxTurns. Compactions so far: $script:CompactionCount.")
-
-    $read = if ($script:FilesRead.Count -eq 0) {
-        '(none)'
-    }
-    else {
-        (@(foreach ($path in $script:FilesRead.Keys) {
-            if ($script:FilesRead[$path]) { $path } else { "$path (partial)" }
-        })) -join ', '
-    }
-    $lines.Add("Files read: $read")
 
     if ($script:FileChanges.Count -eq 0) {
         $lines.Add('Files changed: (none yet)')
@@ -359,7 +353,10 @@ function Get-VerifiedStateBlock {
         $lines.Add("Files changed: $($shown -join ', ')$suffix")
     }
 
-    if ($script:Searches.Count -gt 0) { $lines.Add("Searches run: $($script:Searches -join ' | ')") }
+    if ($script:RecentActions.Count -gt 0) {
+        $lines.Add('Recent actions (most recent last):')
+        foreach ($entry in $script:RecentActions) { $lines.Add("  - $entry") }
+    }
 
     if ($script:ToolErrors.Count -eq 0) {
         $lines.Add('Tool errors: (none)')
@@ -369,10 +366,19 @@ function Get-VerifiedStateBlock {
         foreach ($entry in $script:ToolErrors) { $lines.Add("  - $entry") }
     }
 
-    if ($script:RecentActions.Count -gt 0) {
-        $lines.Add('Recent actions (most recent last):')
-        foreach ($entry in $script:RecentActions) { $lines.Add("  - $entry") }
+    $read = if ($script:FilesRead.Count -eq 0) {
+        '(none)'
     }
+    else {
+        (@(foreach ($path in $script:FilesRead.Keys) {
+            if ($script:FilesRead[$path]) { $path } else { "$path (partial)" }
+        })) -join ', '
+    }
+    $lines.Add("Files read: $read")
+
+    if ($script:Searches.Count -gt 0) { $lines.Add("Searches run: $($script:Searches -join ' | ')") }
+
+    $lines.Add("Turns used: $Turn of $MaxTurns. Compactions so far: $script:CompactionCount.")
 
     return ($lines -join "`n")
 }
@@ -841,15 +847,20 @@ Produce the structured working summary as JSON matching the required schema.
     }
     if ($parsed -isnot [System.Collections.IDictionary]) { return '' }
 
+    # Ordered most operationally important first, not in schema order: this text is capped
+    # from the end when the budget is tight (see the -FromStart call below), so whatever is
+    # listed last is what gets cut first. Current state and remaining work are what a
+    # continuing worker needs and cannot get anywhere else; goal and constraints are useful
+    # but already covered by the protected task message, so they can afford to go last.
     $fields = @(
-        (Format-SummaryField -Source $parsed -Key 'goal' -Label 'Goal'),
-        (Format-SummaryField -Source $parsed -Key 'constraints' -Label 'Constraints'),
-        (Format-SummaryField -Source $parsed -Key 'filesInspected' -Label 'Files inspected'),
-        (Format-SummaryField -Source $parsed -Key 'filesChanged' -Label 'Files changed'),
-        (Format-SummaryField -Source $parsed -Key 'decisions' -Label 'Decisions'),
-        (Format-SummaryField -Source $parsed -Key 'failedAttempts' -Label 'Failed attempts'),
         (Format-SummaryField -Source $parsed -Key 'currentState' -Label 'Current state'),
-        (Format-SummaryField -Source $parsed -Key 'remainingWork' -Label 'Remaining work')
+        (Format-SummaryField -Source $parsed -Key 'remainingWork' -Label 'Remaining work'),
+        (Format-SummaryField -Source $parsed -Key 'failedAttempts' -Label 'Failed attempts'),
+        (Format-SummaryField -Source $parsed -Key 'decisions' -Label 'Decisions'),
+        (Format-SummaryField -Source $parsed -Key 'filesChanged' -Label 'Files changed'),
+        (Format-SummaryField -Source $parsed -Key 'filesInspected' -Label 'Files inspected'),
+        (Format-SummaryField -Source $parsed -Key 'constraints' -Label 'Constraints'),
+        (Format-SummaryField -Source $parsed -Key 'goal' -Label 'Goal')
     )
     # Capped here rather than only where it is rendered, because this text is also carried
     # into the next compaction as prior context; an uncapped summary would compound.
@@ -951,7 +962,11 @@ function Resolve-RetentionBoundary {
         # nothing, so the next exchange has to go with it.
         if ($RequireDrop -and ($start - $floor) -lt 2) { continue }
         if (($Original.Count - $start) -gt $Keep) { continue }
-        $kept = @($Original[0], $Original[1]) + (Get-MessageRange -Messages $Original -Start $start -End ($Original.Count - 1))
+        # The protected prefix via Get-MessageRange, not a literal [0],[1]: this is the same
+        # $floor Get-ExchangeStarts was just given, so a change to ProtectedMessageCount
+        # cannot desync the budget this function measures from the boundary it searches over.
+        $kept = (Get-MessageRange -Messages $Original -Start 0 -End ($floor - 1)) +
+            (Get-MessageRange -Messages $Original -Start $start -End ($Original.Count - 1))
         if ((Measure-MessageTokens $kept) -lt $budget) { return $start }
     }
     return $Original.Count
@@ -960,8 +975,11 @@ function Resolve-RetentionBoundary {
 function New-RebuiltHistory {
     param([Parameter(Mandatory)][array]$Original, [Parameter(Mandatory)]$BlockMessage, [Parameter(Mandatory)][int]$Start)
 
+    # Protected prefix by count, not by literal index: this stays correct if
+    # ProtectedMessageCount is ever changed, instead of silently keeping only two messages.
+    $prefix = Get-MessageRange -Messages $Original -Start 0 -End ($script:ProtectedMessageCount - 1)
     $tail = Get-MessageRange -Messages $Original -Start $Start -End ($Original.Count - 1)
-    return , (@($Original[0], $Original[1], $BlockMessage) + $tail)
+    return , ($prefix + @($BlockMessage) + $tail)
 }
 
 function Test-CompactionThresholdCrossed {
