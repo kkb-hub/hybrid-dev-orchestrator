@@ -28,6 +28,9 @@ $claudeManifestPath = '.claude-plugin/plugin.json'
 $codexManifestPath = '.codex-plugin/plugin.json'
 
 # client に配布され動作を変えうる path。ここが変わったら version bump を要求する。
+# フェーズ7 cut-over 後は plugin の runtime が node になり、依存（ajv / ajv-formats /
+# koffi）が package.json / package-lock.json で固定される。これらは配布面の一部
+# （`npm ci` で client にも展開される）なので、依存変更も version bump 対象にする。
 $watchedPaths = @(
     'hdo.ps1',
     'src/',
@@ -36,6 +39,8 @@ $watchedPaths = @(
     'config/',
     'schemas/',
     'workers/',
+    'package.json',
+    'package-lock.json',
     $claudeManifestPath,
     $codexManifestPath
 )

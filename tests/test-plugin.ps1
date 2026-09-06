@@ -60,7 +60,7 @@ foreach ($entry in $expectedSkills.GetEnumerator()) {
     Assert-Plugin (Test-Path -LiteralPath $commandPath -PathType Leaf) "Claude command remains available: $commandName"
     Assert-Plugin ($content -match "(?m)^name:\s*$([regex]::Escape($skillName))\s*$") "skill frontmatter name matches its directory: $skillName"
     Assert-Plugin ($content -match '(?m)^description:\s*\S') "skill has a discoverable description: $skillName"
-    Assert-Plugin ($content -match [regex]::Escape('../../hdo.ps1')) "skill resolves hdo.ps1 relative to its package: $skillName"
+    Assert-Plugin ($content -match [regex]::Escape('../../src/cli/main.ts')) "skill resolves src/cli/main.ts relative to its package: $skillName"
     Assert-Plugin ($content -notmatch 'CLAUDE_PLUGIN_ROOT|allowed-tools|\$ARGUMENTS') "skill excludes Claude-only command metadata: $skillName"
 }
 

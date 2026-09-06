@@ -98,6 +98,38 @@ export async function runPreflight(options: PreflightOptions): Promise<Preflight
   const ghCommand = platform.resolveExecutable("gh");
   addCheck(checks, "command:gh", ghCommand ? "pass" : "fail", ghCommand ?? "gh was not found.");
 
+  // 1b: node-version (ADR-0001 Migration strategy phase 7 plan §1 Q5). ADR-0001's
+  // revisit condition #2 already measures "the node-version check's failure rate"
+  // from each run's `environment.json` artifact, but no such check was ever
+  // implemented - phase 7 is the cut-over that makes `node` the CLI entry point, so
+  // this is where it lands. `required: false`: an old/missing `node` does not stop
+  // `run` (there is nothing here that depends on it today), it is only a readiness
+  // signal, mirrored byte-for-byte in `Test-HdoEnvironment` (Workflow.ps1) so
+  // `doctorParity.test.ts` sees the same check from both implementations.
+  const nodeCommand = platform.resolveExecutable("node");
+  if (!nodeCommand) {
+    addCheck(checks, "node-version", "warning", "node was not found.", false);
+  } else {
+    const nodeVersionResult = await processRunner.run({
+      command: "node",
+      arguments: ["--version"],
+      workingDirectory: repositoryPath,
+      timeoutSeconds: 60,
+    });
+    const nodeVersionOutput = nodeVersionResult.stdout.trim();
+    const nodeVersionMatch = nodeVersionResult.exitCode === 0 ? /^v(\d+)\./.exec(nodeVersionOutput) : null;
+    if (!nodeVersionMatch) {
+      addCheck(checks, "node-version", "warning", "node --version could not be determined.", false);
+    } else {
+      const nodeMajor = Number(nodeVersionMatch[1]);
+      if (nodeMajor >= 24) {
+        addCheck(checks, "node-version", "pass", nodeVersionOutput, false);
+      } else {
+        addCheck(checks, "node-version", "warning", `Node ${nodeVersionOutput} is older than the required 24 LTS.`, false);
+      }
+    }
+  }
+
   // 2: git:repository (only when git resolved)
   if (gitCommand) {
     try {

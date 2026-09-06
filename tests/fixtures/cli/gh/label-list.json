@@ -1,0 +1,5 @@
+[
+  { "name": "hdo:ready", "color": "1F883D", "description": "existing" },
+  { "name": "hdo:priority/p0", "color": "B60205", "description": "existing" },
+  { "name": "bug", "color": "d73a4a", "description": "unrelated existing label" }
+]

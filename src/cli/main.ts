@@ -1,28 +1,34 @@
 #!/usr/bin/env node
-// Composition root: wires core + platform + git together. Phases 1-5 implement the
-// `config` and `doctor` subcommands end to end (plus `help`); the remaining hdo.ps1
-// commands (issues/inspect/run/status/cleanup/labels) are later migration phases
-// (see ADR-0001 Migration strategy) - `args.ts` already accepts their option names
-// so those phases do not need to touch the parser again.
+// Composition root: wires core + platform + git together. As of phase 7 (ADR-0001
+// Migration strategy) every hdo.ps1 command (help/doctor/config/issues/inspect/run/
+// status/cleanup/labels) is wired here end to end.
 import { getPlatform } from "../platform/index.ts";
 import { parseArgs } from "./args.ts";
 import { buildConfigCommandOutput, nowIso, resolveCliConfig } from "./configCommand.ts";
+import { runCleanupCommand } from "./cleanupCommand.ts";
 import { runDoctorCommand } from "./doctorCommand.ts";
+import { runInspectCommand } from "./inspectCommand.ts";
+import { runIssuesCommand } from "./issuesCommand.ts";
+import { runLabelsCommand } from "./labelsCommand.ts";
 import { runRunCommand } from "./runCommand.ts";
 import { runStatusCommand } from "./statusCommand.ts";
 import { loadSchemaRegistry } from "./schemaLoader.ts";
 
 const USAGE_TEXT = [
-  "Hybrid Dev Orchestrator (TypeScript, phase 1-6: config / doctor / run / status)",
+  "Hybrid Dev Orchestrator (TypeScript, phase 1-7: config / doctor / issues / inspect / run / status / cleanup / labels)",
   "",
-  "  node src/cli/main.ts doctor [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]",
-  "  node src/cli/main.ts config  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-RepositoryPath <path>] [-Json]",
+  "  node src/cli/main.ts doctor  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]",
+  "  node src/cli/main.ts config  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-Json]",
+  "  node src/cli/main.ts issues  [-Repository owner/repo] [-Json]",
+  "  node src/cli/main.ts inspect -Issue <number> [-Repository owner/repo] [-Json]",
   "  node src/cli/main.ts run     (-Issue <number> | -Pick) [-Config <path>[,<path>...]] [-Profile <name>] [-SetStep implement=<runner>] [-IgnoreRepositoryConfig] [-DryRun] [-NoWriteBack] [-Json]",
   "  node src/cli/main.ts status  -RunId <id> [-Json]",
-  "  node src/cli/main.ts help",
+  "  node src/cli/main.ts cleanup -RunId <id> [-Force] [-WhatIf]",
+  "  node src/cli/main.ts labels  [-Repository owner/repo] [-Apply] [-WhatIf]",
   "",
-  "PowerShell (hdo.ps1) remains the canonical CLI for every other command until",
-  "Migration strategy phase 7 (ADR-0001).",
+  "DryRun performs GitHub reads, contract validation, configuration resolution, and a read-only preflight only.",
+  "NoWriteBack runs the local cycle without changing GitHub labels or comments.",
+  "Committed .hdo/config.json is loaded automatically unless IgnoreRepositoryConfig is set.",
   "",
 ].join("\n");
 
@@ -76,6 +82,41 @@ async function main(argv: string[]): Promise<number> {
       const platform = getPlatform();
       const schemas = loadSchemaRegistry();
       const result = await runStatusCommand({ parsed, platform, schemas });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
+    case "issues": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const { candidates, exitCode } = await runIssuesCommand({ parsed, platform, schemas });
+      // Mirrors hdo.ps1's `issues` case: prints the candidates array as JSON with or
+      // without `-Json` (same rationale as `config`/`doctor`/`run`).
+      process.stdout.write(`${JSON.stringify(candidates, null, 2)}\n`);
+      // Oracle: hdo.ps1:82, "if ($candidates.Count -eq 0) { exit 4 }" (plan Q4).
+      return exitCode;
+    }
+    case "inspect": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const result = await runInspectCommand({ parsed, platform, schemas });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
+    case "cleanup": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const result = await runCleanupCommand({ parsed, platform, schemas });
+      // `undefined` is the `-WhatIf` ShouldProcess branch (`removeRunWorktree`
+      // returns nothing there). `JSON.stringify(undefined)` returns the string
+      // "undefined", not "null", so it is handled explicitly here to match
+      // PowerShell's observed `$null | ConvertTo-Json` output of `null` (plan Q1).
+      process.stdout.write(result === undefined ? "null\n" : `${JSON.stringify(result, null, 2)}\n`);
+      return 0;
+    }
+    case "labels": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const result = await runLabelsCommand({ parsed, platform, schemas });
       process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
       return 0;
     }

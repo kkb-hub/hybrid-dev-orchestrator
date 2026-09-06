@@ -62,7 +62,7 @@ MVP は次を行わない。
 - OS firewall、VM、container による汎用 command adapter の完全な network isolation
 - 多段 reviewer orchestration、反証 batch、mutation runner、token telemetry
 
-最後の項目群は review platform の post-MVP scope とする。なお、`hdo.ps1` を包む薄い Claude Code plugin（`.claude-plugin/` + `commands/`）は scope に含め、本 repository から配布する。多段 review 機能を持つ standalone review-platform plugin は引き続き post-MVP とする。
+最後の項目群は review platform の post-MVP scope とする。なお、TypeScript CLI（`src/cli/main.ts`）を包む薄い Claude Code plugin（`.claude-plugin/` + `commands/`）は scope に含め、本 repository から配布する。多段 review 機能を持つ standalone review-platform plugin は引き続き post-MVP とする。
 
 ## 4. 前提環境
 
@@ -93,7 +93,7 @@ HDO は不足 model を自動 pull しない。
 
 ## 5. CLI surface
 
-root entrypoint は `hdo.ps1` とし、次の command を提供する。
+root entrypoint は `node src/cli/main.ts`（TypeScript CLI）とし、次の command を提供する。`hdo.ps1` は maintenance mode の entrypoint として同じ9 commandを提供し続ける（cut-over の経緯は ADR-0001 Migration strategy フェーズ7 `docs/adr/0001-primary-runtime-typescript.md` を参照）。
 
 | Command | 主な機能 |
 |---|---|
@@ -126,7 +126,7 @@ full `run` はartifact作成直後にrun IDとartifact pathを、agent process�
 
 ### 5.1 Claude Code plugin
 
-本 repository は Claude Code plugin としても利用できる。`.claude-plugin/plugin.json` と `commands/` は `hdo.ps1` の各 command を包む薄い層であり、orchestration logic を複製しない。plugin から実行しても、設定・schema・validation の正典は本 repository の CLI 実装のままである。schema を含む配布物は repository の `schemas/` を single source とし、編集元となる copy を作らない。
+本 repository は Claude Code plugin としても利用できる。`.claude-plugin/plugin.json` と `commands/` は TypeScript CLI（`src/cli/main.ts`）の各 command を包む薄い層であり、orchestration logic を複製しない。plugin から実行しても、設定・schema・validation の正典は本 repository の CLI 実装のままである。schema を含む配布物は repository の `schemas/` を single source とし、編集元となる copy を作らない。
 
 `-RepositoryPath` は local Git repository、`-Repository` は GitHub の `owner/repository` である。`-Repository` を省略した場合は設定または `origin` URL から解決する。
 
@@ -402,7 +402,7 @@ cloud runner/reviewer を選ぶと、Issue、関連 source、validation result�
 
 ## 15. MVP acceptance criteria
 
-- AC-01 `hdo.ps1 help` が9 command の現行 usage を表示する。
+- AC-01 `node src/cli/main.ts help` と `hdo.ps1 help` の両方が9 command の現行 usage を表示する。
 - AC-02 default config の execution plan が cloud runner だけを参照し、Ollama を probe しない。
 - AC-03 repository または explicit hybrid config を選んだ場合だけ Ollama command/model を preflight する。
 - AC-04 plan/implement/review/fix を別 runner に割り当て、resolved plan を表示・保存できる。

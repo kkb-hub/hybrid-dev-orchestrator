@@ -61,6 +61,8 @@ cleanup   guarded worktree removal
 labels    catalog preview/sync
 ~~~
 
+呼び出しは `node src/cli/main.ts <command> [options]` を既定とする（ADR-0001 Migration strategy フェーズ7の cut-over 後、plugin の `commands/*.md`・`skills/*/SKILL.md` が呼ぶ経路、§16.2参照）。PowerShell 実装 `hdo.ps1 <command> [options]` は同じ9個の command を引き続き提供するが、フェーズ7完了に伴い maintenance mode（既存不具合の修正のみ、ADR-0001 Decision 節）へ移行した。
+
 | Exit | 意味 |
 |---:|---|
 | 0 | command success / APPROVED / successful dry-run |
@@ -475,6 +477,26 @@ src/
   cli/runParity.test.ts  フェーズ6で追加。pwsh oracle との NoWriteBack
               full-run parity harness（13シナリオ、tests/fixtures/workflow/
               の共有 fixture を消費する）
+  cli/        フェーズ7で追加した composition root - issuesCommand.ts
+              （runIssuesCommand、候補0件で exit 4）、inspectCommand.ts
+              （runInspectCommand、`-ProjectContract` を渡さない）、
+              cleanupCommand.ts（runCleanupCommand、`-RunId` 必須の guard の後
+              `workflow/cleanup.ts` へ委譲）、labelsCommand.ts
+              （runLabelsCommand、`config/labels.json` をここで読む）。
+              paths.ts に `LABELS_CATALOG_PATH` を追加した
+  workflow/cleanup.ts  フェーズ7で追加。`Remove-HdoRunWorktree`/
+              `Test-HdoOrphanedWorktree`（Git.ps1:187-301）の移植 -
+              removeRunWorktree・isOrphanedWorktree（Issue #25 の
+              「Filename too long」で admin entry だけ先に消えた worktree を
+              `-Force` 付きでのみ filesystem 削除 + `git worktree prune` で
+              片付ける orphan 分岐を含む）
+  cli/inspectParity.test.ts・issuesParity.test.ts・statusParity.test.ts・
+  cleanupParity.test.ts・labelsParity.test.ts  フェーズ7で追加。終了条件
+              (i)（`inspect`）・(ii)（`status`/`cleanup -WhatIf`/
+              `labels -WhatIf`）の測定と、移植対象コマンドである `issues` の
+              追加比較（§16.2参照）。`tests/fixtures/cli/gh/`（mock `gh.cmd` +
+              `issue-list.json`/`label-list.json`）を新設し、phase 6 の
+              `tests/fixtures/workflow/gh/gh.cmd` は変更していない
 ```
 
 依存方向は `core <- platform, process, git, github <- runners, workflow <- cli` で、`core` は上位レイヤーに一切依存しない。`platform/jobObject.ts` は `koffi` を `src/platform/**` からのみ import し（`src/core/boundary.test.ts` の allow-list は変更していない）、失敗時は `taskkill /T /F /PID` へフォールバックする（ADR-0002）。既存 PowerShell module（`src/HybridDevOrchestrator/`）は変更していない。
@@ -506,6 +528,14 @@ WSL2/Linux 上での確認はフェーズ1・7 の gate に含めない（ADR-00
 **フェーズ6（workflow）は完了した。** 終了条件（ADR-0001 Migration strategy フェーズ6:「`NoWriteBack` full run が両実装で同じ state 遷移・同じ diff・同じ review 判定に到達する」）は `src/cli/runParity.test.ts` が測定する: 決定論的な mock `gh`（`tests/fixtures/workflow/gh/gh.cmd`）・mock plan/implement/fix/review agent（`mock-workflow-agent.ps1`）・mock validation gate script（`tools/gate-pass.ps1`/`gate-fail.ps1`）を用いて、2つの独立した（内容とコミット日時が同一で、`baseCommit` が一致することを assert する）throwaway fixture repository に対し `hdo.ps1 run -Issue 7 -NoWriteBack -Json`（oracle）と `node src/cli/main.ts run -Issue 7 -NoWriteBack -Json` を実行し、13シナリオ（approve-first・fix-then-approve・fix上限escalate/fail・review escalate・no-diff escalate/fail・gate-fail escalate/request-changes・gate setup failure・implement 異常終了・DryRun・preflight failure）それぞれについて exit code、canonicalise した `run.json`、`state.transition` イベント列、iteration ごとの `diff.json`/`validation/result.json`/`review/result.json`、`final/summary.json`、stdout JSON を比較する。実 agent（Claude/Codex/Ollama）・実 GitHub・network には一切依存しない。`run`（`-Issue`/`-Pick`/`-NoWriteBack`/`-DryRun`/`-Json`/`-Config`/`-Profile`/`-SetStep`/`-IgnoreRepositoryConfig`/`-Repository`/`-RepositoryPath`）と `status`（`-RunId`/`-Json`）は、フェーズ1の `config`、フェーズ5の `doctor` と同じ理由（この2コマンドがそれぞれの終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たずフェーズ6の時点で `main.ts` へ配線している。フェーズ6で実装・修正した Issue（#16 gate setup failure 分類、#62 `ConvertFrom-Json`/`Get-HdoUtcTimestamp` の DateTime 破損、#63 `_KEY` サフィックス、#8 doctor の `gate:<id>` check）と、両実装での PS/TS 差異は §16.4「フェーズ6」リストに記録している。 フェーズ6完了後の最初の後続項目は Issue #64（死んだ run が残す active claim の解放/resume 手段と `leaseExpiresAt` の期限判定）で、claim 周りの挙動は両実装とも現状のまま鏡写しにしている。
 
 フェーズ6の outer workflow の書き方（自作 dispatch loop、XState は採らない、ADR-0003 D1）と、フェーズ8での lean worker 移植の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`）に記録した。フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（lean worker）を使うには引き続き `pwsh` が PATH 上に必要である。
+
+**フェーズ7（cli/plugin）は完了した。** 終了条件（ADR-0001 Migration strategy フェーズ7、この順で満たす）は「(i) `doctor`・`config`・`inspect`・`run -DryRun` の4コマンドについて `-Json` 出力が両実装で意味的に等価になる、(ii) `status`・`cleanup -WhatIf`・`labels -WhatIf` についても `-Json` 出力が共有 fixture に対して両実装で意味的に等価になることを追加で確認する」。(i) は既存の `src/cli/configParity.test.ts`（`config`）・`src/cli/doctorParity.test.ts`（`doctor -DryRun`）・`src/cli/runParity.test.ts` の DryRun シナリオ（`run -DryRun`）に加え、本フェーズで新設した `src/cli/inspectParity.test.ts`（`inspect`、残り1コマンド）で測定した。(ii) は新設した `src/cli/statusParity.test.ts`（`status`）、`src/cli/cleanupParity.test.ts`（`cleanup -WhatIf`、WhatIf preview・already-missing・worktreeRoot 外・非 worktree・dirty without -Force の5シナリオそれぞれについて stdout・stderr・exit code に加え、worktree ディレクトリと `run.json` が前後で不変であることを両実装で確認する）、`src/cli/labelsParity.test.ts`（`labels -WhatIf`、`-WhatIf` 単独と `-Apply -WhatIf` の2ケース。後者は mock `gh` が `label create` を一度も受け取らないことを assert する）で測定した。ADR-0001 の7コマンドには含まれないが移植対象である `issues` も `src/cli/issuesParity.test.ts` で比較している。これらの mock `gh` は新設した `tests/fixtures/cli/gh/`（`gh.cmd`・`issue-list.json`・`label-list.json`）に置き、フェーズ6の `tests/fixtures/workflow/gh/gh.cmd` は変更していない。
+
+(i)・(ii) が green になったことを受け、cut-over コミットで全8個の `commands/*.md`（`allowed-tools` を `Bash(pwsh:*)` から `Bash(node:*)` へ、起動行を `node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" <cmd>` へ変更）と全8個の `skills/*/SKILL.md`（`../../hdo.ps1` を `../../src/cli/main.ts` へ、`pwsh -NoProfile -File` を `node` へ変更し、`node_modules` が無い場合に plugin root で `npm ci` を一度実行する旨を resolve step へ追記）を1コミットで TypeScript 実装へ切り替えた。`.claude-plugin/plugin.json`・`.codex-plugin/plugin.json` は `description` から `hdo.ps1` への言及を外し、`keywords` の `powershell` を `typescript`/`nodejs` に置き換え、`version` を `0.11.0` → `0.12.0` に上げた。`tools/check-plugin-version.ps1` の `$watchedPaths` に `package.json`/`package-lock.json` を追加した（cut-over 後は node の依存 - ajv/ajv-formats/koffi - も client に配布される面の一部になるため）。`hdo.ps1` と `src/HybridDevOrchestrator/` は削除していない。
+
+本フェーズで doctor に `node-version` check（`required: false`、Node 24 以上で `pass`、それ未満または `node` 未検出で `warning`）を、両実装へ同じ name・同じ位置（`command:git`/`command:gh` の直後）・同じ message で追加した（ADR-0001 の revisit condition #2 が前提としていた check）。また `issues` の parity test を書く過程で、`Get-HdoIssueCandidate` の `Sort-Object @{ Expression = 'priorityRank'; ... }` が `ConvertTo-HdoHashtable` の返す `[ordered]`（`OrderedDictionary`）に対しては no-op であり、`hdo.ps1 issues`/`run -Pick` が一度も候補を sort せず `gh issue list` の返した順のまま返していた既存不具合を発見し、PowerShell 側を修正した（ADR-0001 Decision 節が maintenance mode に許す「既存不具合の修正」に当たる）。
+
+次のフェーズはフェーズ8（workers、ADR-0001 Amendment 2026-09-06、ADR-0003）で `workers/hdo-ollama-worker.ps1` の TypeScript 移植を扱う。フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2（lean worker）を使うには引き続き `pwsh` が PATH 上に必要である。
 
 ### 16.3 実行方法
 
@@ -570,3 +600,11 @@ PoC（`poc/typescript/`）は評価時点の実証根拠として凍結し、本
 8. **worktree 作成失敗の failure category**: NoWriteBack モードで worktree 作成に失敗した場合、`run.state` がまだ `PREFLIGHT` であるため（プラン §5 semantic trap 3）両実装とも `PREFLIGHT_FAILED`（exit 3）になる - write-back が有効な場合は同じ失敗が `RUN_FAILED` になる。この分類は PowerShell 側の実装上の偶然（catch 節が `run.state` だけを見る）であり、`claimIssue` の失敗も同様に `PREFLIGHT_FAILED` になる。両実装で意図的に mirror している既知の癖であり、修正予定はない。
 9. **`gate:<id>` doctor check と runParity oracle self-check で判明した `pwsh` 解決差**: `src/cli/doctorParity.test.ts`（Issue #8 の `gate:<id>` check を含む）は、`command:pwsh` を要求する project contract の gate に対して、両実装の `pwsh` 解決結果が実行ファイル名以外は同一パスであっても、ファイル名だけが `pwsh.exe` で異なる1点だけを許容する（`normalizePwshPath` で `<PWSH>` に正規化してから比較する）。原因は PowerShell 自身が `$PSHOME` を自分のプロセス PATH の先頭に追加するため、`hdo.ps1` 内の `Get-Command pwsh -CommandType Application` は常に実行中の pwsh 自身（Store install の場合 `C:\Program Files\WindowsApps\Microsoft.PowerShell_<ver>\pwsh.exe`）に解決される一方、Node の `platform.resolveExecutable('pwsh')` は素の PATH（`%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe` の App Execution Alias 等）だけを見るため。両者は同じバイナリを指しており、綴りが違うだけである。この機構が持つ実行時の帰結として、pwsh のインストールが2系統ある機械（例: MSI 版 7.4 が PATH の先頭、Store 版 7.6 で `hdo.ps1` を起動）では、`hdo.ps1` から起動される gate/agent は常に「実行中の pwsh」自身の下で動く一方、TypeScript から起動される gate/agent は「PATH 上で最初に見つかる pwsh」の下で動くため、両実装は実際に異なる pwsh バイナリで子プロセスを実行しうる - これは環境依存の正真正銘の差異であり、TypeScript 側では取り除けない。`doctor` の `gate:<id>` メッセージはこの差異が存在する環境ではそれを可視化する（`<PWSH>` への正規化は文字列比較上の許容であり、差異そのものを消してはいない）。GitHub Actions の `windows-latest` では両者とも `C:\Program Files\PowerShell\7\pwsh.exe` に解決されるため、この差は CI では観測されない。詳細は `src/cli/doctorParity.test.ts` のコメントを参照。
 10. **PS oracle self-check**（`tests/run-tests.ps1`）: シナリオ b・g を `Invoke-HdoRun -NoWriteBack` の in-process 呼び出しで実行し、`state.transition` 列・`fixAttempts`・`result.decision`・#16 の gate 分類を検証することで、oracle 自体を TS との比較の前に単独でも pin している（コミット `4918cee`）。
+
+以下はフェーズ7（cli/plugin）で判明した追加の意図的な差異である。
+
+1. **`cleanup -WhatIf` は構造化 preview ではなく PowerShell の `ShouldProcess` 出力をそのまま再現する**（フェーズ7 plan Q1）: 終了条件 (ii) は `-Json` 出力の意味的等価であり、TypeScript が独自の構造化 preview object を新設すると PowerShell と等価でなくなる。PowerShell 側は `$PSCmdlet.ShouldProcess(...)` が `false` を返して関数が値を返さず、`Write-HdoCliOutput` の param binding で `$null` になり `ConvertTo-Json` が文字列 `null` を出す（実測確認済み）。TypeScript の `removeRunWorktree`（`src/workflow/cleanup.ts`）も同様に `undefined` を返し、`main.ts` はそれを明示的に `null\n` として出力する。What-if 行 `What if: Performing the operation "Remove HDO Git worktree" on target "<worktreePath>".` は **stdout** に出す（`-Json` の有無に関わらず）。exit code は 0 で両実装一致する。
+2. **`labels -WhatIf`（`-Apply` 無し）は plain `labels` と完全同一**（フェーズ7 plan Q2）: PowerShell の `Sync-HdoLabels` は `$Apply -and $PSCmdlet.ShouldProcess(...)` で `$Apply` が false のとき短絡し `ShouldProcess` 自体を呼ばない。TypeScript の `syncLabels`（`src/github/labels.ts`）の `whatIf` オプションも `apply && whatIf` のときだけ有効になる同じ短絡評価を実装しており、`-Apply` を伴わない `-WhatIf` は observable な差を一切生まない。`-Apply -WhatIf` の場合のみ、label ごとに `What if: Performing the operation "Create or update" on target "<repository> label '<name>'".` を stdout へ出し、`applied` は全て `false` のまま `gh label create` を呼ばない。
+3. **非 `-Json` 出力**（フェーズ7 plan Q3）: 既存の意図的差異（16.4フェーズ2項目相当、`config`/`doctor`/`run`/`status` と同じ方針）を踏襲し、本フェーズで新規に配線した `issues`/`inspect`/`cleanup`/`labels` の4コマンドも `-Json` の有無に関わらず同じ JSON を stdout に出す。PowerShell 版の `Format-Table`/`Format-List` 表示は再現していない。What-if 行（項目1・2）だけは両モードで出す。
+4. **`issues -Json` で候補0件のときの stdout**（`src/cli/issuesParity.test.ts` を書く過程で判明）: PowerShell の `Write-HdoCliOutput`（共通ヘルパー）は `$Value | ConvertTo-Json` という pipeline 経由の呼び出しで、0要素配列はパイプラインを通ると0個のパイプラインオブジェクトへ展開されてしまうため `ConvertTo-Json` は何も受け取らず、**stdout は完全に空になる**（直接 `ConvertTo-Json -InputObject @()` した場合の `[]` にはならない）。TypeScript の `main.ts` は常に `JSON.stringify(candidates)` を呼ぶため、候補0件でも文字列 `[]` を出力する。`Write-HdoCliOutput` は JSON を出す全コマンドが共有するが、実際に空配列を返しうるのは `issues` だけなので、この quirk が外部から観測できるのはこの1箇所だけである。exit code はこの場合も両実装とも hdo.ps1:82 と同じ 4 で一致する（相違するのは stdout の文字列だけ）。この差異は意図的に受容し、修正予定はない。
+5. **`node-version` doctor check の追加**: ADR-0001 の revisit condition #2（plugin 経由起動での `doctor` の `node-version` check fail 率を見直し閾値として使う）は、check そのものが未実装のまま存在を前提にしていた。フェーズ7で `node` が cut-over 後の CLI entry point になることを受け、`required: false`・Node 24 以上で `pass`・それ未満または `node` 未検出で `warning` の check を、`command:git`/`command:gh` の直後という同じ位置・同じ name・同じ message で両実装（`src/workflow/preflight.ts`、`Test-HdoEnvironment`（Workflow.ps1））へ追加した。`doctor`/`run -DryRun` のどちらも `node` の有無・version に関わらず継続する（`required: false`）。

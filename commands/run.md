@@ -1,7 +1,7 @@
 ---
 description: Run one HDO implement/validate/review/fix cycle for a GitHub Issue
 argument-hint: -Issue <number> | -Pick [-DryRun] [-NoWriteBack]
-allowed-tools: Bash(pwsh:*)
+allowed-tools: Bash(node:*)
 ---
 
 Run one Hybrid Dev Orchestrator cycle. Either `-Issue <number>` or `-Pick` is required; if the user provided neither, ask which Issue to run instead of guessing.
@@ -9,8 +9,10 @@ Run one Hybrid Dev Orchestrator cycle. Either `-Issue <number>` or `-Pick` is re
 Before a full run, confirm intent with the user unless they explicitly asked for it: a full run claims the Issue on GitHub (unless `-NoWriteBack`), creates a dedicated worktree and branch, and launches AI runner processes that can take a long time. Suggest `-DryRun` first when the user seems unsure.
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" run -Json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" run -Json $ARGUMENTS
 ```
+
+If the command fails with a missing-module error such as `Cannot find package 'ajv'`, tell the user to run `npm ci` once in the plugin root and retry; do not run the install yourself.
 
 Pass all user-supplied arguments through unchanged (for example `-Issue`, `-Pick`, `-Repository`, `-Profile`, `-Config`, `-SetStep`, `-IgnoreRepositoryConfig`, `-DryRun`, `-NoWriteBack`). Do not add `-Config` just because `.hdo/config.json` exists: HDO automatically reads the committed `HEAD` version. An explicit `-Config` may contain one path or a comma-separated ordered list. Use a generous Bash timeout: a full cycle can run for the configured runner timeouts (up to hours). Exit codes: 3 preflight failed, 4 no eligible Issue, 5 FAILED, 6 ESCALATED.
 

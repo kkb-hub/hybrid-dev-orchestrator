@@ -11,3 +11,5 @@ export const CONFIG_DEFAULT_PATH = resolve(REPO_ROOT, "config", "hdo.default.jso
 export const SCHEMAS_DIR = resolve(REPO_ROOT, "schemas");
 export const SCHEMA_FIXTURES_DIR = resolve(REPO_ROOT, "tests", "fixtures", "schema");
 export const PROJECT_CONTRACT_PATH = resolve(REPO_ROOT, ".hdo", "project.json");
+/** `config/labels.json` - the label catalog `Sync-HdoLabels` reads via `$script:HdoRepositoryRoot` (GitHub.ps1:674). */
+export const LABELS_CATALOG_PATH = resolve(REPO_ROOT, "config", "labels.json");

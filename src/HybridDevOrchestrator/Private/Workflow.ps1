@@ -27,6 +27,35 @@ function Test-HdoEnvironment {
         $command = Get-Command $commandName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         Add-HdoPreflightCheck $checks "command:$commandName" $(if ($command) { 'pass' } else { 'fail' }) $(if ($command) { $command.Source } else { "$commandName was not found." })
     }
+    # node-version (ADR-0001 Migration strategy phase 7 plan §1 Q5). ADR-0001's
+    # revisit condition #2 already measures "the node-version check's failure rate"
+    # from each run's environment.json artifact, but no such check was ever
+    # implemented - phase 7 is the cut-over that makes `node` the CLI entry point,
+    # so this is where it lands. required:$false: an old/missing node does not stop
+    # hdo.ps1 itself, it is only a readiness signal, mirrored byte-for-byte in
+    # `runPreflight` (src/workflow/preflight.ts) so doctorParity.test.ts sees the
+    # same check from both implementations.
+    $nodeCommand = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $nodeCommand) {
+        Add-HdoPreflightCheck $checks 'node-version' 'warning' 'node was not found.' $false
+    }
+    else {
+        $nodeVersionResult = Invoke-HdoProcess -Command 'node' -Arguments @('--version') -WorkingDirectory ([string]$Config.repositoryPath) -TimeoutSeconds 60
+        $nodeVersionOutput = $nodeVersionResult.stdout.Trim()
+        $nodeVersionMatch = if ($nodeVersionResult.exitCode -eq 0) { [regex]::Match($nodeVersionOutput, '^v(\d+)\.') } else { $null }
+        if (-not $nodeVersionMatch -or -not $nodeVersionMatch.Success) {
+            Add-HdoPreflightCheck $checks 'node-version' 'warning' 'node --version could not be determined.' $false
+        }
+        else {
+            $nodeMajor = [int]$nodeVersionMatch.Groups[1].Value
+            if ($nodeMajor -ge 24) {
+                Add-HdoPreflightCheck $checks 'node-version' 'pass' $nodeVersionOutput $false
+            }
+            else {
+                Add-HdoPreflightCheck $checks 'node-version' 'warning' "Node $nodeVersionOutput is older than the required 24 LTS." $false
+            }
+        }
+    }
     if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
         try {
             $root = Get-HdoRepositoryRoot ([string]$Config.repositoryPath)

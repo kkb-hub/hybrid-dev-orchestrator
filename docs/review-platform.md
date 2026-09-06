@@ -9,7 +9,7 @@
 
 net-equity で得た finding 規律のうち、HDO の implementation/review cycle に必要な **shared schema、fail-safe decision rule、validation evidence、bounded fix loop** は実装済みである。
 
-当初「post-MVP」としていた Claude Code plugin のうち、`hdo.ps1` を包む**薄い wrapper plugin**（`.claude-plugin/` + `commands/`）は方針を変更して本 repository に同梱した。Claude Code から `/hdo:run` 等で CLI を起動できるが、orchestration logic・schema・validation の正典は CLI 実装のままである。
+当初「post-MVP」としていた Claude Code plugin のうち、TypeScript CLI（`src/cli/main.ts`）を包む**薄い wrapper plugin**（`.claude-plugin/` + `commands/`）は方針を変更して本 repository に同梱した。Claude Code から `/hdo:run` 等で CLI を起動できるが、orchestration logic・schema・validation の正典は CLI 実装のままである。
 
 一方、多視点 reviewer の orchestration、反証 batch、mutation runner、usage/token telemetry、および多段 review 機能を持つ standalone review-platform plugin は引き続き post-MVP とする。現在の repository にそれら未実装機能が存在することを前提にしてはならない。
 
@@ -236,7 +236,7 @@ runner process invocation は共有できるが、role policy は分ける。imp
 
 - usage report schema
 - unit / form / launch / subject / size-band の層別
-- standalone review-platform plugin と Codex-facing adapter の独立配布（`hdo.ps1` を包む薄い wrapper plugin は実装済み）
+- standalone review-platform plugin と Codex-facing adapter の独立配布（TypeScript CLI を包む薄い wrapper plugin は実装済み）
 - generated schema bundle と version check
 - net-equity との並走検証
 
@@ -270,7 +270,7 @@ token 削減率だけで成功を判定しない。quality gate が同等以上�
 - 同じ review schema を Codex / Claude / command adapter が利用できる。
 - Codex adapter へ渡す schema は Structured Outputs subset 向けの一時 transport copy であり、canonical schema による出力再検証を持つ。
 - Claude adapter へ渡す schema は strict-mode 向けに正規化した transport copy であり、canonical schema による出力再検証と、Claude CLI が正規化済み schema を受理する契約テスト（`tests/test-claude-contract.ps1`）を持つ。
-- `hdo.ps1` を包む薄い Claude Code plugin から各 command を起動できる。
+- TypeScript CLI（`src/cli/main.ts`）を包む薄い Claude Code plugin から各 command を起動できる。
 
 post-MVP であり、現在の acceptance 対象外:
 

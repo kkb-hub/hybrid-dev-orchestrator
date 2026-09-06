@@ -131,6 +131,7 @@ test("runPreflight: default-shaped config produces checks in the exact PS order,
     [
       "command:git",
       "command:gh",
+      "node-version",
       "git:repository",
       "github:authentication",
       "project-contract",
@@ -154,10 +155,138 @@ test("runPreflight: default-shaped config produces checks in the exact PS order,
   assert.equal(checkByName(result, "provider:ollama")?.required, false);
   assert.equal(checkByName(result, "paths:writable")?.status, "skipped");
   assert.equal(checkByName(result, "paths:writable")?.required, false);
+  // `node` is not stubbed into this test's platform map, so node-version is
+  // "not found" here; the pass/old-version/undeterminable branches get their own
+  // dedicated tests below.
+  assert.equal(checkByName(result, "node-version")?.status, "warning");
+  assert.equal(checkByName(result, "node-version")?.required, false);
+  assert.equal(checkByName(result, "node-version")?.message, "node was not found.");
   assert.equal(result.ok, true);
   assert.equal(result.readOnly, true);
   assert.equal(result.profile, "claude-only");
   assert.equal(result.schemaVersion, 1);
+});
+
+test("runPreflight: node-version passes with the trimmed version string when node resolves to major >= 24", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", node: "C:\\bin\\node.exe" });
+  const runner = baseRunner((options) => {
+    if (options.command === "node") return makeResult({ command: "node", stdout: "v24.20.0\n" });
+    return undefined;
+  });
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+
+  const result = await runPreflight({
+    config: buildConfig(),
+    readOnly: true,
+    platform,
+    processRunner: runner,
+    git,
+    gh,
+    schemas,
+  });
+
+  const check = checkByName(result, "node-version");
+  assert.equal(check?.status, "pass");
+  assert.equal(check?.required, false);
+  assert.equal(check?.message, "v24.20.0");
+});
+
+test("runPreflight: node-version warns (required:false) with 'Node <version> is older than the required 24 LTS.' when major < 24", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", node: "C:\\bin\\node.exe" });
+  const runner = baseRunner((options) => {
+    if (options.command === "node") return makeResult({ command: "node", stdout: "v18.20.0\n" });
+    return undefined;
+  });
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+
+  const result = await runPreflight({
+    config: buildConfig(),
+    readOnly: true,
+    platform,
+    processRunner: runner,
+    git,
+    gh,
+    schemas,
+  });
+
+  const check = checkByName(result, "node-version");
+  assert.equal(check?.status, "warning");
+  assert.equal(check?.required, false);
+  assert.equal(check?.message, "Node v18.20.0 is older than the required 24 LTS.");
+});
+
+test("runPreflight: node-version warns 'node was not found.' when node is not resolvable", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe" });
+  const runner = baseRunner();
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+
+  const result = await runPreflight({
+    config: buildConfig(),
+    readOnly: true,
+    platform,
+    processRunner: runner,
+    git,
+    gh,
+    schemas,
+  });
+
+  const check = checkByName(result, "node-version");
+  assert.equal(check?.status, "warning");
+  assert.equal(check?.required, false);
+  assert.equal(check?.message, "node was not found.");
+});
+
+test("runPreflight: node-version warns 'node --version could not be determined.' on a non-zero exit or unparsable output", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", node: "C:\\bin\\node.exe" });
+  const runner = baseRunner((options) => {
+    if (options.command === "node") return makeResult({ command: "node", exitCode: 1, stderr: "boom" });
+    return undefined;
+  });
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+
+  const result = await runPreflight({
+    config: buildConfig(),
+    readOnly: true,
+    platform,
+    processRunner: runner,
+    git,
+    gh,
+    schemas,
+  });
+
+  const check = checkByName(result, "node-version");
+  assert.equal(check?.status, "warning");
+  assert.equal(check?.required, false);
+  assert.equal(check?.message, "node --version could not be determined.");
+});
+
+test("runPreflight: node-version warns 'node --version could not be determined.' when stdout does not match ^v(\\d+)\\.", async () => {
+  const platform = fakePlatform({ git: "C:\\bin\\git.exe", gh: "C:\\bin\\gh.exe", node: "C:\\bin\\node.exe" });
+  const runner = baseRunner((options) => {
+    if (options.command === "node") return makeResult({ command: "node", stdout: "not a version\n" });
+    return undefined;
+  });
+  const git = new GitClient({ runner, platform });
+  const gh = new GhClient({ runner });
+
+  const result = await runPreflight({
+    config: buildConfig(),
+    readOnly: true,
+    platform,
+    processRunner: runner,
+    git,
+    gh,
+    schemas,
+  });
+
+  const check = checkByName(result, "node-version");
+  assert.equal(check?.status, "warning");
+  assert.equal(check?.required, false);
+  assert.equal(check?.message, "node --version could not be determined.");
 });
 
 test("runPreflight: command:git/command:gh fail with '<name> was not found.' and their dependent checks are omitted entirely", async () => {

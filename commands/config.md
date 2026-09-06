@@ -1,13 +1,15 @@
 ---
 description: Show the resolved HDO configuration and execution plan
-allowed-tools: Bash(pwsh:*)
+allowed-tools: Bash(node:*)
 ---
 
 Show the merged Hybrid Dev Orchestrator configuration and the resolved execution plan for the repository in the current working directory:
 
 ```
-pwsh -NoProfile -File "${CLAUDE_PLUGIN_ROOT}/hdo.ps1" config -Json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" config -Json $ARGUMENTS
 ```
+
+If the command fails with a missing-module error such as `Cannot find package 'ajv'`, tell the user to run `npm ci` once in the plugin root and retry; do not run the install yourself.
 
 Pass any user-supplied arguments (for example `-Profile`, `-Config`, `-IgnoreRepositoryConfig`) through unchanged. HDO automatically reads committed `HEAD:.hdo/config.json`; explicit `-Config` may contain one path or a comma-separated ordered list.
 

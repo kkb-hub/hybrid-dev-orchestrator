@@ -35,6 +35,24 @@ function buildConfiguredNameByCatalogName(config: Pick<ResolvedHdoConfig, "githu
 export interface SyncLabelsOptions {
   repository?: string;
   apply?: boolean;
+  /**
+   * Mirrors `-WhatIf` on `Sync-HdoLabels` (`[CmdletBinding(SupportsShouldProcess)]`,
+   * GitHub.ps1:661-717): PowerShell's `$Apply -and $PSCmdlet.ShouldProcess(...)`
+   * short-circuits on `$Apply` first, so this only has any effect when `apply` is also
+   * true - with `apply` false, behaviour (and output) is byte-identical to omitting
+   * `whatIf` entirely, matching phase 7 plan Q2.
+   */
+  whatIf?: boolean;
+  /**
+   * Sink for the `-WhatIf` preview line (one per label, only ever written when
+   * `apply && whatIf`); defaults to `process.stdout.write` with a trailing `\n`.
+   * Overridable for tests.
+   */
+  shouldProcessSink?: (line: string) => void;
+}
+
+function defaultShouldProcessSink(line: string): void {
+  process.stdout.write(`${line}\n`);
 }
 
 /**
@@ -48,10 +66,11 @@ export interface SyncLabelsOptions {
  * read from disk here, matching the `SchemaRegistry`/`getIssueCandidate` composition
  * -root convention: `core`/`github` never touch the filesystem directly.
  *
- * There is no `-WhatIf`/`ShouldProcess` equivalent here (PowerShell's
- * `[CmdletBinding(SupportsShouldProcess)]` plus `$PSCmdlet.ShouldProcess(...)`): CLI
- * confirmation prompts are a phase-7 (cli/plugin) concern, not present anywhere else
- * in this TypeScript port yet either.
+ * `options.whatIf` (phase 7, WP-D) mirrors `-WhatIf` on `Sync-HdoLabels`
+ * (`[CmdletBinding(SupportsShouldProcess)]` plus `$Apply -and
+ * $PSCmdlet.ShouldProcess(...)`, GitHub.ps1:661-717): a no-op unless `options.apply`
+ * is also true, in which case `gh label create` is never called and every `applied`
+ * stays `false` - see `SyncLabelsOptions.whatIf`'s own doc comment.
  */
 export async function syncLabels(
   gh: GhClient,
@@ -95,11 +114,21 @@ export async function syncLabels(
 
   const changes: LabelSyncResult["labels"] = [];
   const apply = Boolean(options.apply);
+  const whatIf = apply && Boolean(options.whatIf);
+  const shouldProcessSink = options.shouldProcessSink ?? defaultShouldProcessSink;
   for (const label of labelsToSync) {
     const missing = !includesCaseInsensitive(existingNames, label.name);
     const change = { name: label.name, missing, applied: false };
     changes.push(change);
     if (apply) {
+      // Oracle: GitHub.ps1:712, `$Apply -and $PSCmdlet.ShouldProcess("$Repository
+      // label '$($label.name)'", 'Create or update')` - short-circuits on `$Apply`
+      // first, so `-WhatIf` alone (without `-Apply`) never reaches `ShouldProcess`
+      // and never emits this line (phase 7 plan Q2).
+      if (whatIf) {
+        shouldProcessSink(`What if: Performing the operation "Create or update" on target "${repository} label '${label.name}'".`);
+        continue;
+      }
       await gh.execThrowing(
         ["label", "create", label.name, "--repo", repository, "--color", label.color, "--description", label.description, "--force"],
         workingDirectory,

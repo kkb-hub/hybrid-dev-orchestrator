@@ -672,7 +672,8 @@ secret は user config にも保存しない。runner が authentication を必�
 | Claude effort error | Claude runner の `reasoningEffort` を `low`/`medium`/`high`/`xhigh`/`max` にする |
 | Claude extraArgs error | Claude runner の `extraArgs` を空にする。独自 argument が必要なら `command` runner |
 | Claude 認証 error | `claude` の login 状態。環境変数認証なら `passEnvironment` に認証変数を追加したか |
-| Claude step で schema/JSON error | doctor の `runner:*:shim` warning。canonical CLI（PowerShell）実行なら npm の `.cmd` shim ではなく native claude install を使う（TypeScript ランタイムは `.cmd` shim を安全に扱うため必須ではないが、8191 文字上限には引き続き注意する） |
+| Claude step で schema/JSON error | doctor の `runner:*:shim` warning。`hdo.ps1`（PowerShell）実行なら npm の `.cmd` shim ではなく native claude install を使う（TypeScript ランタイム - `node src/cli/main.ts` - は `.cmd` shim を安全に扱うため必須ではないが、8191 文字上限には引き続き注意する） |
+| plugin（`commands/`/`skills/`）経由の CLI 実行が `node` 関連で失敗する | doctor の `node-version` check（`required: false`。`node --version` が 24 以上なら `pass`、24 未満または `node` が PATH に無ければ `warning`）。plugin は `node` で `src/cli/main.ts` を起動するため、Node.js 24 LTS と plugin root での `npm ci` 実行が前提になる |
 | Ollama が突然必要 | active execution plan に `provider: ollama` がないか |
 | model missing | `ollama list` と runner.model。HDO は pull しない |
 | gate unknown | Issue の Validation Gate IDs と `.hdo/project.json` |

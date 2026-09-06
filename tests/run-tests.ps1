@@ -467,6 +467,56 @@ Keep the cycle bounded.
     }
     finally { $env:PATH = $originalGhPath }
 
+    # R1-1 regression: `Get-HdoIssueCandidate`'s final `Sort-Object` (GitHub.ps1, end of
+    # the function) must actually re-sort its candidates by
+    # (priorityRank asc, createdAt asc, number asc), not silently pass them through in
+    # `gh issue list`'s response order. The candidates flowing through that Sort-Object
+    # are always [ordered] dictionaries (ConvertTo-HdoHashtable's own decoding), and a
+    # plain calculated-property Sort-Object Expression does not bind against an
+    # OrderedDictionary - see the comment on that return statement for the full
+    # explanation. `tests/fixtures/cli/gh/issue-list.json` is deliberately NOT listed in
+    # the intended output order for exactly this reason, so this exercises a genuine
+    # re-order rather than a no-op pass-through.
+    #
+    # This full round-trip through Get-HdoIssueCandidate (rather than unit-testing
+    # Sort-Object in isolation) also has to satisfy contract validation, ready-label
+    # authorization, dependency resolution, and claim-comment checks for every fixture
+    # issue, so it reuses the same mock `gh` (`tests/fixtures/cli/gh/gh.cmd`, a superset
+    # of `tests/fixtures/workflow/gh/gh.cmd` that also answers `issue list`) and
+    # supporting fixture data `src/cli/issuesParity.test.ts` uses for its own PS/TS
+    # parity coverage of this same function.
+    #
+    # The config's repository directory is created OUTSIDE this repository (under the
+    # OS temp directory, not $testAppData) so `git rev-parse --show-toplevel` fails to
+    # find a `.git` there and `Get-HdoConfig` resolves `.hdo/project.json` from that
+    # directory itself, instead of walking up and picking up this repository's own
+    # (gate-id-incompatible) project contract.
+    $orderingCliGhFixtures = Join-Path $repositoryRoot 'tests/fixtures/cli/gh'
+    $orderingWorkflowGhFixtures = Join-Path $repositoryRoot 'tests/fixtures/workflow/gh'
+    $orderingRepositoryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "hdo-issue-candidate-ordering-$([guid]::NewGuid().ToString('N'))"
+    $orderingGhDirectory = Join-Path $testAppData 'mock-gh-issue-candidate-ordering'
+    try {
+        New-Item -ItemType Directory -Path (Join-Path $orderingRepositoryDirectory '.hdo') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $repositoryRoot 'tests/fixtures/workflow/project.json') -Destination (Join-Path $orderingRepositoryDirectory '.hdo/project.json') -Force
+        New-Item -ItemType Directory -Path $orderingGhDirectory -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $orderingCliGhFixtures 'gh.cmd') -Destination (Join-Path $orderingGhDirectory 'gh.cmd') -Force
+        Copy-Item -LiteralPath (Join-Path $orderingCliGhFixtures 'issue-list.json') -Destination (Join-Path $orderingGhDirectory 'issue-list.json') -Force
+        Copy-Item -LiteralPath (Join-Path $orderingWorkflowGhFixtures 'issue-events.json') -Destination (Join-Path $orderingGhDirectory 'issue-events.json') -Force
+        Copy-Item -LiteralPath (Join-Path $orderingWorkflowGhFixtures 'issue-comments.json') -Destination (Join-Path $orderingGhDirectory 'issue-comments.json') -Force
+        Copy-Item -LiteralPath (Join-Path $orderingWorkflowGhFixtures 'graphql-last-edited.json') -Destination (Join-Path $orderingGhDirectory 'graphql-last-edited.json') -Force
+
+        $env:PATH = "$orderingGhDirectory;$originalGhPath"
+        $orderingConfig = Get-HdoConfig -RepositoryPath $orderingRepositoryDirectory
+        Assert-Hdo (-not $orderingConfig.repositoryConfig.loaded) 'Get-HdoIssueCandidate ordering fixture repository is resolved on its own (outside the real repository) so it picks up the fixture project contract'
+        $orderedCandidates = @(Get-HdoIssueCandidate -Config $orderingConfig -Repository 'hdo-fixture/repo')
+        $orderedNumbers = @($orderedCandidates | ForEach-Object { [int]$_.number }) -join ','
+        Assert-Hdo ($orderedNumbers -eq '103,102,101') "Get-HdoIssueCandidate re-sorts candidates by (priorityRank asc, createdAt asc, number asc) instead of passing gh issue list's (out-of-order) response order through unchanged (R1-1). Got: $orderedNumbers"
+    }
+    finally {
+        $env:PATH = $originalGhPath
+        if (Test-Path -LiteralPath $orderingRepositoryDirectory) { Remove-Item -LiteralPath $orderingRepositoryDirectory -Recurse -Force }
+    }
+
     # Regression coverage for review finding B-4: without -NoEnumerate, ConvertFrom-HdoJson
     # must be a true drop-in for ConvertFrom-Json, i.e. a multi-element top-level JSON array
     # comes back as a genuine multi-element array (not re-wrapped as a single nested array).

@@ -454,7 +454,14 @@ function Get-HdoIssueCandidate {
         $issue['priorityRank'] = $priorityRank
         $candidates += $issue
     }
-    return @($candidates | Sort-Object @{ Expression = 'priorityRank'; Ascending = $true }, @{ Expression = 'createdAt'; Ascending = $true }, @{ Expression = 'number'; Ascending = $true } | Select-Object -First $Limit)
+    # NOTE: `$candidates` entries are [ordered] dictionaries (ConvertTo-HdoHashtable
+    # always returns OrderedDictionary). Sort-Object does NOT bind a property-name
+    # Expression (even a calculated-property hashtable with a string Expression)
+    # against an OrderedDictionary key - it silently falls through and leaves the
+    # input order untouched. Script-block Expressions (`{ ... }`) DO evaluate
+    # correctly against OrderedDictionary indexers, so they are required here. Do not
+    # "simplify" this back to string Expressions - that reintroduces a no-op sort.
+    return @($candidates | Sort-Object -Property @{ Expression = { [int]$_['priorityRank'] }; Ascending = $true }, @{ Expression = { [string]$_['createdAt'] }; Ascending = $true }, @{ Expression = { [int]$_['number'] }; Ascending = $true } | Select-Object -First $Limit)
 }
 
 function Test-HdoIssueDependencies {

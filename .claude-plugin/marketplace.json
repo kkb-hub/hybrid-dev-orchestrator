@@ -10,7 +10,7 @@
     {
       "name": "hdo",
       "source": "./",
-      "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles with thin Claude Code and Codex wrappers around hdo.ps1."
+      "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles with thin Claude Code and Codex wrappers around a TypeScript (Node) CLI."
     }
   ]
 }

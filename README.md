@@ -267,7 +267,7 @@ worktree には意図的に未 commit の変更が残るため、通常の clean
 
 ## Claude Code plugin として使う
 
-この repository は Claude Code plugin としてもインストールできます。plugin は `hdo.ps1` を包む薄い層で、orchestration logic を複製しません。
+この repository は Claude Code plugin としてもインストールできます。plugin は TypeScript CLI（`src/cli/main.ts`、`node` で起動）を包む薄い層で、orchestration logic を複製しません。**利用前に plugin root で `npm ci` を一度実行してください**（Node.js 24 LTS が必須で、`node_modules/` は gitignore されているため plugin には同梱されません）。PowerShell 実装（`hdo.ps1`）は maintenance mode のまま repository に残っており、plugin からは呼ばれません。
 
 ```text
 claude plugin marketplace add kkb-hub/hybrid-dev-orchestrator
@@ -287,11 +287,11 @@ claude plugin install hdo@hybrid-dev-orchestrator
 | `/hdo:cleanup` | run worktree の除去（`-WhatIf` 既定） |
 | `/hdo:labels` | label catalog の差分・同期 |
 
-ローカル checkout を試す場合は `claude --plugin-dir C:\src\hybrid-dev-orchestrator` でも読み込めます。plugin 経由でも前提（`pwsh` 7.2+、`git`、`gh`、runner CLI）は同じです。
+ローカル checkout を試す場合は `claude --plugin-dir C:\src\hybrid-dev-orchestrator` でも読み込めます。plugin 経由の前提は Node.js 24 LTS（`npm ci` 実行済み）・`git`・`gh`・runner CLI です。
 
 ## Codex plugin として使う
 
-同じ repository を Codex plugin marketplace として追加できます。Codex 側は `.codex-plugin/plugin.json` と `skills/` を読み込み、Claude Code 用の `commands/` と同じ `hdo.ps1` を呼び出します。
+同じ repository を Codex plugin marketplace として追加できます。Codex 側は `.codex-plugin/plugin.json` と `skills/` を読み込み、Claude Code 用の `commands/` と同じ TypeScript CLI（`node src/cli/main.ts`）を呼び出します。
 
 ```text
 codex plugin marketplace add kkb-hub/hybrid-dev-orchestrator --ref main
@@ -318,11 +318,11 @@ codex plugin marketplace add C:\src\hybrid-dev-orchestrator
 codex plugin add hdo@hybrid-dev-orchestrator
 ```
 
-plugin 経由でも前提（Windows 11、`pwsh` 7.2+、`git`、`gh`、選択した runner CLI）は同じです。`$hdo-run` は明示した full run 以外では `-DryRun` を優先し、`$hdo-cleanup` は常に preview から始めます。
+plugin 経由でも前提（Windows 11、Node.js 24 LTS（`npm ci` 実行済み）、`git`、`gh`、選択した runner CLI）は同じです。`$hdo-run` は明示した full run 以外では `-DryRun` を優先し、`$hdo-cleanup` は常に preview から始めます。
 
 ## plugin version を更新する
 
-client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。
+client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`、`package.json`、`package-lock.json`）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。
 
 `.github/workflows/plugin-version.yml` が pull request と `main` への push でこれを検査し、bump 漏れと version 不一致を失敗させます。手元で同じ検査を実行する場合は次のとおりです。
 
@@ -353,7 +353,7 @@ MVP の command adapter と validation command に対して、HDO 自身が OS f
 
 ## TypeScript 実装（進行中の移行）
 
-`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ6（workflow）まで完了**しており、`src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/github/`・`src/runners/`・`src/workflow/`・`src/cli/` に配置しています（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。
+`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ7（cli/plugin）まで完了**しており、`hdo` の全9コマンド（`help`/`doctor`/`config`/`issues`/`inspect`/`run`/`status`/`cleanup`/`labels`）が `src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/github/`・`src/runners/`・`src/workflow/`・`src/cli/` の TypeScript 実装で使えます（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。フェーズ7で新たに TypeScript へ移植したのは `issues`・`inspect`・`cleanup`・`labels` の4コマンドです（`help`/`config`/`doctor`/`run`/`status` はフェーズ1・5・6で先行配線済み）。
 
 ```sh
 npm ci
@@ -361,16 +361,23 @@ npm run typecheck
 npm test
 node src/cli/main.ts config -Json
 node src/cli/main.ts doctor -DryRun -Json
+node src/cli/main.ts issues -Json
+node src/cli/main.ts inspect -Issue <n> -Json
 node src/cli/main.ts run -Issue <n> -NoWriteBack -Json
 node src/cli/main.ts status -RunId <id> -Json
+node src/cli/main.ts cleanup -RunId <id> -WhatIf
+node src/cli/main.ts labels -Apply -WhatIf
 ```
 
+> **plugin を使う場合は `npm ci` が必須です。** フェーズ7の cut-over により、Claude Code/Codex plugin の全8個の `commands/*.md`・全8個の `skills/*/SKILL.md` は `pwsh`（`hdo.ps1`）ではなく `node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" <command>` を呼び出します。TypeScript CLI は依存（`ajv`/`ajv-formats`/`koffi`）を必要とし、`node_modules/` は gitignore されているため、**plugin をインストールした client repository では、利用前に plugin root（この repository のルート）で `npm ci` を一度実行してください**。`node_modules` が無い状態で呼び出すと command は失敗します。plugin のインストール自体が Node 24 以上と `npm ci` の実行を新しい前提条件として要求します。
+
 - `node src/cli/main.ts config -Json` は `pwsh -NoProfile -File hdo.ps1 config -Json` と意味的に等価な出力を返します（オプション名は `hdo.ps1` と同じ `-Json`/`-Config`/`-Profile`/`-IgnoreRepositoryConfig`/`-RepositoryPath` 等）。`-Json` を付けない `config` も同じ JSON を stdout に出力します（PowerShell 版の非`-Json`テーブル表示は再現していません）。
-- `node src/cli/main.ts doctor -DryRun -Json` は `pwsh -NoProfile -File hdo.ps1 doctor -DryRun -Json` と意味的に等価な read-only preflight 結果を返します。`src/runners/`（Codex/Claude/command adapter）と `src/workflow/`（preflight、`.hdo/project.json` の読み込み）がフェーズ5で追加され、`src/github/`（Issue 正規化・pickup・claim/label 同期）はフェーズ4で追加されています。
-- `node src/cli/main.ts run -Issue <n> -NoWriteBack -Json` と `node src/cli/main.ts status -RunId <id> -Json` はフェーズ6で追加しました。`config`/`doctor` と同じ理由（フェーズ6の終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たず先行して配線しています。`commands/*.md`・`skills/*/SKILL.md` は引き続き `pwsh`（`hdo.ps1`）を呼び出しており、これらの切り替えはフェーズ7で行います。
-- PowerShell 実装は、Migration strategy フェーズ7の parity 到達まで **canonical CLI であり続けます**。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
+- `node src/cli/main.ts doctor -DryRun -Json` は `pwsh -NoProfile -File hdo.ps1 doctor -DryRun -Json` と意味的に等価な read-only preflight 結果を返します。`src/runners/`（Codex/Claude/command adapter）と `src/workflow/`（preflight、`.hdo/project.json` の読み込み）がフェーズ5で追加され、`src/github/`（Issue 正規化・pickup・claim/label 同期）はフェーズ4で追加されています。フェーズ7で `doctor` に `node-version` check（`required: false`、Node 24 以上で `pass`）を追加しました。
+- `node src/cli/main.ts run -Issue <n> -NoWriteBack -Json` と `node src/cli/main.ts status -RunId <id> -Json` はフェーズ6で追加しました。`config`/`doctor` と同じ理由（フェーズ6の終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たず先行して配線しています。
+- `node src/cli/main.ts issues -Json`・`inspect -Issue <n> -Json`・`cleanup -RunId <id> -WhatIf`・`labels -Apply -WhatIf` はフェーズ7で追加しました。`cleanup -WhatIf` は PowerShell の `ShouldProcess` 出力（`What if: ...` 行 + stdout の `null`）をそのまま再現します。`labels -WhatIf` は `-Apply` を伴わない限り plain `labels` と同一出力です。詳細・parity 測定方法は `docs/architecture.md` §16.2・§16.4「フェーズ7」を参照してください。
+- PowerShell 実装は、Migration strategy フェーズ6・フェーズ7 両方の終了条件を満たしたことを受け **maintenance mode（既存不具合の修正のみ、新規 subsystem は追加しない）へ移行しました**。`hdo.ps1` と `src/HybridDevOrchestrator/` は削除しておらず、`workers/hdo-ollama-worker.ps1` はフェーズ8完了まで live のまま残ります。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
 - Windows の process-tree containment（`NodeProcessRunner`）は `koffi`（FFI、`package.json` に exact version pin）経由で Win32 Job Object を保持します。詳細は `docs/adr/0002-windows-job-object-via-koffi.md` を参照してください。koffi の import は `src/platform/**` に限定され、`src/core/**` からは import できません（`src/core/boundary.test.ts` が機械的に検査します）。
-- CI は `.github/workflows/typescript.yml` が **`windows-latest` のみ**で `npm ci` → typecheck → test → `config -Json` → `doctor -DryRun -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows です）。
+- CI は `.github/workflows/typescript.yml` が **`windows-latest` のみ**で `npm ci` → typecheck → test → `help` smoke → `config -Json` → `doctor -DryRun -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows です）。
 
 ## 詳細文書
 

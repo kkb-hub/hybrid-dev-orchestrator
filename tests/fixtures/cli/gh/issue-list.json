@@ -1,0 +1,38 @@
+[
+  {
+    "number": 101,
+    "title": "Fixture: low priority candidate",
+    "body": "## Problem / Context\n\nContext text for issue 101.\n\n## Goal\n\nGoal text.\n\n## In scope\n\n- Deterministic fixture-driven scenario\n\n## Out of scope\n\n- Real GitHub writeback\n\n## Acceptance Criteria\n\n- AC-01: The candidate is listed deterministically.\n\n## Validation Gate IDs\n\n- gate-pass\n\n## Constraints\n\n- Do not require network access.\n\n## Dependencies\n\n_No response_\n\n## Affected Areas\n\n- cli\n\n## Additional Context\n\n_No response_",
+    "state": "OPEN",
+    "labels": [{ "name": "hdo:ready" }, { "name": "hdo:priority/p3" }, { "name": "hdo:risk/low" }],
+    "assignees": [],
+    "author": { "login": "fixture-owner" },
+    "createdAt": "2026-01-03T00:00:00Z",
+    "updatedAt": "2026-01-03T00:00:00Z",
+    "url": "https://github.com/hdo-fixture/repo/issues/101"
+  },
+  {
+    "number": 102,
+    "title": "Fixture: high priority, later candidate",
+    "body": "## Problem / Context\n\nContext text for issue 102.\n\n## Goal\n\nGoal text.\n\n## In scope\n\n- Deterministic fixture-driven scenario\n\n## Out of scope\n\n- Real GitHub writeback\n\n## Acceptance Criteria\n\n- AC-01: The candidate is listed deterministically.\n\n## Validation Gate IDs\n\n- gate-pass\n\n## Constraints\n\n- Do not require network access.\n\n## Dependencies\n\n_No response_\n\n## Affected Areas\n\n- cli\n\n## Additional Context\n\n_No response_",
+    "state": "OPEN",
+    "labels": [{ "name": "hdo:ready" }, { "name": "hdo:priority/p1" }, { "name": "hdo:risk/low" }],
+    "assignees": [],
+    "author": { "login": "fixture-owner" },
+    "createdAt": "2026-01-02T00:00:00Z",
+    "updatedAt": "2026-01-02T00:00:00Z",
+    "url": "https://github.com/hdo-fixture/repo/issues/102"
+  },
+  {
+    "number": 103,
+    "title": "Fixture: high priority, earlier candidate",
+    "body": "## Problem / Context\n\nContext text for issue 103.\n\n## Goal\n\nGoal text.\n\n## In scope\n\n- Deterministic fixture-driven scenario\n\n## Out of scope\n\n- Real GitHub writeback\n\n## Acceptance Criteria\n\n- AC-01: The candidate is listed deterministically.\n\n## Validation Gate IDs\n\n- gate-pass\n\n## Constraints\n\n- Do not require network access.\n\n## Dependencies\n\n_No response_\n\n## Affected Areas\n\n- cli\n\n## Additional Context\n\n_No response_",
+    "state": "OPEN",
+    "labels": [{ "name": "hdo:ready" }, { "name": "hdo:priority/p1" }, { "name": "hdo:risk/low" }],
+    "assignees": [],
+    "author": { "login": "fixture-owner" },
+    "createdAt": "2026-01-01T00:00:00Z",
+    "updatedAt": "2026-01-01T00:00:00Z",
+    "url": "https://github.com/hdo-fixture/repo/issues/103"
+  }
+]
