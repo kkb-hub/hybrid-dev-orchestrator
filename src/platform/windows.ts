@@ -3,18 +3,29 @@
 // `createProcessContainer` on top of phase 1's userConfigDir/defaultDataDir/
 // pathEquals/isPathWithinRoot/expandPath.
 //
-// Executable resolution is PATHEXT-aware but deliberately filters candidates down to
-// `.exe`/`.com` only: `.cmd`/`.bat` (and `.ps1`) shims are never resolved here,
-// because Node's `spawn()` of a bare `.cmd`/`.bat` path throws *synchronously* on
-// modern Node (EINVAL, CVE-2024-27980) unless `shell: true` is set, and
-// `NodeProcessRunner` never sets `shell: true`. Practically this means npm-global
-// shims such as `claude.cmd`/`codex.cmd` are NOT resolved by this adapter; a later
-// migration phase must either follow the shim to its real `node <script>` target or
-// rely on an installer build that ships a `.exe`. This is a documented divergence
-// from PowerShell's `Get-Command`, which DOES resolve `npm.cmd`-style shims (see
-// ADR-0001 Migration strategy phase 5 and docs/architecture.md 16.4).
+// Executable resolution is PATHEXT-aware and, since phase 5 (WP-D), resolves
+// `.exe`/`.com`/`.cmd`/`.bat` - PATHEXT's own default order (`.COM;.EXE;.BAT;.CMD`)
+// already makes an `.exe`/`.com` in the same directory win over a `.cmd`/`.bat`
+// there, matching `Get-Command -CommandType Application`. `.cmd`/`.bat` are
+// resolved (rather than skipped, as phase 2 left them) because
+// `NodeProcessRunner.run` (src/process/runner.ts) now detects a resolved
+// `.cmd`/`.bat` path and spawns `cmd.exe` directly with a command line built and
+// validated by `src/core/process/cmdShim.ts`, instead of asking Node to `spawn()`
+// the batch file directly - which throws *synchronously* on modern Node (EINVAL,
+// CVE-2024-27980) unless `shell: true` is set, and `NodeProcessRunner` never sets
+// `shell: true`. Practically this means npm-global shims such as
+// `claude.cmd`/`codex.cmd` ARE now resolved (and runnable) by this adapter, closing
+// the divergence from PowerShell's `Get-Command` that phase 2 documented (ADR-0001
+// Migration strategy phase 5, docs/architecture.md 16.4 phase-2 item 4).
+//
+// `.ps1` is deliberately still never resolved (Issue #35): only Application-type
+// executables are ever resolved/spawned by either implementation - PowerShell's own
+// oracle uses `Get-Command <name> -CommandType Application`, which never returns a
+// `.ps1` script either. An npm-global layout with both `claude.ps1` and `claude.cmd`
+// therefore resolves to `claude.cmd` here (matching PS), and a `.ps1`-only command is
+// `undefined` here (matching PS, which previously threw at run time for that case).
 import { spawn } from "node:child_process";
-import { accessSync, constants as fsConstants, existsSync, lstatSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants as fsConstants, existsSync, lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { delimiter, join, resolve, sep } from "node:path";
 import { expandPath as expandPathCore } from "../core/config/expand.ts";
@@ -22,9 +33,12 @@ import { createWindowsProcessContainer } from "./jobObject.ts";
 import { comparableFullPath, isPathWithinRoot, resolveExistingAncestor } from "./paths.ts";
 import type { PlatformAdapter, ProcessContainer } from "./types.ts";
 
-// F-04 (ported from poc/typescript/src/platform/windows.ts): the only extensions
-// Node can `spawn()` directly (no `shell: true`, no EINVAL).
-const RESOLVABLE_EXTENSIONS = new Set([".exe", ".com"]);
+// F-04 (ported from poc/typescript/src/platform/windows.ts), extended in phase 5
+// (WP-D): the extensions `NodeProcessRunner` can actually get running without
+// `shell: true` - `.exe`/`.com` via a direct `spawn()`, `.cmd`/`.bat` via the
+// validated `cmd.exe` wrapper in `src/process/runner.ts`. `.ps1` is deliberately
+// excluded (see the module banner above).
+const RESOLVABLE_EXTENSIONS = new Set([".exe", ".com", ".cmd", ".bat"]);
 
 function hasResolvableExtension(candidatePath: string): boolean {
   const match = /\.[A-Za-z0-9]+$/.exec(candidatePath);
@@ -77,6 +91,31 @@ function isFileLike(path: string): boolean {
   }
 }
 
+/**
+ * P-1: a candidate built by appending a PATHEXT entry (e.g. `.EXE`) to `name` carries
+ * PATHEXT's own casing, not the file's real on-disk casing - `Get-Command`'s
+ * `.Source` reports the on-disk name (`git.exe`), and phase-5's `doctor` surfaces
+ * this text to users (`command:git`/`runner:<r>:shim` messages), so the divergence is
+ * no longer just an internal implementation detail once it is user-visible. Looks up
+ * `dir`'s real directory entry for `candidate` case-insensitively and returns that
+ * casing; falls back to the constructed `fullPath` unchanged if the directory can't
+ * be listed (e.g. a permissions error) or, defensively, if no matching entry is
+ * found. This runs strictly AFTER `candidateExists`/`isFileLike` have already
+ * confirmed `fullPath` resolves to something real - including an App Execution
+ * Alias reparse-point placeholder, which `readdirSync` still lists by its ordinary
+ * directory-entry name (only `stat`, not `readdir`, is affected by that reparse
+ * behaviour), so alias resolution is unaffected by this lookup.
+ */
+function realCasing(dir: string, candidate: string, fullPath: string): string {
+  try {
+    const entries = readdirSync(dir);
+    const match = entries.find((entry) => entry.toLowerCase() === candidate.toLowerCase());
+    return match ? join(dir, match) : fullPath;
+  } catch {
+    return fullPath;
+  }
+}
+
 function findExecutableOnPath(name: string): string | undefined {
   // An already-qualified path (contains a separator) is checked directly, but is
   // still subject to the same .exe/.com-only filter (a caller-supplied `foo.cmd`
@@ -100,7 +139,7 @@ function findExecutableOnPath(name: string): string | undefined {
     for (const candidate of candidates) {
       if (!hasResolvableExtension(candidate)) continue;
       const fullPath = join(dir, candidate);
-      if (candidateExists(fullPath) && isFileLike(fullPath)) return fullPath;
+      if (candidateExists(fullPath) && isFileLike(fullPath)) return realCasing(dir, candidate, fullPath);
     }
   }
   return undefined;

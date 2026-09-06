@@ -42,6 +42,21 @@ export class SchemaRegistry {
     this.compiled.set(name, validator);
     return validator;
   }
+
+  /**
+   * Returns the raw, already-parsed schema document for `name` (the same object
+   * `get()` would compile), without compiling it. Lets hosts hand the canonical
+   * schema straight to `claudeSchema`/`codexSchema` (transport-schema derivation) so
+   * they never need to re-read a schema file themselves. Throws the identical
+   * "Unknown schema name" text `get()` throws, for the same unknown `name`.
+   */
+  getDocument(name: SchemaName): SchemaObject {
+    const document = this.documents[name];
+    if (!document) {
+      throw new Error(`Unknown schema name '${name}'. Known schemas: ${SCHEMA_NAMES.join(", ")}`);
+    }
+    return document;
+  }
 }
 
 export function isSchemaName(value: string): value is SchemaName {

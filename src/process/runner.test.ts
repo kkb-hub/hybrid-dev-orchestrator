@@ -1,15 +1,19 @@
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { test } from "node:test";
+import { loadSchemaRegistry } from "../cli/schemaLoader.ts";
+import { buildCmdShimCommandLine } from "../core/process/cmdShim.ts";
+import { toClaudeTransportSchemaJson } from "../core/runners/claudeSchema.ts";
 import { getPlatform } from "../platform/index.ts";
 import type { PlatformAdapter, ProcessContainer } from "../platform/types.ts";
 import { __setCreateCaptureWriteStreamForTests, NodeProcessRunner, resolveOutputLimitStream } from "./runner.ts";
 import type { CaptureSink } from "./runner.ts";
 
 const platform = getPlatform();
+const IS_WINDOWS = process.platform === "win32";
 
 function killByPid(pid: number): void {
   if (process.platform === "win32") {
@@ -612,6 +616,61 @@ test("S-3: killTree is a no-op once the child has already exited (a late capture
   assert.equal(killProcessTreeCalls, 0, "killProcessTree must never be called once the child has already exited");
 });
 
+test("CI-EPERM: run() does not resolve until the capture sink has released its file descriptor ('close'), not merely flushed ('finish')", async (t) => {
+  // Regression for the windows-latest failure of agentStep.integration.test.ts:
+  // protectLogFile(stdout.log) renamed over the capture file right after run()
+  // resolved and got EPERM because the fs.WriteStream's fd was still open - end()'s
+  // callback fires on 'finish', the descriptor is only released on 'close'. This fake
+  // sink fires 'finish' immediately but delays 'close' by 300 ms and reports
+  // closed=false until then; run() must wait for it.
+  let closeListener: (() => void) | undefined;
+  let closedAt = 0;
+  const restore = __setCreateCaptureWriteStreamForTests((): CaptureSink => {
+    const sink: CaptureSink & { closed: boolean } = {
+      write(): boolean {
+        return true;
+      },
+      on(): CaptureSink {
+        return sink;
+      },
+      end(callback: () => void): CaptureSink {
+        callback();
+        setTimeout(() => {
+          sink.closed = true;
+          closedAt = Date.now();
+          closeListener?.();
+        }, 300);
+        return sink;
+      },
+      once(event: "close", listener: () => void): CaptureSink {
+        if (event === "close") closeListener = listener;
+        return sink;
+      },
+      destroyed: false,
+      closed: false,
+    };
+    return sink;
+  });
+  t.after(() => restore());
+
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-close-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const runner = new NodeProcessRunner({ platform });
+  const result = await runner.run({
+    command: process.execPath,
+    arguments: ["-e", "process.stdout.write('x'); process.exit(0);"],
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 10,
+    outputDrainSeconds: 2,
+    standardOutputPath: join(dir, "stdout.log"),
+  });
+  const resolvedAt = Date.now();
+  assert.equal(result.exitCode, 0);
+  assert.ok(closedAt > 0, "the fake sink's delayed 'close' must have fired before run() resolved");
+  assert.ok(resolvedAt >= closedAt, "run() resolved before the sink reported 'close'");
+});
+
 test("S-4: capture-file writes honour backpressure - the child's stdout is paused while the sink reports write()=false", async (t) => {
   const totalBytes = 8 * 1024 * 1024; // 8 MiB: comfortably larger than any single pipe-chunk/highWaterMark read
   let totalWrittenToSink = 0;
@@ -728,3 +787,418 @@ test(
     assert.equal(result.stderr, "Failed to capture process output: process did not exit after termination was requested.");
   },
 );
+
+// --- WP-D (ADR-0001 phase 5): .cmd/.bat shim spawning through the validated cmd.exe
+// wrapper (src/core/process/cmdShim.ts). Windows-only: off Windows, `resolveExecutable`
+// never resolves a `.cmd`/`.bat` shim at all (see src/platform/posix.ts), so this path
+// cannot be exercised there.
+
+test("shim spawn: echo-args.cmd round-trips argv for plain/spaced/empty/JSON-with-quotes/metacharacter arguments", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "echo-args.cmd");
+  // node is resolved via `process.execPath` (this test's own Node), quoted so a path
+  // containing spaces (e.g. "C:\Program Files\nodejs\node.exe") still works.
+  writeFileSync(
+    shimPath,
+    `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" %*\r\n`,
+    "utf8",
+  );
+
+  const runner = new NodeProcessRunner({ platform });
+  const cases: string[][] = [["plain"], ["two words"], [""], ['{"a":"b c"}'], ["a&b"], ["x", "y z", "&"]];
+  for (const args of cases) {
+    const result = await runner.run({
+      command: shimPath,
+      arguments: args,
+      workingDirectory: process.cwd(),
+      timeoutSeconds: 10,
+    });
+    assert.equal(result.exitCode, 0, `expected exit 0 for args ${JSON.stringify(args)}, stderr: ${JSON.stringify(result.stderr)}`);
+    assert.deepEqual(JSON.parse(result.stdout), args, `argv round trip failed for ${JSON.stringify(args)}`);
+    // ProcessResult.command/.arguments report the CALLER's values (the shim path as
+    // given, and the args as given) - never cmd.exe's own view.
+    assert.equal(result.command, shimPath);
+    assert.deepEqual(result.arguments, args);
+  }
+});
+
+test("shim spawn: a rejected argument throws before spawn - no process ever starts", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-reject-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "marker-writer.cmd");
+  const markerPath = join(dir, "marker.txt");
+  writeFileSync(shimPath, `@echo off\r\necho written> "${markerPath}"\r\n`, "utf8");
+
+  const runner = new NodeProcessRunner({ platform });
+  await assert.rejects(
+    () =>
+      runner.run({
+        command: shimPath,
+        arguments: ["50%"],
+        workingDirectory: process.cwd(),
+        timeoutSeconds: 10,
+      }),
+    new RegExp(
+      `^Error: Failed to start command: .*\\. The shim path or an argument cannot be passed safely through the batch shim '.*': argument 0 contains a percent sign$`,
+    ),
+  );
+  assert.equal(existsSync(markerPath), false, "the shim must never have run - the marker file must not exist");
+});
+
+test("shim spawn: exitCode propagates from the .cmd's own exit /b", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-exit-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "exit-three.cmd");
+  writeFileSync(shimPath, "@echo off\r\nexit /b 3\r\n", "utf8");
+
+  const runner = new NodeProcessRunner({ platform });
+  const result = await runner.run({
+    command: shimPath,
+    arguments: [],
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 10,
+  });
+  assert.equal(result.exitCode, 3);
+});
+
+// --- Fix-1 (review round 1, B-1/S-1/S-2/S-3/finding 5/6/11): the parity-aware
+// builder, cmd.exe existence check, /v:off, and Job Object containment through a
+// .cmd shim's grandchild - see src/core/process/cmdShim.ts and cmdShim.test.ts for
+// the pure-builder half of B-1's proof.
+
+// review round 2 nit 6: every one of these 8 vectors is ALSO known (from the round-2
+// attack sweep, `r2\attack.mjs`) to round-trip byte-exactly through a real cmd.exe in
+// every shim directory tested - none of them is a REJECTED vector. Asserting the argv
+// round-trip here (not just "no marker") turns this test from proving "not injected"
+// into proving "correct", which is the actual contract `buildCmdShimCommandLine` makes.
+test("shim spawn: B-1 vectors never create the marker file through a REAL cmd.exe, and the argv round-trips byte-exact", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-b1-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "echo-args.cmd");
+  writeFileSync(
+    shimPath,
+    `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`,
+    "utf8",
+  );
+  const markerPath = join(dir, "MARKER.txt");
+  writeFileSync(join(dir, "whoami.cmd"), `@echo off\r\necho injected> "${markerPath}"\r\n`, "utf8");
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}${delimiter}${previousPath ?? ""}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+  });
+
+  const vectors: string[][] = [
+    ['a"', "x y&whoami"],
+    ['{"a":"x\\"y"}', "safe arg&echo INJECTED2"],
+    ['"', "&whoami"],
+    ['a"b', "(x)"],
+    ['x" & whoami'],
+    ['" & whoami & "'],
+    ['a\\"&whoami'],
+    ['x"y"z&whoami'],
+  ];
+
+  const runner = new NodeProcessRunner({ platform });
+  for (const args of vectors) {
+    if (existsSync(markerPath)) rmSync(markerPath);
+    const result = await runner.run({
+      command: shimPath,
+      arguments: args,
+      workingDirectory: process.cwd(),
+      timeoutSeconds: 10,
+    });
+    assert.equal(
+      existsSync(markerPath),
+      false,
+      `expected the marker to never be created for args ${JSON.stringify(args)}, stdout: ${JSON.stringify(result.stdout)}`,
+    );
+    assert.equal(result.exitCode, 0, `args ${JSON.stringify(args)}: stderr ${JSON.stringify(result.stderr)}`);
+    assert.deepEqual(JSON.parse(result.stdout), args, `argv round-trip failed for args ${JSON.stringify(args)}`);
+  }
+});
+
+test("shim spawn: the full review-result transport schema JSON round-trips as a single argument (formerly rejected as 'undecidable')", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-schema-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "echo-args.cmd");
+  writeFileSync(
+    shimPath,
+    `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`,
+    "utf8",
+  );
+
+  const registry = loadSchemaRegistry();
+  const reviewResultSchemaJson = toClaudeTransportSchemaJson(registry.getDocument("review-result"));
+  assert.ok(reviewResultSchemaJson.includes('"'));
+  assert.ok(reviewResultSchemaJson.includes("^"), "expected the review-result transport schema to still contain a '^' (a regex anchor)");
+
+  const args = ["-p", "--output-format", "json", "--json-schema", reviewResultSchemaJson, "--model", "claude-opus-5"];
+  const runner = new NodeProcessRunner({ platform });
+  const result = await runner.run({
+    command: shimPath,
+    arguments: args,
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 10,
+  });
+  assert.equal(result.exitCode, 0, `stderr: ${JSON.stringify(result.stderr)}`);
+  assert.deepEqual(JSON.parse(result.stdout), args);
+});
+
+test("shim spawn: S-1 a shim directory containing cmd.exe metacharacters/comma without whitespace still launches", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-dirs-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const echoBody = `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`;
+
+  const runner = new NodeProcessRunner({ platform });
+  for (const dirName of ["x(1)", "a,b", "dir with space"]) {
+    const dir = join(root, dirName);
+    mkdirSync(dir, { recursive: true });
+    const shimPath = join(dir, "echo-args.cmd");
+    writeFileSync(shimPath, echoBody, "utf8");
+
+    const args = ["plain", "two words", "a&b"];
+    const result = await runner.run({
+      command: shimPath,
+      arguments: args,
+      workingDirectory: process.cwd(),
+      timeoutSeconds: 10,
+    });
+    assert.equal(result.exitCode, 0, `shim dir ${dirName}: stderr ${JSON.stringify(result.stderr)}`);
+    assert.deepEqual(JSON.parse(result.stdout), args, `shim dir ${dirName}: argv round trip failed`);
+  }
+});
+
+test("shim spawn: an 8000-character argument and unicode both round-trip", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-longuni-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "echo-args.cmd");
+  writeFileSync(
+    shimPath,
+    `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`,
+    "utf8",
+  );
+
+  const runner = new NodeProcessRunner({ platform });
+  const args = ["a".repeat(8000), "日本語 テスト", "émoji 🚀", "^!&|<>()"];
+  const result = await runner.run({
+    command: shimPath,
+    arguments: args,
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 10,
+  });
+  assert.equal(result.exitCode, 0, `stderr: ${JSON.stringify(result.stderr)}`);
+  assert.deepEqual(JSON.parse(result.stdout), args);
+});
+
+// review round 2 should-fix 2: proves the FIX end-to-end against a real cmd.exe - an
+// argument whose total REAL command line lands at exactly 8191 characters actually
+// runs to completion (byte-exact), and one landing at 8192 is rejected BEFORE spawn
+// (a `Failed to start command` throw, never a spawned-then-failed process). The
+// arithmetic mirrors what `src/process/runner.ts` itself computes: the REAL prefix is
+// `<spawnFile> /d /s /v:off /c "` where `<spawnFile>` is the resolved COMSPEC (not a
+// placeholder `cmd.exe` literal) - this is exactly the gap the previous, wrong-prefix
+// check silently left open (builder-accepted lines that then failed at runtime with
+// an ordinary exit code and mojibake CP932 stderr, "command line too long").
+test("shim spawn: an argument landing the REAL command line at exactly 8191 characters runs to completion; 8192 is rejected before spawn", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-boundary-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "echo-args.cmd");
+  writeFileSync(
+    shimPath,
+    `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" -- %*\r\n`,
+    "utf8",
+  );
+
+  // Mirrors runner.ts's own COMSPEC resolution exactly, so the boundary computed here
+  // matches what the runner will actually spawn.
+  const systemRoot = process.env.SYSTEMROOT ?? process.env.WINDIR ?? "C:\\Windows";
+  const spawnFile = process.env.COMSPEC || join(systemRoot, "System32", "cmd.exe");
+  const commandLinePrefix = `${spawnFile} /d /s /v:off /c "`;
+
+  // line = `"${shimPath}"` (always quoted, no metacharacters in a mkdtemp path) + " "
+  // + "a"*N (unquoted: no whitespace/quote); total = commandLinePrefix.length +
+  // line.length + 1 (closing quote) = commandLinePrefix.length + (shimPath.length + 2)
+  // + 1 + N + 1. Solve for N at total = 8191.
+  const quotedShimLength = shimPath.length + 2;
+  const atLimitN = 8191 - commandLinePrefix.length - quotedShimLength - 2;
+  const overLimitN = atLimitN + 1;
+
+  // Sanity check against the pure builder first, with the SAME prefix, before ever
+  // spawning anything - if this ever drifts, the arithmetic above (not the runner) is
+  // what needs fixing.
+  const atLimitLine = buildCmdShimCommandLine(shimPath, ["a".repeat(atLimitN)], { commandLinePrefix });
+  assert.equal(commandLinePrefix.length + atLimitLine.length + 1, 8191);
+  assert.throws(() => buildCmdShimCommandLine(shimPath, ["a".repeat(overLimitN)], { commandLinePrefix }));
+
+  const runner = new NodeProcessRunner({ platform });
+  const atLimitArgs = ["a".repeat(atLimitN)];
+  const okResult = await runner.run({
+    command: shimPath,
+    arguments: atLimitArgs,
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 30,
+  });
+  assert.equal(okResult.exitCode, 0, `stderr: ${JSON.stringify(okResult.stderr)}`);
+  assert.deepEqual(JSON.parse(okResult.stdout), atLimitArgs, "expected the at-limit argument to round-trip byte-exact");
+
+  const overLimitArgs = ["a".repeat(overLimitN)];
+  await assert.rejects(
+    () =>
+      runner.run({
+        command: shimPath,
+        arguments: overLimitArgs,
+        workingDirectory: process.cwd(),
+        timeoutSeconds: 30,
+      }),
+    (err: unknown) => {
+      const message = (err as Error).message;
+      assert.ok(message.startsWith("Failed to start command: "), message);
+      assert.ok(message.includes("command line exceeds the 8191-character cmd.exe limit (8192 characters)"), message);
+      return true;
+    },
+  );
+});
+
+// review round 2 nit 5: a COMSPEC pointing at a real, existing DIRECTORY (not a file)
+// previously passed the old `existsSync` check and then failed at spawn time with a
+// misleading `ENOENT`-shaped 127 result - exactly the shape S-3 was meant to remove.
+// `statSync(...).isFile()` rejects it here instead, with the SAME clear message as a
+// missing COMSPEC.
+test("shim spawn: a COMSPEC pointing at a directory is rejected the same way as a missing one", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-comspecdir-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "ok.cmd");
+  const markerPath = join(dir, "marker.txt");
+  writeFileSync(shimPath, `@echo off\r\necho written> "${markerPath}"\r\n`, "utf8");
+
+  const previousComspec = process.env.COMSPEC;
+  process.env.COMSPEC = dir; // a real, existing directory - not a file
+  t.after(() => {
+    if (previousComspec === undefined) delete process.env.COMSPEC;
+    else process.env.COMSPEC = previousComspec;
+  });
+
+  const runner = new NodeProcessRunner({ platform });
+  await assert.rejects(
+    () => runner.run({ command: shimPath, arguments: [], workingDirectory: process.cwd(), timeoutSeconds: 10 }),
+    (err: unknown) => {
+      const message = (err as Error).message;
+      assert.ok(message.startsWith("Failed to start command: "), message);
+      assert.ok(message.includes(`cmd.exe was not found at '${dir}' (COMSPEC)`), message);
+      return true;
+    },
+  );
+  assert.equal(existsSync(markerPath), false, "the shim must never have run");
+});
+
+// review round 2 nit 5: a RELATIVE COMSPEC (e.g. `cmd.exe`, resolvable by
+// `CreateProcess` via its own PATH search) must be rejected outright rather than
+// silently resolved against `process.cwd()` (which `statSync` would otherwise do
+// implicitly, making the outcome depend on an ambient value this runner does not
+// otherwise consult).
+test("shim spawn: a relative COMSPEC is rejected outright, not resolved against process.cwd()", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-comspecrel-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "ok.cmd");
+  const markerPath = join(dir, "marker.txt");
+  writeFileSync(shimPath, `@echo off\r\necho written> "${markerPath}"\r\n`, "utf8");
+
+  const previousComspec = process.env.COMSPEC;
+  process.env.COMSPEC = "cmd.exe";
+  t.after(() => {
+    if (previousComspec === undefined) delete process.env.COMSPEC;
+    else process.env.COMSPEC = previousComspec;
+  });
+
+  const runner = new NodeProcessRunner({ platform });
+  await assert.rejects(
+    () => runner.run({ command: shimPath, arguments: [], workingDirectory: process.cwd(), timeoutSeconds: 10 }),
+    (err: unknown) => {
+      const message = (err as Error).message;
+      assert.ok(message.startsWith("Failed to start command: "), message);
+      assert.ok(message.includes("COMSPEC must be an absolute path to cmd.exe, got 'cmd.exe'."), message);
+      return true;
+    },
+  );
+  assert.equal(existsSync(markerPath), false, "the shim must never have run");
+});
+
+test("shim spawn: an invalid COMSPEC throws Failed to start command, no process ever starts", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-comspec-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const shimPath = join(dir, "ok.cmd");
+  const markerPath = join(dir, "marker.txt");
+  writeFileSync(shimPath, `@echo off\r\necho written> "${markerPath}"\r\n`, "utf8");
+
+  const previousComspec = process.env.COMSPEC;
+  process.env.COMSPEC = join(dir, "does-not-exist", "cmd.exe");
+  t.after(() => {
+    if (previousComspec === undefined) delete process.env.COMSPEC;
+    else process.env.COMSPEC = previousComspec;
+  });
+
+  const runner = new NodeProcessRunner({ platform });
+  await assert.rejects(
+    () =>
+      runner.run({
+        command: shimPath,
+        arguments: [],
+        workingDirectory: process.cwd(),
+        timeoutSeconds: 10,
+      }),
+    new RegExp(`^Error: Failed to start command: .*\\. cmd\\.exe was not found at '.*does-not-exist.*cmd\\.exe' \\(COMSPEC\\)$`),
+  );
+  assert.equal(existsSync(markerPath), false, "the shim must never have run");
+});
+
+test("finding 11: Job Object containment reaches a grandchild spawned through a .cmd shim on timeout", { skip: !IS_WINDOWS && "windows-only" }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-runner-cmdshim-sleeper-"));
+  const pidPath = join(dir, "grandchild.pid");
+  let grandchildPid: number | undefined;
+  t.after(() => {
+    if (grandchildPid !== undefined && isProcessAlive(grandchildPid)) killByPid(grandchildPid);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  // A separate .mjs file (rather than an inline `-e` one-liner) sidesteps having to
+  // escape JS-level quotes inside a batch line: the shim just passes the pid-file
+  // path as a plain argv entry.
+  const grandchildScriptPath = join(dir, "grandchild.mjs");
+  writeFileSync(
+    grandchildScriptPath,
+    "import { writeFileSync } from 'node:fs';\nwriteFileSync(process.argv[2], String(process.pid));\nsetTimeout(() => {}, 60000);\n",
+    "utf8",
+  );
+  const shimPath = join(dir, "sleeper.cmd");
+  // The shim runs the 60s `node` process directly (foreground, no `start`/`/wait`
+  // needed) - this is the "only place a grandchild is introduced deliberately
+  // through the cmd.exe hop" per finding 11: `NodeProcessRunner` spawns cmd.exe
+  // (replacing what would normally be a direct spawn of the command), and cmd.exe in
+  // turn spawns `node` as ITS OWN child while running the shim's batch body -
+  // structurally a grandchild of the runner. cmd.exe blocking on it for up to 60s is
+  // fine: the 2s timeout below kills the whole tree long before that.
+  writeFileSync(shimPath, `@echo off\r\n"${process.execPath}" "${grandchildScriptPath}" "${pidPath}"\r\n`, "utf8");
+
+  const runner = new NodeProcessRunner({ platform });
+  const result = await runner.run({
+    command: shimPath,
+    arguments: [],
+    workingDirectory: process.cwd(),
+    timeoutSeconds: 2,
+  });
+
+  assert.equal(result.timedOut, true);
+  assert.equal(result.exitCode, 124);
+
+  const deadline = Date.now() + 3000;
+  while (!existsSync(pidPath) && Date.now() < deadline) {
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 100));
+  }
+  assert.ok(existsSync(pidPath), "expected the grandchild to have recorded its own PID before the timeout killed it");
+  grandchildPid = Number(readFileSync(pidPath, "utf8").trim());
+
+  const died = await pollUntil(() => !isProcessAlive(grandchildPid!), 5000, 200);
+  assert.ok(died, `expected grandchild pid ${grandchildPid} to be dead after process-tree termination through the .cmd shim`);
+});

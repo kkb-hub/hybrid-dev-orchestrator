@@ -1,7 +1,7 @@
 // Pure port of `Get-HdoExecutionPlan` (Configuration.ps1). `generatedAt` is injected
 // so this stays pure (no `node:` timestamp source) - the caller passes an ISO 8601
 // UTC string in the same format as `Get-HdoUtcTimestamp`
-// (`[DateTimeOffset]::UtcNow.ToString('o')`, e.g. `2026-09-05T12:34:56.7890123Z`).
+// (`[DateTimeOffset]::UtcNow.ToString('o')`, e.g. `2026-09-05T13:27:06.1581406+00:00`).
 import type { JsonObject, JsonValue } from "../contracts/types.ts";
 import { findKeyIgnoreCase, getValue, setKeyIgnoreCase } from "./value.ts";
 

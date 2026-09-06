@@ -5,9 +5,9 @@ name: typescript
 # ubuntu-latest is intentionally not a gate here (unlike poc-typescript.yml, which
 # keeps its ubuntu-latest job as PoC-only informational evidence and is not touched
 # by this workflow). This workflow is the regression gate for the Migration
-# strategy phases as they land - phase 1 (core contracts / config / state) and now
-# phase 2 (process / platform) - and will grow to cover later migration phases in
-# place, without renaming.
+# strategy phases as they land - phase 1 (core contracts / config / state), phase 2
+# (process / platform), phase 3 (git), phase 4 (github), and now phase 5 (runners) -
+# and will grow to cover later migration phases in place, without renaming.
 
 on:
   pull_request:
@@ -69,3 +69,26 @@ jobs:
 
       - name: Config preflight
         run: node src/cli/main.ts config -Json
+
+      - name: Doctor preflight
+        shell: pwsh
+        run: |
+          # windows-latest has git/gh/pwsh but not claude/codex/ollama, so the
+          # default claude-only profile's `runner:*` checks fail and `doctor`
+          # exits 3 (not ok) - that is an expected, informative preflight result
+          # here, not a CI failure. Only a genuine crash (any other exit code)
+          # should fail this step. The Actions pwsh wrapper runs with
+          # $ErrorActionPreference = 'Stop' and re-exits with the last native
+          # exit code, so both are neutralised explicitly here: native non-zero
+          # exits must not terminate the script, and the step's own exit code is
+          # decided by the check below instead of by node's 3.
+          $PSNativeCommandUseErrorActionPreference = $false
+          $ErrorActionPreference = 'Continue'
+          node src/cli/main.ts doctor -DryRun -Json
+          $code = $LASTEXITCODE
+          if ($code -notin @(0, 3)) {
+            Write-Host "::error::doctor -DryRun -Json exited $code (expected 0 or 3)"
+            exit 1
+          }
+          Write-Host "doctor -DryRun -Json exited $code (accepted: 0 = ok, 3 = preflight not ok)"
+          exit 0

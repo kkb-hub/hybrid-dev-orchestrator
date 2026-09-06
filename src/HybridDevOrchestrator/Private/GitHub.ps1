@@ -22,7 +22,22 @@ function Invoke-HdoGhJson {
         throw "GitHub CLI failed: $($result.stderr.Trim())"
     }
     try {
-        return ConvertTo-HdoHashtable ($result.stdout | ConvertFrom-Json -Depth 100)
+        # -NoEnumerate keeps a JSON top-level array an array through ConvertFrom-Json even
+        # when it has 0 or 1 elements. Without it, an empty array round-trips as $null, and
+        # the common call-site pattern `@(Invoke-HdoGhJson ...)` then produces a 1-element
+        # array holding that $null instead of an empty array (issue #50).
+        #
+        # The result is captured into a local variable before being returned rather than
+        # returned inline (`return ConvertTo-HdoHashtable (...)`). PowerShell's array
+        # subexpression operator collects a *pipeline*'s output items, so
+        # `@(Invoke-HdoGhJson ...)` at the call site would otherwise re-wrap the single
+        # -NoEnumerate array object emitted across the inline call chain into a 1-element
+        # array holding that array, reintroducing the same crash one level down. A plain
+        # variable assignment does not have that pipeline-collection behavior, so storing
+        # the converted value here first and returning the variable keeps it a bare array
+        # all the way through an outer `@(...)` wrap.
+        $converted = ConvertTo-HdoHashtable ($result.stdout | ConvertFrom-Json -Depth 100 -NoEnumerate)
+        return $converted
     }
     catch {
         throw "GitHub CLI returned invalid JSON: $($_.Exception.Message)"

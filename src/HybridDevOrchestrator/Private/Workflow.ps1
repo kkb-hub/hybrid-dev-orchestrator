@@ -18,18 +18,23 @@ function Test-HdoEnvironment {
     )
 
     $checks = [Collections.Generic.List[object]]::new()
+    # -CommandType Application excludes ExternalScript (.ps1): PowerShell's provider
+    # resolution order returns a .ps1 shim before its sibling .cmd/.exe when both exist on
+    # PATH, and a .ps1 cannot be started by Invoke-HdoProcess's ProcessStartInfo, so a bare
+    # Get-Command here would report a runner as present when it is not actually launchable
+    # (issue #35).
     foreach ($commandName in @('git', 'gh')) {
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        $command = Get-Command $commandName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         Add-HdoPreflightCheck $checks "command:$commandName" $(if ($command) { 'pass' } else { 'fail' }) $(if ($command) { $command.Source } else { "$commandName was not found." })
     }
-    if (Get-Command git -ErrorAction SilentlyContinue) {
+    if (Get-Command git -CommandType Application -ErrorAction SilentlyContinue) {
         try {
             $root = Get-HdoRepositoryRoot ([string]$Config.repositoryPath)
             Add-HdoPreflightCheck $checks 'git:repository' 'pass' $root
         }
         catch { Add-HdoPreflightCheck $checks 'git:repository' 'fail' $_.Exception.Message }
     }
-    if (Get-Command gh -ErrorAction SilentlyContinue) {
+    if (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue) {
         $auth = Invoke-HdoGh @('auth', 'status') ([string]$Config.repositoryPath) 60
         Add-HdoPreflightCheck $checks 'github:authentication' $(if ($auth.exitCode -eq 0) { 'pass' } else { 'fail' }) $(if ($auth.exitCode -eq 0) { 'GitHub CLI authentication is valid.' } else { $auth.stderr.Trim() })
     }
@@ -45,7 +50,7 @@ function Test-HdoEnvironment {
     foreach ($runnerName in $plan.runners.Keys) {
         $runner = $plan.runners[$runnerName]
         $commandName = [string]$runner.command
-        $command = Get-Command $commandName -ErrorAction SilentlyContinue
+        $command = Get-Command $commandName -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         Add-HdoPreflightCheck $checks "runner:$runnerName" $(if ($command) { 'pass' } else { 'fail' }) $(if ($command) { "$($runner.type) command '$commandName' is available." } else { "Runner command '$commandName' was not found." })
         # The Claude adapter passes the normalized JSON schema inline via --json-schema
         # (the CLI accepts no file path there). cmd.exe batch shims re-parse arguments and
@@ -58,7 +63,7 @@ function Test-HdoEnvironment {
     }
 
     if ($hasOllama) {
-        $ollamaCommand = Get-Command ollama -ErrorAction SilentlyContinue
+        $ollamaCommand = Get-Command ollama -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $ollamaCommand) {
             Add-HdoPreflightCheck $checks 'provider:ollama' 'fail' 'Ollama is selected by the active profile but the ollama command was not found.'
         }

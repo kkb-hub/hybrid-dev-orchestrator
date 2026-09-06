@@ -470,6 +470,45 @@ test("ignore-input.ps1 with standardOutputPath pointing at a directory: both imp
   assertFullParity(ps, ts, "ignore-input capture-error");
 });
 
+test(
+  "WP-D: a .cmd shim (echo-args.cmd) run through PowerShell's Invoke-HdoProcess and NodeProcessRunner produce the same stdout and exit code",
+  { skip: SKIP_REASON },
+  async (t) => {
+    // PowerShell's `.NET Process.Start` falls back to cmd.exe for a `.cmd` target
+    // with NO metacharacter protection at all (Common.ps1:744-847); the args chosen
+    // here (whitespace and an embedded `"`, but no cmd.exe metacharacter) are exactly
+    // the "benign" case that still round-trips correctly through PS's unprotected
+    // path, so this proves parity on the case both implementations actually agree
+    // on - not the corrupting case (see cmdShim.test.ts's rejection tests, and
+    // Workflow.ps1:50-56's shim warning, for the case where they diverge).
+    const dir = mkdtempSync(join(tmpdir(), "hdo-parity-cmdshim-"));
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+    const shimPath = join(dir, "echo-args.cmd");
+    writeFileSync(
+      shimPath,
+      `@echo off\r\n"${process.execPath}" -e "console.log(JSON.stringify(process.argv.slice(1)))" %*\r\n`,
+      "utf8",
+    );
+
+    const spec: OracleSpec = {
+      command: shimPath,
+      arguments: ["two words", '{"k":"v"}'],
+      workingDirectory: REPO_ROOT,
+      timeoutSeconds: 10,
+    };
+
+    const psOutcome = runOracle(spec);
+    assert.equal(psOutcome.errorMessage, null, `PS oracle threw: ${psOutcome.errorMessage}`);
+    const tsOutcome = await runTs(spec);
+    assert.equal(tsOutcome.errorMessage, null, `TS runner threw: ${tsOutcome.errorMessage}`);
+
+    const ps = psOutcome.result!;
+    const ts = tsOutcome.result!;
+    assert.equal((ps.stdout as string).trim(), (ts.stdout as string).trim());
+    assert.equal(ps.exitCode, ts.exitCode);
+  },
+);
+
 test("every scenario above produces identical ProcessResult key sets AND ORDER between implementations", { skip: SKIP_REASON }, async () => {
   const spec: OracleSpec = {
     command: "pwsh",

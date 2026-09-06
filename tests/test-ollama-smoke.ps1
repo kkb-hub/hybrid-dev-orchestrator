@@ -68,7 +68,11 @@ Write-OllamaSmokeReceipt $receipt
 [Console]::Error.WriteLine("HDO_SMOKE_RECEIPT $ResultPath")
 
 try {
-    foreach ($commandName in @('git', 'codex', 'claude', 'ollama')) {
+    # This smoke only ever starts the claude+ollama route (plan/review stay on the cloud
+    # Claude provider; implement/fix run against Ollama). It never shells out to codex, so
+    # requiring it as a prerequisite blocks Claude-only + Ollama environments that never
+    # installed codex from running this smoke at all (issue #36).
+    foreach ($commandName in @('git', 'claude', 'ollama')) {
         if (-not (Get-Command $commandName -ErrorAction SilentlyContinue)) {
             throw "Required command was not found: $commandName"
         }

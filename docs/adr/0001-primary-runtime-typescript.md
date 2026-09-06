@@ -98,7 +98,7 @@ TypeScript / Node.js 24 LTS を HDO の中長期 primary implementation language
 2. **process / platform**: `NodeProcessRunner`（bounded output, timeout, process tree kill）と `PlatformAdapter`（Windows/POSIX）を本番品質へ引き上げる。終了条件: `tests/fixtures/runtime/hold-output-handle.ps1`・`ignore-input.ps1`・`spam-output.ps1` と同一シナリオの test を `windows-latest`/`ubuntu-latest` の両 CI で pass させる（Windows は `tests/test-process-output.ps1:95-100` の `$IsWindows` 分岐と同じ assertion - exitCode 0、`outputDrainTimedOut` が false、孫 PID が `Get-Process` で見つからないこと - を oracle として満たす）、または Windows の Job Object 未対応（Rationale「最も強い反論」参照。孫プロセスが `SILENT_BREAKAWAY_OK` により Job のメンバーになれないという既知限界）を owner が明示的に受け入れる決定として新しい ADR（ADR-0002 以降）に記録するかのいずれかを満たし、かつ longpath 対応（Issue #25 相当）を実装する。
 3. **git**: `GitClient` に `diff --numstat`・porcelain status 取得を追加し、`Get-HdoDiff` 相当の完全な diff 構築（tracked + untracked、32 MiB上限）を実装する。終了条件: PowerShell側の `tests/run-tests.ps1` にある worktree/diff関連ケースと同じ入出力になることを、共有 fixture で確認する。
 4. **github**: Issue 正規化（`ConvertTo-HdoIssueContract`）、pickup 順序、claim/label同期、`trustedActors` 検証を実装する。終了条件: `hdo issues`/`hdo inspect` の出力が同一 Issue に対して PowerShell 版と一致する。
-5. **runners**: Codex/Claude/command adapter を実装する。終了条件: 同一 prompt/schema に対する `hdo run -DryRun` の execution plan が両実装で一致する。
+5. **runners**: Codex/Claude/command adapter を実装する。終了条件: 同一 prompt/schema に対する `hdo run -DryRun` の execution plan が両実装で一致する。Ollama 対応（route 1/2、`contextTokens`、doctor 検査）のスコープと完了条件の詳細は Amendments の「Ollama 対応の移行スコープ（Issue #37）」を参照。
 6. **workflow**: plan→implement→validate→review→fix の bounded loop、`.hdo/project.json` の gate 実行を実装する。終了条件: `NoWriteBack` full run が両実装で同じ state 遷移・同じ diff・同じ review 判定に到達する。判定には `tests/fixtures/runtime/mock-agent.ps1`/`mock-claude.cmd`/`validation-pass.ps1` 相当の決定論的な mock runner を使用し、実 agent（Claude/Codex/Ollama）には依存しない。
 7. **cli / plugin**: まず `hdo` CLIコマンド群（`help`/`doctor`/`config`/`issues`/`inspect`/`run`/`status`/`cleanup`/`labels`）を TypeScript 実装へ移植し、parity を確認する。終了条件（この順で満たす）: (i) `doctor`・`config`・`inspect`・`run -DryRun` の4コマンドについて `-Json` 出力が両実装で意味的に等価になる、(ii) `status`・`cleanup -WhatIf`・`labels -WhatIf` についても `-Json` 出力が共有 fixture に対して両実装で意味的に等価になることを追加で確認する。(i)・(ii) の parity 確認が両方完了して初めて、全8個の `commands/*.md`・全8個の `skills/*/SKILL.md` の呼び出し経路を TypeScript 実装へ切り替える（`allowed-tools` を `Bash(pwsh:*)` から `Bash(node:*)` へ、`plugin.json` の `description`/`keywords` も同時に更新し、片方だけ pwsh 呼び出しが残る中間状態を作らない）。
 
@@ -174,6 +174,22 @@ AC-05: 本 Issue の範囲内では PowerShell 7 実装を維持し、次を実�
 ### 2026-09-05: 移行の一次ターゲットは Windows
 
 repository owner の決定により、TypeScript 移行の一次ターゲットは Windows とする。Migration strategy の各フェーズの終了条件のうち `ubuntu-latest` / Linux に関する部分（フェーズ 2 の Linux CI、フェーズ 1・7 の Linux 上での起動確認など）は初期フェーズの gate とせず、TypeScript 実装が Windows parity（フェーズ 7）に到達した後に起票する WSL2 / Linux 対応 Issue で扱う。`poc-typescript.yml` の `ubuntu-latest` job は PoC の情報提供として維持するが、移行フェーズの終了条件には含めない。Issue #15 はこの前提で再スコープ済み（PowerShell 側の portability fix のみ。「Issue #15 への影響」節）。
+
+### 2026-09-06: Ollama 対応の移行スコープ（Issue #37）
+
+Issue #37 の AC-01〜AC-05 が問う「Ollama 対応をどのフェーズでどこまで移植するか」を、Migration strategy フェーズ5（runners）の一部として次のとおり確定する。
+
+**route 1（claude+ollama、`type: claude` / `provider: ollama`）はフェーズ5で完全に実装した。** `ANTHROPIC_BASE_URL` のloopback固定・非secretトークン注入（`src/core/runners/runnerEnvironment.ts`）、prompt に埋め込む正規化 transport schema（`src/core/runners/claudeArguments.ts`。npm SDK が任意 model ID に対して `--json-schema` を拒否するため、cloud route と異なりこちらは prompt 埋め込みを使う）、`ollama create` による派生 context model `hdo-ctx-<sanitized>-<sha256[0:8]>-<contextTokens>` の解決（`src/runners/ollamaContextModel.ts`）、structured-output prose 回復（`src/core/runners/claudeOutput.ts` の `recoverOllamaStructuredOutput` + `src/runners/ollamaStructuredOutput.ts` の artifact 書き込み）、context-overflow の診断（`src/core/runners/failureDetail.ts`）、doctor の `provider:ollama`/`ollama-model:*`/`ollama-context:*` 検査（`src/workflow/preflight.ts`）をすべて含む。
+
+**route 2（lean worker、`type: command` / `provider: ollama`）は、汎用 command adapter（token 展開・`promptTransport: file|stdin`・output-file-or-stdout、`src/runners/agentStep.ts`）としてのみフェーズ5に含む。** worker 本体である `workers/hdo-ollama-worker.ps1`（1222行、専用の715行テスト `tests/test-lean-worker.ps1` を持つ）は、フェーズ7（cli/plugin、PowerShell 実装が maintenance mode へ移行する時点）まで PowerShell のまま維持し、TypeScript へ移植しない。理由: (1) worker は HDO の runtime state に一切触れない独立した harness であり、(2) `{hdoRoot}`/`{promptFile}`/`{outputFile}`/`{schemaFile}`/`{model}`/`{contextTokens}` という token 契約（`config/examples/ollama-lean-worker.json`: `"command": "pwsh"`, `"args": ["-File", "{hdoRoot}/workers/hdo-ollama-worker.ps1", ...]`）そのものが、`command`/`extraArgs` を差し替えるだけで将来の `node` 版 worker に置き換え可能な抽象を既に提供しており、schema 変更なしに移行できる。結果として、TypeScript runtime 上で route 2 を使うには引き続き `pwsh` が PATH 上に必要になる（既知の制限として記録）。worker 自体の TypeScript 移植はフェーズ7より後の別 Issue で扱う。
+
+**doctor の Ollama 関連検査はフェーズ5で実装した**（`src/workflow/preflight.ts`、`Test-HdoEnvironment` 相当）: `ollama` command の存在、`ollama list` の成功、runner が指定する model の存在、（`contextTokens` 設定時）派生 context model が実際に `ollama create` できること、（`contextTokens` 未設定時）長時間 run で失敗しやすい構成である旨の warning。
+
+**`contextTokens` の扱いは route ごとに異なる**: route 1 は `ollama create` で焼き込む Modelfile の `num_ctx` パラメータと、Claude CLI 側の `CLAUDE_CODE_MAX_CONTEXT_TOKENS`（auto-compaction 基準）の2 lever を1つの値から導出する（`docs/configuration.md` §4.3 参照）。route 2 は `{contextTokens}` token 経由でリクエスト単位の `num_ctx` として渡すのみで、派生モデルは不要である。
+
+**完了マッピング**: フェーズ5は fixture/mock ベースの parity で測定する - prose 回復は `tests/fixtures/runtime/claude-ollama-*.json`（`src/runners/ollamaStructuredOutput.test.ts`・`src/runners/runnersParity.test.ts`）と `mock-claude-ollama-prose.cmd`（`src/runners/agentStep.integration.test.ts`）、派生 context model の実 process 実行は `ollama.cmd` mock（`src/runners/ollamaContextModel.test.ts`）。実 provider を用いた TypeScript 側の opt-in smoke（`tests/test-ollama-smoke.ps1`/`tests/test-lean-worker-smoke.ps1` の TS 相当）はフェーズ6（TS 側の `run` が存在してから）に委譲し、CI gate にはしない。
+
+**execution plan parity（フェーズ5の終了条件の半分）は Ollama の2例を含む**: `config/examples/ollama-hybrid.json`（route 1）と `config/examples/ollama-lean-worker.json`（route 2）は `src/cli/configParity.test.ts` の `CASES` に含まれており、Ollama 固有の runner 設定も execution plan parity の対象である。
 
 また bucket (a) の「`config/hdo.default.json` の `%LOCALAPPDATA%` 固定値を変更する」は、同ファイルが両実装共通の契約であるため値は変更せず、`Expand-HdoPath` 側で `%LOCALAPPDATA%` / `%APPDATA%` を .NET の既知フォルダーへ fallback させる方式で満たした（`docs/configuration.md` 9 節）。
 

@@ -16,7 +16,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createWriteStream, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { buildCmdShimCommandLine, CMD_SHIM_EXTENSION_PATTERN } from "../core/process/cmdShim.ts";
 import { protectObject, protectText } from "../core/process/redact.ts";
 import {
   DEFAULT_MAXIMUM_OUTPUT_BYTES,
@@ -227,14 +228,94 @@ export class NodeProcessRunner implements ProcessRunner {
       );
     }
 
+    // WP-D (ADR-0001 phase 5): a resolved `.cmd`/`.bat` shim (e.g. an npm-global
+    // `claude.cmd`) cannot be `spawn()`-ed directly - Node throws EINVAL
+    // synchronously for that (CVE-2024-27980) unless `shell: true` is set, and this
+    // runner never sets `shell: true`. Instead, `cmd.exe` itself is spawned with a
+    // single validated command-line string built by `buildCmdShimCommandLine` (see
+    // src/core/process/cmdShim.ts for the full quoting/escaping/rejection rules).
+    // `windowsVerbatimArguments: true` stops Node from re-quoting `spawnArgs` itself,
+    // since `line` inside the fourth element is already the exact text cmd.exe must
+    // see. `ProcessResult.command`/`.arguments` below still report the CALLER's
+    // `command`/`args` (unchanged), never `spawnFile`/`spawnArgs` - mirroring
+    // PowerShell, which reports `$Command`/`$Arguments`, not cmd.exe's own view.
+    //
+    // Gated on `process.platform === "win32"`: off Windows `resolveExecutable` never
+    // resolves a `.cmd`/`.bat` shim at all (see src/platform/posix.ts), but a
+    // caller-qualified path with that extension could still reach here - it must be
+    // spawned directly like any other executable, never routed through a `cmd.exe`
+    // this host does not have.
+    const isCmdShim = process.platform === "win32" && CMD_SHIM_EXTENSION_PATTERN.test(resolvedCommand);
+    let spawnFile = resolvedCommand;
+    let spawnArgs = args;
+    if (isCmdShim) {
+      const systemRoot = process.env.SYSTEMROOT ?? process.env.WINDIR ?? "C:\\Windows";
+      // `||`, not `??`: COMSPEC set but empty must fall back to the SystemRoot
+      // default too, not resolve to an empty spawn target.
+      spawnFile = process.env.COMSPEC || join(systemRoot, "System32", "cmd.exe");
+      // S-3 (nit 5, review round 2): PowerShell's `Process.Start` (which
+      // `CreateProcess` uses internally) consults COMSPEC itself and throws
+      // immediately when it does not point at a real, absolute cmd.exe file;
+      // without this check, Node's async spawn 'error' event would instead surface
+      // as a misleading 127 result ("Failed to capture process output: ENOENT:
+      // spawn ... ENOENT") well after this function had already committed to the
+      // shim path - checked here so a missing/invalid COMSPEC is a clear "failed to
+      // start" throw instead, matching the existing contract for every other
+      // pre-spawn failure in this function. A RELATIVE COMSPEC is rejected outright
+      // (rather than silently resolved against `process.cwd()`, which `statSync`
+      // would otherwise do) - this runner does not attempt to reproduce
+      // `CreateProcess`'s own relative-path search rules, only to fail clearly
+      // instead of depending on an ambient cwd. `statSync(...).isFile()` (not
+      // `existsSync`) so a COMSPEC pointing at a DIRECTORY is rejected here too,
+      // instead of reaching spawn() and failing with a misleading ENOENT-shaped
+      // result (measured: `COMSPEC=C:\Windows\System32` -> `exitCode: 127, stderr:
+      // "Failed to capture process output: ENOENT: spawn C:\Windows\System32
+      // ENOENT"`).
+      if (!isAbsolute(spawnFile)) {
+        throw new Error(`Failed to start command: ${command}. COMSPEC must be an absolute path to cmd.exe, got '${spawnFile}'.`);
+      }
+      let spawnFileIsFile: boolean;
+      try {
+        spawnFileIsFile = statSync(spawnFile).isFile();
+      } catch {
+        spawnFileIsFile = false;
+      }
+      if (!spawnFileIsFile) {
+        throw new Error(`Failed to start command: ${command}. cmd.exe was not found at '${spawnFile}' (COMSPEC)`);
+      }
+      // review round 2 should-fix 2: the 8191-character check inside
+      // `buildCmdShimCommandLine` must measure the REAL command line `CreateProcess`
+      // receives - `<spawnFile> /d /s /v:off /c "<line>"` - not a placeholder
+      // `cmd.exe` literal, so the exact fixed text between the resolved `spawnFile`
+      // and this function's own `line` is passed here. Node's `spawn()` with
+      // `windowsVerbatimArguments: true` does not quote `spawnFile` itself (or any
+      // other argument), so no surrounding quotes are added around it here -
+      // matching the value measured empirically: a real spawn's total command line
+      // works up to exactly 8191 characters and fails at 8192.
+      let line: string;
+      try {
+        line = buildCmdShimCommandLine(resolvedCommand, args, { commandLinePrefix: `${spawnFile} /d /s /v:off /c "` });
+      } catch (error) {
+        throw new Error(`Failed to start command: ${command}. ${(error as Error).message}`);
+      }
+      // /v:off (finding 5): disables delayed environment-variable expansion
+      // regardless of the `HKCU/HKLM\Software\Microsoft\Command Processor\
+      // DelayedExpansion` registry default - without it, a whitespace-quoted
+      // argument like `"a b!PATH!"` (accepted by buildCmdShimCommandLine today)
+      // would have `!PATH!` expanded even inside real quotes whenever that registry
+      // value is set to enable delayed expansion machine-wide.
+      spawnArgs = ["/d", "/s", "/v:off", "/c", `"${line}"`];
+    }
+
     let child: ChildProcess;
     try {
-      child = spawn(resolvedCommand, args, {
+      child = spawn(spawnFile, spawnArgs, {
         cwd: workingDirectory,
         env: options.environment ? { ...options.environment } : undefined,
         stdio: ["pipe", "pipe", "pipe"],
         detached: this.platform.spawnDetached,
         windowsHide: true,
+        windowsVerbatimArguments: isCmdShim,
       });
     } catch (error) {
       throw new Error(`Failed to start command: ${command}. ${errnoMessage(error)}`);
@@ -609,7 +690,22 @@ export class NodeProcessRunner implements ProcessRunner {
   private async closeWriteStream(stream?: CaptureSink): Promise<void> {
     if (!stream) return;
     if (stream.destroyed) return;
+    // `end(callback)` resolves on 'finish' (all data handed to the OS), but a real
+    // `fs.WriteStream` only releases its file descriptor afterwards, on 'close'
+    // (autoDestroy). On Windows an open descriptor makes a subsequent rename over
+    // the capture file fail with EPERM (seen in CI: `protectLogFile(stdout.log)`
+    // immediately after `run()` resolved), so also wait for 'close' when the sink
+    // exposes it. Fake sinks in tests may omit `once`/`closed`; they are then treated
+    // as closed once 'finish' fired, exactly as before.
     await new Promise<void>((resolvePromise) => stream.end(() => resolvePromise()));
+    if (stream.closed === true || typeof stream.once !== "function") return;
+    await new Promise<void>((resolvePromise) => {
+      if (stream.closed === true) {
+        resolvePromise();
+        return;
+      }
+      stream.once?.("close", () => resolvePromise());
+    });
   }
 }
 
@@ -624,6 +720,10 @@ export interface CaptureSink {
   on(event: "error" | "drain", listener: (error?: Error) => void): CaptureSink;
   end(callback: () => void): CaptureSink;
   readonly destroyed: boolean;
+  /** Optional (present on a real `fs.WriteStream`): true once the file descriptor
+   * has been released. `closeWriteStream` waits for 'close' when this is false. */
+  readonly closed?: boolean;
+  once?(event: "close", listener: () => void): CaptureSink;
 }
 
 // Test-only injection point (mirrors `jobObject.ts`'s `__setKoffiImporterForTests`):

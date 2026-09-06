@@ -12,7 +12,7 @@
 // against an unusual environment rather than failing loudly).
 import { strict as assert } from "node:assert";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { test } from "node:test";
@@ -70,10 +70,13 @@ test("resolveExecutable returns undefined for a name that does not exist anywher
   assert.equal(adapter.resolveExecutable("hdo-definitely-does-not-exist-anywhere"), undefined);
 });
 
-test("resolveExecutable deliberately does not resolve a .cmd shim, even though it is the only match on PATH", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-cmd-"));
+// --- phase 5 (WP-D): .cmd/.bat shim resolution, .ps1 exclusion (Issue #35) ---
+
+test("resolveExecutable: an .exe beats a .cmd in the same directory (PATHEXT default order)", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-exevscmd-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
-  writeFileSync(join(dir, "hdo-shim-only.cmd"), "@echo off\r\necho hi\r\n", "utf8");
+  writeFileSync(join(dir, "hdo-foo.exe"), "not a real PE, existence is all that matters here", "utf8");
+  writeFileSync(join(dir, "hdo-foo.cmd"), "@echo off\r\necho hi\r\n", "utf8");
   const previousPath = process.env.PATH;
   process.env.PATH = `${dir}${delimiter}${previousPath ?? ""}`;
   t.after(() => {
@@ -81,7 +84,104 @@ test("resolveExecutable deliberately does not resolve a .cmd shim, even though i
   });
 
   const adapter = createWindowsPlatformAdapter();
-  assert.equal(adapter.resolveExecutable("hdo-shim-only"), undefined);
+  const resolved = adapter.resolveExecutable("hdo-foo");
+  assert.ok(resolved, "expected hdo-foo to resolve");
+  assert.ok(resolved!.toLowerCase().endsWith("hdo-foo.exe"), `expected the .exe to win, got ${resolved}`);
+});
+
+test("resolveExecutable: P-1 returns the on-disk casing of a PATHEXT-resolved name, not PATHEXT's own casing", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  // PATHEXT candidates are built by appending PATHEXT's own entries (typically
+  // uppercase, e.g. ".EXE") to the bare name - a naive implementation returns that
+  // constructed casing verbatim, which diverges from `Get-Command`'s `.Source`
+  // (real on-disk casing) and is now user-visible via `doctor`'s
+  // `command:<name>`/`runner:<name>:shim` messages (arch 16.4-6 / review round 1
+  // finding P-1).
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-casing-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "hdo-cased.exe"), "not a real PE, existence is all that matters here", "utf8");
+  const previousPath = process.env.PATH;
+  const previousPathExt = process.env.PATHEXT;
+  process.env.PATH = `${dir}${delimiter}${previousPath ?? ""}`;
+  process.env.PATHEXT = ".EXE;.CMD;.BAT;.COM";
+  t.after(() => {
+    process.env.PATH = previousPath;
+    process.env.PATHEXT = previousPathExt;
+  });
+
+  const adapter = createWindowsPlatformAdapter();
+  const resolved = adapter.resolveExecutable("hdo-cased");
+  assert.ok(resolved, "expected hdo-cased to resolve");
+  assert.ok(resolved!.endsWith("hdo-cased.exe"), `expected the on-disk (lowercase) casing, got ${resolved}`);
+  assert.ok(!resolved!.endsWith("hdo-cased.EXE"), `expected NOT to see PATHEXT's own casing, got ${resolved}`);
+});
+
+test("resolveExecutable: the pwsh App Execution Alias still resolves after the on-disk-casing lookup (P-1)", { skip: !IS_WINDOWS && "windows-only" }, () => {
+  // readdirSync (used by the on-disk-casing fix above) must not disturb App
+  // Execution Alias resolution, which depends on lstatSync/statSync tolerance, not
+  // on directory listing - verified against this development machine's real `pwsh`
+  // alias (see the module's `candidateExists`/`isFileLike` doc comments).
+  const adapter = createWindowsPlatformAdapter();
+  const resolved = adapter.resolveExecutable("pwsh");
+  if (!resolved) {
+    // Not every machine has pwsh on PATH; this test only pins the interaction with
+    // the casing fix when it IS present.
+    return;
+  }
+  assert.ok(resolved.toLowerCase().endsWith("pwsh.exe"));
+  assert.ok(existsSync(resolved) || lstatSync(resolved).isSymbolicLink());
+});
+
+test("resolveExecutable: a .cmd beats a .ps1 with the same base name (only Application-type commands resolve, Issue #35)", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-cmdvsps1-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "hdo-bar.cmd"), "@echo off\r\necho hi\r\n", "utf8");
+  writeFileSync(join(dir, "hdo-bar.ps1"), "Write-Output 'hi'\r\n", "utf8");
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}${delimiter}${previousPath ?? ""}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+  });
+
+  const adapter = createWindowsPlatformAdapter();
+  const resolved = adapter.resolveExecutable("hdo-bar");
+  assert.ok(resolved, "expected hdo-bar to resolve");
+  assert.ok(resolved!.toLowerCase().endsWith("hdo-bar.cmd"), `expected the .cmd to win over the .ps1, got ${resolved}`);
+});
+
+test("resolveExecutable: a .ps1-only command is undefined (never resolved by either implementation)", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-ps1only-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, "hdo-baz.ps1"), "Write-Output 'hi'\r\n", "utf8");
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}${delimiter}${previousPath ?? ""}`;
+  t.after(() => {
+    process.env.PATH = previousPath;
+  });
+
+  const adapter = createWindowsPlatformAdapter();
+  assert.equal(adapter.resolveExecutable("hdo-baz"), undefined);
+});
+
+test("resolveExecutable: a qualified path ending in .cmd is resolved", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-qualifiedcmd-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const cmdPath = join(dir, "hdo-qualified.cmd");
+  writeFileSync(cmdPath, "@echo off\r\necho hi\r\n", "utf8");
+
+  const adapter = createWindowsPlatformAdapter();
+  const resolved = adapter.resolveExecutable(cmdPath);
+  assert.ok(resolved, "expected a qualified .cmd path to resolve");
+  assert.ok(resolved!.toLowerCase().endsWith("hdo-qualified.cmd"));
+});
+
+test("resolveExecutable: a qualified path ending in .ps1 is undefined", { skip: !IS_WINDOWS && "windows-only" }, (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "hdo-resolveexe-qualifiedps1-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const ps1Path = join(dir, "hdo-qualified.ps1");
+  writeFileSync(ps1Path, "Write-Output 'hi'\r\n", "utf8");
+
+  const adapter = createWindowsPlatformAdapter();
+  assert.equal(adapter.resolveExecutable(ps1Path), undefined);
 });
 
 test("killProcessTree terminates a running process by PID", { skip: !IS_WINDOWS && "windows-only" }, async () => {

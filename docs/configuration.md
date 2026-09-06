@@ -143,6 +143,8 @@ pwsh ./hdo.ps1 run -Issue 123 `
 | `promptTransport` | command only | `stdin` または `{promptFile}` を使う `file` |
 | `allowedTools` | Claude only | Claude CLI の `--allowedTools` permission allowlist へ渡す tool 名の配列 |
 
+`command` の解決は Application-type の実行ファイル（`.exe`/`.com`/`.cmd`/`.bat`）に限る。`.ps1` shim は選択されない（Issue #35）。npm グローバル install のように同名の `.ps1` と `.cmd` shim が両方存在するレイアウトでは `.cmd` 側が解決される。Claude runner が `.cmd`/`.bat` shim に解決された場合、`doctor` は `runner:<name>:shim` warning を返す（Windows では TypeScript ランタイムが `cmd.exe` の quote parity を追跡して安全に argument を渡すため、この review step は実際には壊れない。PowerShell 実装は依然として同じ入力を壊れた形で渡しうるため warning 自体は両実装向けに残している。4.3 の「npm shim の制約」も参照）。
+
 ### 4.1 Step ごとの権限
 
 - plan / review: `read-only` 必須
@@ -168,6 +170,8 @@ codex exec --ephemeral --ignore-user-config --ignore-rules --json --color never
 `provider` が `ollama` または `lmstudio` の場合は `--oss --local-provider <provider>` を加える。prompt は stdin で渡す。
 
 HDO が model、provider、sandbox、schema を含む実行契約を組み立てるため、個人の `config.toml` と execpolicy rules は読み込まない。Codex 組み込みおよび repository の instruction は引き続き読み込まれる。
+
+transport schema の正規化は、OpenAI Structured Outputs が document root は元より **ネストした位置を含むあらゆる深さで** `oneOf` を受け付けないため（Anthropic API がトップレベルの `oneOf`/`allOf`/`anyOf` だけを拒否するのと異なる制約）、`allOf` と同じ扱いで `oneOf` を除去する（Issue #22）。`anyOf` は対象外で、除去せず残す。
 
 Codex の `contextTokens` は requested value として CLI へ渡し execution plan に残す。command runner は `extraArgs` の `{contextTokens}` token で利用できる。Claude adapter には context-window argument も、Ollama の Anthropic-compatible endpoint 向けの per-request override もないため、cloud runner で `contextTokens` を設定すると configuration error になる。Claude/Ollama runner（4.3 参照）では別経路（derived local model の `num_ctx` と CLI 側の compaction 基準）で強制するため設定できる。
 
@@ -234,7 +238,7 @@ prompt は stdin で渡す。stdout の result envelope（単一 JSON object）�
   なお Ollama route の context window は runner 定義だけが決める。`Get-HdoSafeEnvironment` は secret 以外の環境変数をそのまま runner process へ渡すため、operator が export した `CLAUDE_CODE_MAX_CONTEXT_TOKENS` は claude+ollama runner では破棄したうえで `contextTokens` から再設定する。cloud runner では破棄しない。HDO は cloud runner の endpoint を固定しないので gateway 経由の未知 model ID という構成があり得るが、cloud では `contextTokens` 自体が configuration error であるため、環境変数以外に window を宣言する手段が無いためである。
 
   `ollama create` 自体が失敗した場合（Modelfile の構文エラーや base model 不在など）は ollama の stderr を含めて fail-closed する。ただし `ollama create` は num_ctx がハードウェアやモデルの実際の上限を超えていても manifest 作成自体は成功しうるため、それを超える `contextTokens` を要求した場合の失敗は実際の推論（agent step の実行時）まで顕在化しないことがある。`contextTokens` を設定しない claude+ollama runner は上記の落とし穴をそのまま踏むため、doctor が warning を出す。requested output の `model` は引き続き設定ファイル上のモデル名を報告し、派生モデル名は内部の transport 詳細として `stderr.log` からのみ確認できる。なお `no user query found in messages` で失敗した場合、HDO は failure detail に context window 超過である旨の診断を追記する。
-- **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、cmd.exe の argument 再解釈と 8191 文字上限がこの inline JSON を壊し得る。doctor が shim 解決を warning として報告するので、native install を推奨する。
+- **npm shim の制約**: `--json-schema` はファイルパスを受け付けないため（実測）、正規化した schema JSON を inline argument として渡す。`claude` が npm install の `.cmd` shim に解決される環境では、この inline JSON は cmd.exe を経由して子プロセスへ渡る。TypeScript ランタイムは `buildCmdShimCommandLine`（`src/core/process/cmdShim.ts`）が cmd.exe の quote parity を行全体で累積追跡し、review step の `--json-schema` を含む review-result transport schema（`"pattern": "^[a-f0-9]{40}..."` を含む）についても実機検証済みで、review step は npm の `.cmd` claude install 上でも正しく動作する（8191 文字上限は依然として有効な上限であり、それを超える場合のみ spawn 前に throw する）。PowerShell 実装（`.NET Process.Start` 経由）は同じ入力を保護なしで渡すため、この inline JSON を silently 壊す（例: schema の `^` anchor が消える）。doctor は依然として `runner:*:shim` warning を返す（PowerShell 実装向けの注意喚起として、および 8191 文字上限自体は両実装に共通するため）。
 
 ### 4.4 Command adapter
 
@@ -664,7 +668,7 @@ secret は user config にも保存しない。runner が authentication を必�
 | Claude effort error | Claude runner の `reasoningEffort` を `low`/`medium`/`high`/`xhigh`/`max` にする |
 | Claude extraArgs error | Claude runner の `extraArgs` を空にする。独自 argument が必要なら `command` runner |
 | Claude 認証 error | `claude` の login 状態。環境変数認証なら `passEnvironment` に認証変数を追加したか |
-| Claude step で schema/JSON error | doctor の `runner:*:shim` warning。npm の `.cmd` shim ではなく native claude install を使う |
+| Claude step で schema/JSON error | doctor の `runner:*:shim` warning。canonical CLI（PowerShell）実行なら npm の `.cmd` shim ではなく native claude install を使う（TypeScript ランタイムは `.cmd` shim を安全に扱うため必須ではないが、8191 文字上限には引き続き注意する） |
 | Ollama が突然必要 | active execution plan に `provider: ollama` がないか |
 | model missing | `ollama list` と runner.model。HDO は pull しない |
 | gate unknown | Issue の Validation Gate IDs と `.hdo/project.json` |

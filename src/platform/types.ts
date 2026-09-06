@@ -32,12 +32,17 @@ export interface PlatformAdapter extends EnvironmentTokenResolver {
 
   /**
    * Resolves an executable name to an absolute path the way `NodeProcessRunner` can
-   * actually `spawn()` without `shell: true`, or `undefined` if not found. On
-   * Windows this is PATH+PATHEXT-aware but filters candidates down to `.exe`/`.com`
-   * only (see src/platform/windows.ts's module comment for why `.cmd`/`.bat`/`.ps1`
-   * shims are never resolved here - a documented divergence from PowerShell's
-   * `Get-Command`, which does resolve them). An already-qualified path (containing a
-   * separator) is checked directly, subject to the same extension filter.
+   * actually get running without `shell: true`, or `undefined` if not found. On
+   * Windows this is PATH+PATHEXT-aware and filters candidates down to
+   * `.exe`/`.com`/`.cmd`/`.bat` (see src/platform/windows.ts's module comment): an
+   * `.exe`/`.com` is `spawn()`-able directly, while a `.cmd`/`.bat` match is run by
+   * `NodeProcessRunner` through a validated `cmd.exe` wrapper (see
+   * src/core/process/cmdShim.ts and src/process/runner.ts) - PATHEXT's own default
+   * order still makes an `.exe`/`.com` in the same directory win over a `.cmd`/`.bat`
+   * there. `.ps1` is never resolved by either implementation (Issue #35: only
+   * Application-type executables are ever resolved/spawned). An already-qualified
+   * path (containing a separator) is checked directly, subject to the same extension
+   * filter.
    */
   resolveExecutable(name: string): string | undefined;
 

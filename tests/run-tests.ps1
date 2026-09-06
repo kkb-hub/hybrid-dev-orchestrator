@@ -428,6 +428,44 @@ Keep the cycle bounded.
     $unknownGateResult = Test-HdoIssueContract -Contract $unknownGate -Config $config -ProjectContract $projectContract -RequireReady
     Assert-Hdo (-not $unknownGateResult.valid) 'unknown validation gate IDs are rejected'
 
+    # Regression coverage for issue #50: `gh issue list ... --json ...` printing the
+    # top-level JSON array `[]` (the common "no eligible Issue" case) must not crash
+    # `Get-HdoIssueCandidate` / `Invoke-HdoGhJson`'s callers. Without -NoEnumerate,
+    # ConvertFrom-Json round-trips "[]" as $null, and `@(Invoke-HdoGhJson ...)` at the call
+    # site then wraps that $null into a 1-element array holding $null instead of an empty
+    # array, so `foreach ($issue in $issues) { $issue['repository'] = ... }` throws
+    # "Cannot index into a null array." on the very first (and only) $null iteration.
+    $originalGhPath = $env:PATH
+    try {
+        $mockGhEmptyDirectory = Join-Path $testAppData 'mock-gh-empty-array'
+        New-Item -ItemType Directory -Path $mockGhEmptyDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mockGhEmptyDirectory 'gh.cmd') -Value "@echo off`r`necho []`r`nexit /b 0`r`n" -Encoding utf8NoBOM
+        $env:PATH = "$mockGhEmptyDirectory;$originalGhPath"
+        $emptyCandidatesError = $null
+        $emptyCandidates = $null
+        try { $emptyCandidates = @(Get-HdoIssueCandidate -Config $config -Repository 'owner/repo-with-no-candidates') }
+        catch { $emptyCandidatesError = $_.Exception.Message }
+        Assert-Hdo ($null -eq $emptyCandidatesError -and $emptyCandidates.Count -eq 0) 'Get-HdoIssueCandidate returns an empty array instead of crashing when gh issue list prints the empty JSON array []'
+
+        # A single-element JSON array must still come back as a genuine 1-element array
+        # (not unrolled to a scalar, and not nested under a spurious extra wrapper) so
+        # `@(Invoke-HdoGhJson ...)` callers keep iterating exactly once. This is checked
+        # directly against Invoke-HdoGhJson (rather than the full Get-HdoIssueCandidate
+        # pipeline) because reaching a real candidate also requires mocking the ready-label
+        # authorization and claim-comment gh calls Get-HdoIssueCandidate makes per issue;
+        # those are exercised indirectly by test-cli.ps1 / the smoke tests instead.
+        $mockGhOneDirectory = Join-Path $testAppData 'mock-gh-one-element-array'
+        New-Item -ItemType Directory -Path $mockGhOneDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $mockGhOneDirectory 'gh.cmd') -Value ('@echo off' + "`r`n" + 'echo [{"number":7,"title":"t"}]' + "`r`n" + 'exit /b 0' + "`r`n") -Encoding utf8NoBOM
+        $env:PATH = "$mockGhOneDirectory;$originalGhPath"
+        $oneElementResult = @(& $module {
+            param($WorkingDirectory)
+            Invoke-HdoGhJson @('issue', 'list', '--repo', 'owner/repo', '--state', 'open', '--label', 'hdo:ready', '--limit', '1000', '--json', 'number,title') $WorkingDirectory
+        } $repositoryRoot)
+        Assert-Hdo ($oneElementResult.Count -eq 1 -and [int]$oneElementResult[0].number -eq 7) 'Invoke-HdoGhJson still returns a genuine 1-element array (not unrolled, not nested) for a single-element gh JSON array'
+    }
+    finally { $env:PATH = $originalGhPath }
+
     $badConfig = Copy-HdoObject $config
     $badConfig.steps.review = 'claude-implementer'
     $badConfigResult = Test-HdoConfiguration $badConfig
@@ -551,6 +589,70 @@ Keep the cycle bounded.
         Assert-Hdo ($resolveContextModelError -match 'model requires more system memory') 'Resolve-HdoOllamaContextModel surfaces the ollama create failure instead of failing silently'
     }
     finally { $env:PATH = $originalOllamaPath }
+
+    # Regression coverage for issue #35: PowerShell's Get-Command provider resolution
+    # order returns an ExternalScript (.ps1) before a sibling Application (.cmd/.exe) on
+    # the same PATH entry, which is exactly the layout an npm-global install leaves for
+    # `claude` / `codex` (<name>, <name>.cmd, <name>.ps1 all present). Invoke-HdoProcess
+    # cannot start a .ps1 via ProcessStartInfo, and doctor's runner check used to report
+    # such a runner as present anyway. -CommandType Application must resolve to the
+    # launchable .cmd shim instead, and Invoke-HdoProcess must run it successfully.
+    $originalShimPath = $env:PATH
+    try {
+        $shimBothDirectory = Join-Path $testAppData 'hdo-shim-probe-both'
+        New-Item -ItemType Directory -Path $shimBothDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $shimBothDirectory 'hdo-shim-probe.ps1') -Value "throw 'ps1 must not run'`r`n" -Encoding utf8NoBOM
+        Set-Content -LiteralPath (Join-Path $shimBothDirectory 'hdo-shim-probe.cmd') -Value "@echo off`r`necho cmd-ok`r`nexit /b 0`r`n" -Encoding utf8NoBOM
+        $env:PATH = "$shimBothDirectory;$originalShimPath"
+
+        # AC-03: a bare command name that resolves to a `.ps1` + `.cmd` pair must run the
+        # `.cmd` and return a bounded, successful result instead of throwing.
+        $shimProcessError = $null
+        $shimProcessResult = $null
+        try {
+            $shimProcessResult = & $module {
+                param($WorkingDirectory)
+                Invoke-HdoProcess -Command 'hdo-shim-probe' -WorkingDirectory $WorkingDirectory -TimeoutSeconds 30
+            } $repositoryRoot
+        }
+        catch { $shimProcessError = $_.Exception.Message }
+        Assert-Hdo ($null -eq $shimProcessError -and $shimProcessResult.exitCode -eq 0 -and $shimProcessResult.stdout.Trim() -eq 'cmd-ok') 'Invoke-HdoProcess runs the .cmd shim instead of the .ps1 that Get-Command would otherwise prefer (AC-03)'
+
+        # AC-02: doctor's runner check must still pass (the runner is genuinely launchable
+        # via its .cmd shim) but also surface the existing batch-shim warning.
+        $shimDoctorConfig = Copy-HdoObject $config
+        $shimDoctorConfig.runners['claude-planner'].command = 'hdo-shim-probe'
+        $shimDoctorResult = Test-HdoEnvironment -Config $shimDoctorConfig -ReadOnly
+        $shimPlannerCheck = @($shimDoctorResult.checks | Where-Object name -eq 'runner:claude-planner')
+        $shimWarningCheck = @($shimDoctorResult.checks | Where-Object name -eq 'runner:claude-planner:shim')
+        Assert-Hdo ($shimPlannerCheck.Count -eq 1 -and $shimPlannerCheck[0].status -eq 'pass') 'doctor reports a runner resolved to its .cmd shim as pass, not silently launchable-but-wrong (AC-02)'
+        Assert-Hdo ($shimWarningCheck.Count -eq 1 -and $shimWarningCheck[0].status -eq 'warning') 'doctor still emits the existing batch-shim warning for a runner resolved via -CommandType Application (AC-02)'
+
+        # AC-01 / AC-04: a directory that has only the `.ps1` (no `.cmd`/`.exe` sibling)
+        # must be treated as not found, both by Invoke-HdoProcess and by doctor.
+        $shimPs1OnlyDirectory = Join-Path $testAppData 'hdo-shim-probe-ps1-only'
+        New-Item -ItemType Directory -Path $shimPs1OnlyDirectory -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $shimPs1OnlyDirectory 'hdo-ps1-only.ps1') -Value "throw 'ps1 must not run'`r`n" -Encoding utf8NoBOM
+        $env:PATH = "$shimPs1OnlyDirectory;$originalShimPath"
+
+        $ps1OnlyProcessError = $null
+        try {
+            $null = & $module {
+                param($WorkingDirectory)
+                Invoke-HdoProcess -Command 'hdo-ps1-only' -WorkingDirectory $WorkingDirectory -TimeoutSeconds 30
+            } $repositoryRoot
+        }
+        catch { $ps1OnlyProcessError = $_.Exception.Message }
+        Assert-Hdo ($ps1OnlyProcessError -eq 'Command was not found: hdo-ps1-only') 'Invoke-HdoProcess treats a .ps1-only resolution as not found rather than trying to launch it (AC-01)'
+
+        $ps1OnlyDoctorConfig = Copy-HdoObject $config
+        $ps1OnlyDoctorConfig.runners['claude-planner'].command = 'hdo-ps1-only'
+        $ps1OnlyDoctorResult = Test-HdoEnvironment -Config $ps1OnlyDoctorConfig -ReadOnly
+        $ps1OnlyPlannerCheck = @($ps1OnlyDoctorResult.checks | Where-Object name -eq 'runner:claude-planner')
+        Assert-Hdo ($ps1OnlyPlannerCheck.Count -eq 1 -and $ps1OnlyPlannerCheck[0].status -eq 'fail') 'doctor no longer false-passes a runner that only resolves to a non-launchable .ps1 (AC-04)'
+    }
+    finally { $env:PATH = $originalShimPath }
+
     $ollamaClaudeInput = & $module {
         param($Runner)
         Get-HdoClaudeInputText -Runner $Runner -Prompt 'work' -SchemaJson '{"type":"object"}'
@@ -670,7 +772,7 @@ Keep the cycle bounded.
     foreach ($codexSchemaName in @('task-contract', 'worker-result', 'review-result')) {
         $normalizedSchemaJson = & $module { param($Path) ConvertTo-HdoCodexJsonSchema $Path } (Join-Path $repositoryRoot "schemas/$codexSchemaName.schema.json")
         $codexSchemas[$codexSchemaName] = $normalizedSchemaJson | ConvertFrom-Json -AsHashtable -Depth 100
-        Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"|"allOf"|"if"|"then"|"contains"') "Codex-normalized $codexSchemaName schema drops unsupported Structured Outputs keywords"
+        Assert-Hdo ($normalizedSchemaJson -notmatch '"\$schema"|"allOf"|"oneOf"|"if"|"then"|"contains"') "Codex-normalized $codexSchemaName schema drops unsupported Structured Outputs keywords"
         Assert-Hdo ([string]$codexSchemas[$codexSchemaName].properties.schemaVersion.type -eq 'integer') "Codex-normalized $codexSchemaName schema infers the integer const type"
     }
     Assert-Hdo ([string]$codexSchemas['review-result'].properties.decision.type -eq 'string') 'Codex schema normalization infers string enum types'
@@ -679,6 +781,23 @@ Keep the cycle bounded.
     $codexReviewSchemaPath = Join-Path $testAppData 'codex-review-result.schema.json'
     $codexSchemas['review-result'] | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $codexReviewSchemaPath -Encoding utf8NoBOM
     Assert-Hdo ([bool]($validReviewJson | Test-Json -SchemaFile $codexReviewSchemaPath -ErrorAction SilentlyContinue)) 'valid review fixture passes the Codex transport schema'
+
+    # Regression coverage for issue #22: OpenAI Structured Outputs (used by Codex's
+    # --output-schema) supports anyOf but rejects oneOf, the same asymmetry #21 already
+    # fixed for the Claude route's allOf/oneOf/anyOf. A nested (non-root) oneOf must be
+    # dropped from the Codex transport copy, while anyOf -- which Codex does support --
+    # must be preserved.
+    $codexOneOfSchemaPath = Join-Path $testAppData 'codex-oneof-keyword.schema.json'
+    '{"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"oneOf":[{"type":"string"},{"type":"null"}]}}}' |
+        Set-Content -LiteralPath $codexOneOfSchemaPath -Encoding utf8NoBOM
+    $normalizedOneOfJson = & $module { param($Path) ConvertTo-HdoCodexJsonSchema $Path } $codexOneOfSchemaPath
+    Assert-Hdo ($normalizedOneOfJson -notmatch '"oneOf"') 'Codex schema normalization drops a nested oneOf that OpenAI Structured Outputs does not support'
+
+    $codexAnyOfSchemaPath = Join-Path $testAppData 'codex-anyof-keyword.schema.json'
+    '{"type":"object","additionalProperties":false,"required":["v"],"properties":{"v":{"anyOf":[{"type":"string"},{"type":"null"}]}}}' |
+        Set-Content -LiteralPath $codexAnyOfSchemaPath -Encoding utf8NoBOM
+    $normalizedAnyOfJson = & $module { param($Path) ConvertTo-HdoCodexJsonSchema $Path } $codexAnyOfSchemaPath
+    Assert-Hdo ($normalizedAnyOfJson -match '"anyOf"') 'Codex schema normalization keeps anyOf, which OpenAI Structured Outputs does support'
 
     $optionalSchemaPath = Join-Path $testAppData 'codex-optional-property.schema.json'
     '{"type":"object","additionalProperties":false,"properties":{"requiredValue":{"type":"string"},"optionalValue":{"type":"string"}},"required":["requiredValue"]}' |

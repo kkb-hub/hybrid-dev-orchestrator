@@ -759,7 +759,13 @@ function Invoke-HdoProcess {
         [switch]$ThrowOnError
     )
 
-    $resolvedCommand = Get-Command $Command -ErrorAction SilentlyContinue
+    # -CommandType Application excludes ExternalScript (.ps1). PowerShell's provider
+    # resolution order returns a .ps1 shim before its sibling .cmd/.exe when both exist on
+    # PATH (e.g. an npm-global install lays down <name>, <name>.cmd, and <name>.ps1), and
+    # ProcessStartInfo cannot start a .ps1 directly -- it throws "is not a valid
+    # application for this OS platform" at spawn time instead of a clear "not found"
+    # (issue #35).
+    $resolvedCommand = Get-Command $Command -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $resolvedCommand) { throw "Command was not found: $Command" }
 
     $startInfo = [Diagnostics.ProcessStartInfo]::new()

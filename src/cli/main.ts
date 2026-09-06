@@ -1,17 +1,19 @@
 #!/usr/bin/env node
-// Composition root: wires core + platform + git together. Phase 1 only implements
-// the `config` subcommand end to end (plus `help`); the remaining hdo.ps1 commands
-// (doctor/issues/inspect/run/status/cleanup/labels) are later migration phases (see
-// ADR-0001 Migration strategy) - `args.ts` already accepts their option names so
-// those phases do not need to touch the parser again.
+// Composition root: wires core + platform + git together. Phases 1-5 implement the
+// `config` and `doctor` subcommands end to end (plus `help`); the remaining hdo.ps1
+// commands (issues/inspect/run/status/cleanup/labels) are later migration phases
+// (see ADR-0001 Migration strategy) - `args.ts` already accepts their option names
+// so those phases do not need to touch the parser again.
 import { getPlatform } from "../platform/index.ts";
 import { parseArgs } from "./args.ts";
 import { buildConfigCommandOutput, nowIso, resolveCliConfig } from "./configCommand.ts";
+import { runDoctorCommand } from "./doctorCommand.ts";
 import { loadSchemaRegistry } from "./schemaLoader.ts";
 
 const USAGE_TEXT = [
-  "Hybrid Dev Orchestrator (TypeScript, phase 1: core contracts / config / state)",
+  "Hybrid Dev Orchestrator (TypeScript, phase 1-5: config / doctor)",
   "",
+  "  node src/cli/main.ts doctor [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-DryRun] [-Json]",
   "  node src/cli/main.ts config  [-Config <path>[,<path>...]] [-Profile <name>] [-IgnoreRepositoryConfig] [-RepositoryPath <path>] [-Json]",
   "  node src/cli/main.ts help",
   "",
@@ -46,6 +48,16 @@ async function main(argv: string[]): Promise<number> {
       // TypeScript section).
       process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
       return 0;
+    }
+    case "doctor": {
+      const platform = getPlatform();
+      const schemas = loadSchemaRegistry();
+      const { result, exitCode } = await runDoctorCommand({ parsed, platform, schemas });
+      // Mirrors hdo.ps1's `Write-HdoCliOutput`: `doctor` prints the same JSON with or
+      // without `-Json` (the non-`-Json` table formatting is not worth reproducing
+      // for a machine-oriented result - same rationale as `config` above).
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      return exitCode;
     }
     default:
       printUsageToStderr();

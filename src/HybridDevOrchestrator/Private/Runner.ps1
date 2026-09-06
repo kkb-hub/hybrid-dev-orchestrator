@@ -135,7 +135,7 @@ function Convert-HdoCodexSchemaNode {
         # generation, so review-only composition rules are not weakened at the boundary.
         $unsupportedKeywords = @(
             '$schema', '$id', 'title', 'default', 'examples',
-            'allOf', 'not', 'dependentRequired', 'dependentSchemas', 'if', 'then', 'else',
+            'allOf', 'oneOf', 'not', 'dependentRequired', 'dependentSchemas', 'if', 'then', 'else',
             'contains', 'minContains', 'maxContains', 'uniqueItems'
         )
         $mapKeywords = @('properties', '$defs', 'definitions')
