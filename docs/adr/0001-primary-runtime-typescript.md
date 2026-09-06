@@ -196,7 +196,7 @@ Issue #37 の AC-01〜AC-05 が問う「Ollama 対応をどのフェーズでど
 
 ### 2026-09-06: フェーズ8（workers）の追加と lean worker 移植の位置づけ
 
-repository owner の決定（2026-09-06）により、Migration strategy に **フェーズ8（workers）** を追加する。上の Amendment「Ollama 対応の移行スコープ（Issue #37）」が「フェーズ7より後の別 Issue で扱う」とした `workers/hdo-ollama-worker.ps1` の TypeScript 移植は、このフェーズ8として確定する。trade-off の詳細と inner tool loop の framework 採否の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`、Proposed）に記録した。
+repository owner の決定（2026-09-06）により、Migration strategy に **フェーズ8（workers）** を追加する。上の Amendment「Ollama 対応の移行スコープ（Issue #37）」が「フェーズ7より後の別 Issue で扱う」とした `workers/hdo-ollama-worker.ps1` の TypeScript 移植は、このフェーズ8として確定する。trade-off の詳細と inner tool loop の framework 採否の進め方（依存 0 ベースライン → `poc/ai-sdk/` 比較 PoC → 採否記録）は ADR-0003（`docs/adr/0003-agent-harness-lightweight.md`、Accepted 2026-09-06）に記録した。
 
 **フェーズ7と並行ではなく、フェーズ7の後に置く理由**:
 

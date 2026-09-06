@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed (2026-09-06) — repository owner の承認待ち。owner が承認した時点で Accepted にする。
+Accepted (2026-09-06)。Proposed として PR #66 で起票し、同日 repository owner が承認した。
 
 本 ADR は Issue #48「エージェントハーネス軽量化の検討: AI SDK + XState を LangGraph 代替として評価する」の AC「現行独自実装 / AI SDK + XState / LangGraph の trade-off を ADR または docs に記録する」に対する回答である。Issue #48 の PoC 系 AC（AI SDK PoC、XState PoC、本採用判断）は本 ADR では閉じず、Decision D2 の (b)(c) と D4 に期限を切らずに残す。
 
