@@ -8,6 +8,9 @@
 // long-path worktree cleanup) alongside the rest of process/platform. On Windows,
 // EVERY git invocation gets `-c core.longpaths=true` prepended (a parallel
 // PowerShell PR does the same in `Invoke-HdoGit`).
+//
+// Phase 3 addition: `diff`, a port of `Get-HdoDiff` (Git.ps1).
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import type { ProcessRunner } from "../core/process/types.ts";
@@ -27,10 +30,57 @@ export interface GitClientOptions {
   timeoutSeconds?: number;
   /** Seconds. Default 300, matching `New-HdoWorktree`/`Remove-HdoRunWorktree`'s `-TimeoutSeconds 300` for worktree add/remove. */
   worktreeTimeoutSeconds?: number;
+  /** Seconds. Default 300, matching `Get-HdoDiff`'s per-call `-TimeoutSeconds 300` (Git.ps1) for every `git diff` invocation. */
+  diffTimeoutSeconds?: number;
 }
 
 const DEFAULT_TIMEOUT_SECONDS = 120;
 const DEFAULT_WORKTREE_TIMEOUT_SECONDS = 300;
+const DEFAULT_DIFF_TIMEOUT_SECONDS = 300;
+
+/** Matches `Get-HdoSha256` (Common.ps1): UTF-8 bytes, lowercase hex SHA-256. */
+export function sha256Hex(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+/** `ValidateRange(1024, 1073741824)` bounds on `Get-HdoDiff -MaximumPatchBytes` (Git.ps1). */
+const MINIMUM_MAXIMUM_PATCH_BYTES = 1024;
+const MAXIMUM_MAXIMUM_PATCH_BYTES = 1_073_741_824;
+/** Default `-MaximumPatchBytes` (Git.ps1): 32 MiB. */
+const DEFAULT_MAXIMUM_PATCH_BYTES = 33_554_432;
+
+function splitNonEmptyLines(text: string): string[] {
+  return text.split(/\r?\n/).filter((line) => line.length > 0);
+}
+
+export interface GitDiffOptions {
+  /**
+   * Defaults to 32 MiB, must be within [1024, 1073741824] bytes - see
+   * `Get-HdoDiff -MaximumPatchBytes` (Git.ps1). Raising this above `exec`'s
+   * underlying process output cap (`ProcessRunner`'s own default, also 32 MiB) has no
+   * effect: a single `git diff` invocation whose own stdout exceeds that cap fails
+   * with a runner-level output-limit error before this option's check ever runs. This
+   * mirrors `Get-HdoDiff` exactly - `Invoke-HdoGit` never overrides
+   * `Invoke-HdoProcess`'s own `-MaximumOutputBytes` (also 33554432 by default)
+   * either, so the same ceiling applies to both implementations.
+   */
+  maximumPatchBytes?: number;
+}
+
+export interface GitDiffResult {
+  /** Concatenated unified diff text: tracked changes vs. `baseCommit`, followed by each untracked file's own addition patch. */
+  patch: string;
+  /** Lowercase hex SHA-256 of `patch` (`^[a-f0-9]{64}$`, matching `schemas/review-result.schema.json`'s `diffHash`). */
+  hash: string;
+  /** Raw `--numstat` lines, tracked followed by untracked, blank lines filtered. */
+  numstat: string[];
+  /** Raw `git status --porcelain=v1 --untracked-files=all` lines, blank lines filtered. */
+  status: string[];
+  /** True iff `status` is non-empty. */
+  hasChanges: boolean;
+  /** ISO-8601 UTC timestamp captured after the last git invocation. */
+  capturedAt: string;
+}
 
 /**
  * Mirrors `Invoke-HdoProcess -ThrowOnError`'s throw text (Common.ps1) exactly:
@@ -66,6 +116,7 @@ export class GitClient {
   private readonly gitExecutable: string;
   private readonly timeoutSeconds: number;
   private readonly worktreeTimeoutSeconds: number;
+  private readonly diffTimeoutSeconds: number;
 
   constructor(options: GitClientOptions) {
     this.runner = options.runner;
@@ -73,6 +124,7 @@ export class GitClient {
     this.gitExecutable = options.gitExecutable ?? "git";
     this.timeoutSeconds = options.timeoutSeconds ?? DEFAULT_TIMEOUT_SECONDS;
     this.worktreeTimeoutSeconds = options.worktreeTimeoutSeconds ?? DEFAULT_WORKTREE_TIMEOUT_SECONDS;
+    this.diffTimeoutSeconds = options.diffTimeoutSeconds ?? DEFAULT_DIFF_TIMEOUT_SECONDS;
   }
 
   /**
@@ -224,5 +276,99 @@ export class GitClient {
     if (result.exitCode !== 0) {
       throw new Error(formatProcessFailure("git", result.exitCode, result.stdout, result.stderr));
     }
+  }
+
+  /**
+   * Port of `Get-HdoDiff` (Git.ps1): captures the aggregate diff of `worktreePath`
+   * against `baseCommit`, tracked and untracked files combined.
+   *
+   * Tracked changes come from a single `git diff --binary --no-ext-diff <baseCommit>
+   * --` (plus a parallel `--numstat` call for the numstat lines) - this is whatever
+   * git reports for modifications, additions, deletions and renames relative to the
+   * base commit. Untracked files never appear in that output, so each one reported by
+   * `git ls-files --others --exclude-standard -z` (NUL-delimited, so filenames with
+   * spaces are safe) is captured individually via `git diff --no-index --binary --
+   * /dev/null <path>` (exit code 0 or 1 both accepted - 1 means "differs", which is
+   * the expected case here - anything else throws) and appended to the patch.
+   *
+   * The 32 MiB (default) cap is enforced by rejection, not truncation: exceeding it
+   * throws immediately, either right after the tracked diff is measured or the first
+   * time appending an untracked file's patch would cross the limit - never after
+   * building the whole oversized patch.
+   */
+  async diff(worktreePath: string, baseCommit: string, options: GitDiffOptions = {}): Promise<GitDiffResult> {
+    const maximumPatchBytes = options.maximumPatchBytes ?? DEFAULT_MAXIMUM_PATCH_BYTES;
+    if (maximumPatchBytes < MINIMUM_MAXIMUM_PATCH_BYTES || maximumPatchBytes > MAXIMUM_MAXIMUM_PATCH_BYTES) {
+      throw new RangeError(
+        `maximumPatchBytes must be between ${MINIMUM_MAXIMUM_PATCH_BYTES} and ${MAXIMUM_MAXIMUM_PATCH_BYTES} bytes.`,
+      );
+    }
+
+    const [patchResult, statResult] = await Promise.all([
+      this.exec(["diff", "--binary", "--no-ext-diff", baseCommit, "--"], worktreePath, this.diffTimeoutSeconds),
+      this.exec(["diff", "--numstat", baseCommit, "--"], worktreePath, this.diffTimeoutSeconds),
+    ]);
+    if (patchResult.exitCode !== 0) {
+      throw new Error(formatProcessFailure("git", patchResult.exitCode, patchResult.stdout, patchResult.stderr));
+    }
+    if (statResult.exitCode !== 0) {
+      throw new Error(formatProcessFailure("git", statResult.exitCode, statResult.stdout, statResult.stderr));
+    }
+
+    let patchBytes = Buffer.byteLength(patchResult.stdout, "utf8");
+    if (patchBytes > maximumPatchBytes) {
+      throw new Error(`Aggregate Git diff exceeds the HDO patch limit of ${maximumPatchBytes} bytes.`);
+    }
+    let patch = patchResult.stdout;
+    let numstat = splitNonEmptyLines(statResult.stdout);
+
+    const untrackedResult = await this.exec(["ls-files", "--others", "--exclude-standard", "-z"], worktreePath);
+    if (untrackedResult.exitCode !== 0) {
+      throw new Error(formatProcessFailure("git", untrackedResult.exitCode, untrackedResult.stdout, untrackedResult.stderr));
+    }
+    const untrackedPaths = untrackedResult.stdout.split("\0").filter((entry) => entry.length > 0);
+
+    // Each file's own patch+numstat pair is fetched concurrently (they're independent
+    // `git diff --no-index` invocations), but files are still processed in
+    // `ls-files`' order, one at a time, since the patch is a byte-for-byte
+    // concatenation and its position affects the final `hash`.
+    for (const relativePath of untrackedPaths) {
+      const [untrackedPatch, untrackedStat] = await Promise.all([
+        this.exec(["diff", "--no-index", "--binary", "--", "/dev/null", relativePath], worktreePath, this.diffTimeoutSeconds),
+        this.exec(["diff", "--no-index", "--numstat", "--", "/dev/null", relativePath], worktreePath, this.diffTimeoutSeconds),
+      ]);
+      if (untrackedPatch.exitCode !== 0 && untrackedPatch.exitCode !== 1) {
+        throw new Error(`Failed to capture untracked file '${relativePath}': ${untrackedPatch.stderr.trim()}`);
+      }
+      if (untrackedPatch.stdout) {
+        const addition = "\n" + untrackedPatch.stdout;
+        const additionBytes = Buffer.byteLength(addition, "utf8");
+        if (patchBytes + additionBytes > maximumPatchBytes) {
+          throw new Error(
+            `Aggregate Git diff exceeds the HDO patch limit of ${maximumPatchBytes} bytes while adding untracked file '${relativePath}'.`,
+          );
+        }
+        patch += addition;
+        patchBytes += additionBytes;
+      }
+
+      if ((untrackedStat.exitCode === 0 || untrackedStat.exitCode === 1) && untrackedStat.stdout.trim()) {
+        numstat = numstat.concat(splitNonEmptyLines(untrackedStat.stdout));
+      }
+    }
+
+    const statusResult = await this.exec(["status", "--porcelain=v1", "--untracked-files=all"], worktreePath);
+    if (statusResult.exitCode !== 0) {
+      throw new Error(formatProcessFailure("git", statusResult.exitCode, statusResult.stdout, statusResult.stderr));
+    }
+
+    return {
+      patch,
+      hash: sha256Hex(patch),
+      numstat,
+      status: splitNonEmptyLines(statusResult.stdout),
+      hasChanges: statusResult.stdout.trim().length > 0,
+      capturedAt: new Date().toISOString(),
+    };
   }
 }

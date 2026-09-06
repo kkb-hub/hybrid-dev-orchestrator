@@ -12,7 +12,7 @@ import type { ProcessResult, ProcessRunner, ProcessRunOptions } from "../core/pr
 import { getPlatform } from "../platform/index.ts";
 import type { PlatformAdapter } from "../platform/types.ts";
 import { NodeProcessRunner } from "../process/runner.ts";
-import { formatProcessFailure, GitClient } from "./index.ts";
+import { formatProcessFailure, GitClient, sha256Hex } from "./index.ts";
 
 const platform = getPlatform();
 const runner = new NodeProcessRunner({ platform });
@@ -519,6 +519,111 @@ test("worktreeRemove(force:false) on a DIRTY worktree throws the original git fa
     assert.equal(readFileSync(join(worktreePath, "a.txt"), "utf8"), "uncommitted change", "the uncommitted change must survive untouched");
     const listed = await git.worktreeList(dir);
     assert.ok(listed.some((p) => worktreePathsEqual(p, worktreePath)), "the dirty worktree must still be listed");
+  } finally {
+    removeRepo(dir);
+  }
+});
+
+// Phase 3 (ADR-0001 Migration strategy): `GitClient.diff`, a port of `Get-HdoDiff`
+// (Git.ps1). Each test below is traceable 1:1 to a named PowerShell oracle case so a
+// reviewer can confirm this cannot silently drift from it.
+
+// Oracle: tests/run-tests.ps1:868 - `Get-HdoSha256 ''` is asserted to equal this exact
+// constant directly, independent of `Get-HdoDiff`.
+const EMPTY_PATCH_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+// Oracle: tests/run-tests.ps1 (no named assertion for the clean case beyond the
+// EMPTY_PATCH_SHA256 constant above) - exercises `hasChanges`/`patch`/`hash`/`numstat`/
+// `status` all being empty/false on a worktree with no changes since the base commit.
+test("diff: reports no changes on a clean worktree with the fixed empty-diff SHA-256", async () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(join(dir, "tracked.txt"), "baseline", "utf8");
+    commitAll(dir, "baseline");
+    const git = newGitClient();
+    const baseCommit = (await git.revParseVerify(dir, "HEAD^{commit}")).stdout.trim();
+
+    const result = await git.diff(dir, baseCommit);
+    assert.equal(result.patch, "");
+    assert.equal(result.hash, EMPTY_PATCH_SHA256);
+    assert.deepEqual(result.numstat, []);
+    assert.deepEqual(result.status, []);
+    assert.equal(result.hasChanges, false);
+    assert.match(result.capturedAt, /^\d{4}-\d{2}-\d{2}T/);
+  } finally {
+    removeRepo(dir);
+  }
+});
+
+// Oracle: tests/run-tests.ps1:944-964, test case name
+// "diff capture includes untracked content and filenames with spaces".
+test("diff: captures untracked content and filenames with spaces", async () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(join(dir, "tracked.txt"), "baseline", "utf8");
+    commitAll(dir, "baseline");
+    const git = newGitClient();
+    const baseCommit = (await git.revParseVerify(dir, "HEAD^{commit}")).stdout.trim();
+
+    writeFileSync(join(dir, "untracked file.txt"), "untracked evidence", "utf8");
+
+    const result = await git.diff(dir, baseCommit);
+    assert.equal(result.hasChanges, true);
+    assert.match(result.patch, /untracked evidence/);
+    assert.match(result.patch, /untracked file\.txt/);
+    assert.ok(result.numstat.some((line) => line.includes("untracked file.txt")));
+    assert.equal(result.hash, sha256Hex(result.patch));
+  } finally {
+    removeRepo(dir);
+  }
+});
+
+// Oracle: tests/test-process-output.ps1 (~lines 140-169) - two untracked files of 1500
+// bytes each against a deliberately small `-MaximumPatchBytes 2048`, proving the cap is
+// cumulative across untracked files and throws rather than truncates.
+test("diff: caps the aggregate patch across untracked files, throwing rather than truncating", async () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(join(dir, "tracked.txt"), "base", "utf8");
+    commitAll(dir, "base");
+    const git = newGitClient();
+    const baseCommit = (await git.revParseVerify(dir, "HEAD^{commit}")).stdout.trim();
+
+    writeFileSync(join(dir, "untracked-a.txt"), "a".repeat(1500), "utf8");
+    writeFileSync(join(dir, "untracked-b.txt"), "b".repeat(1500), "utf8");
+
+    await assert.rejects(
+      () => git.diff(dir, baseCommit, { maximumPatchBytes: 2048 }),
+      (error: unknown) => error instanceof Error && /^Aggregate Git diff exceeds/.test(error.message),
+    );
+  } finally {
+    removeRepo(dir);
+  }
+});
+
+// Not separately named in the PowerShell oracle (tracked modifications/deletions are
+// exercised implicitly throughout `run-tests.ps1`'s workflow tests, not as a standalone
+// `Get-HdoDiff` case) - added here because `diff`'s tracked-file path is otherwise
+// untested by the two named cases above, which only cover untracked files.
+test("diff: captures tracked modifications and deletions relative to the base commit", async () => {
+  const dir = initRepo();
+  try {
+    writeFileSync(join(dir, "modified.txt"), "before", "utf8");
+    writeFileSync(join(dir, "deleted.txt"), "gone soon", "utf8");
+    commitAll(dir, "baseline");
+    const git = newGitClient();
+    const baseCommit = (await git.revParseVerify(dir, "HEAD^{commit}")).stdout.trim();
+
+    writeFileSync(join(dir, "modified.txt"), "after", "utf8");
+    rmSync(join(dir, "deleted.txt"));
+
+    const result = await git.diff(dir, baseCommit);
+    assert.equal(result.hasChanges, true);
+    assert.match(result.patch, /-before/);
+    assert.match(result.patch, /\+after/);
+    assert.ok(result.numstat.some((line) => line.includes("modified.txt")));
+    assert.ok(result.numstat.some((line) => line.includes("deleted.txt")));
+    assert.ok(result.status.some((line) => line.includes("deleted.txt")));
   } finally {
     removeRepo(dir);
   }

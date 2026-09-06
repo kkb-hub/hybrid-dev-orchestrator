@@ -2,13 +2,12 @@
 // Lives in `git/` (not `core/`) because it needs the filesystem (to check whether an
 // uncommitted `.hdo/config.json` exists in the working tree, for the two "exists but
 // not trustworthy yet" error messages) and a real git process.
-import { createHash } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { SchemaRegistry } from "../core/contracts/schemas.ts";
 import type { JsonObject } from "../core/contracts/types.ts";
 import type { RepositoryConfigSnapshot } from "../core/config/repository.ts";
-import { formatProcessFailure, GitClient } from "./index.ts";
+import { formatProcessFailure, GitClient, sha256Hex } from "./index.ts";
 
 const RELATIVE_CONFIG_PATH = ".hdo/config.json";
 
@@ -18,10 +17,6 @@ function fileExists(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-function sha256Hex(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
 export async function getRepositoryConfigSnapshot(
