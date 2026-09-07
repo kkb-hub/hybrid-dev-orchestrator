@@ -1,25 +1,53 @@
 # Hybrid Dev Orchestrator
 
-Hybrid Dev Orchestrator（HDO）は、GitHub Issue を実装契約へ正規化し、専用 Git worktree で planning、implementation、validation、review、fix を有限回実行する Windows / PowerShell CLI です。
+**English** | [日本語](README.ja.md)
 
-各 AI step は runner として設定します。既定は Claude Code CLI を使う claude-only 構成で、Codex も Ollama も不要です。対象 repository に commit した `.hdo/config.json` で、plan / implement / review / fix ごとの provider と model を既定化できます。
+Hybrid Dev Orchestrator (HDO) is a Windows CLI that normalizes a GitHub Issue into an
+implementation contract, then runs a bounded planning → implementation → validation →
+review → fix cycle inside a dedicated Git worktree.
 
-## 前提
+Each AI step is configured as a *runner*. The default is a claude-only setup using the
+Claude Code CLI; neither Codex nor Ollama is required. A `.hdo/config.json` committed
+to the target repository sets the default provider and model for each of the plan,
+implement, review, and fix steps.
 
-- Windows 11 と PowerShell 7.2 以上（`pwsh`。Windows 同梱の Windows PowerShell 5.1 では動作しないため、別途導入してください）
-- WSL2 / Linux は正式な動作対象ではありません。runtime は [ADR-0001](docs/adr/0001-primary-runtime-typescript.md) により TypeScript / Node.js へ段階移行する方針で、移行の一次ターゲットは Windows です
+> **Documentation language.** This README is a translation. The detailed design
+> documents under [`docs/`](docs/) — including both ADRs — are written in Japanese, and
+> so is [README.ja.md](README.ja.md). The agent-facing surfaces (`commands/*.md`,
+> `skills/*/SKILL.md`, JSON Schema descriptions, and CLI help) are in English.
+
+## Requirements
+
+- Windows 11
+- Node.js 24 LTS, with `npm ci` run once in the checkout. Per
+  [ADR-0001](docs/adr/0001-primary-runtime-typescript.md) the runtime is migrating to
+  TypeScript/Node.js in phases; the CLI and both plugins now run on Node.
+- PowerShell 7.2 or later (`pwsh`) is **optional** as of phase 8 — no route of the
+  TypeScript runtime requires it. You need it only to run the PowerShell regression
+  suite, to use the maintenance-mode `hdo.ps1`, or if your config explicitly launches
+  the PowerShell worker. The Windows-bundled PowerShell 5.1 will not work; install
+  `pwsh` separately.
+- WSL2 and Linux are not supported targets. The migration's first target is Windows.
 - Git for Windows
-- GitHub CLI `gh` と GitHub 認証
-- 既定構成では Claude Code CLI `claude` と、その認証（`claude` での OAuth login、または runner の `passEnvironment` に明示追加した `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`）
-- 対象 repository に、レビュー済みの `.hdo/project.json`
-- repository 固有 routing を使う場合は、レビューして commit した `.hdo/config.json`
-- 対象 GitHub repository に HDO Issue Form と label
+- GitHub CLI `gh`, authenticated
+- For the default setup, the Claude Code CLI `claude` and its authentication (OAuth
+  login via `claude`, or `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN` added
+  explicitly to the runner's `passEnvironment`)
+- A reviewed `.hdo/project.json` in the target repository
+- A reviewed and committed `.hdo/config.json`, if you want repository-specific routing
+- The HDO Issue Form and labels in the target GitHub repository
 
-Codex と Ollama は optional です。Codex は `config/examples/cloud-only.json` 等で選んだ場合だけ `codex` command と cloud 認証が必要です。Ollama hybrid route は `ollama` command、service、設定した model に加え、local tool harness として `claude` command を使います。この route は Anthropic endpoint や Claude model を呼ばず、HDO が loopback の Ollama Anthropic-compatible endpoint を固定設定します。HDO は model を自動 pull しません。
+Codex and Ollama are optional. Codex requires the `codex` command and cloud
+authentication only if you select it, for example via
+`config/examples/cloud-only.json`. The Ollama hybrid route needs the `ollama` command,
+the service, and the configured model, plus the `claude` command as a local tool
+harness. That route calls no Anthropic endpoint and no Claude model — HDO pins a
+loopback Ollama Anthropic-compatible endpoint. HDO does not pull models automatically.
 
-## 5分で試す
+## Try it in five minutes
 
-以下は HDO checkout と、HDO を適用する対象 repository が別 directory にある例です。
+The examples below assume the HDO checkout and the target repository live in separate
+directories.
 
 ```powershell
 $hdo = 'C:\src\hybrid-dev-orchestrator\hdo.ps1'
@@ -30,16 +58,20 @@ gh auth login
 gh auth status
 ```
 
-### 1. 対象 repository を準備する
+### 1. Prepare the target repository
 
-対象 repository に次を commit してください。
+Commit the following into the target repository:
 
-- `.hdo/project.json`: validation gate と project policy
-- `.github/ISSUE_TEMPLATE/hdo-task.yml`: HDO task 用 Issue Form
+- `.hdo/project.json` — validation gates and project policy
+- `.github/ISSUE_TEMPLATE/hdo-task.yml` — the Issue Form for HDO tasks
 
-この repository の [.hdo/project.json](.hdo/project.json) と [.github/ISSUE_TEMPLATE/hdo-task.yml](.github/ISSUE_TEMPLATE/hdo-task.yml) を出発点にできます。validation command は Issue 本文ではなく `.hdo/project.json` だけに定義します。実行前に内容を必ずレビューしてください。
+This repository's [.hdo/project.json](.hdo/project.json) and
+[.github/ISSUE_TEMPLATE/hdo-task.yml](.github/ISSUE_TEMPLATE/hdo-task.yml) are a
+reasonable starting point. Validation commands are defined **only** in
+`.hdo/project.json`, never in an issue body. Review the contents before running
+anything.
 
-設定と read-only preflight を確認します。
+Check the configuration and the read-only preflight:
 
 ```powershell
 pwsh -NoProfile -File $hdo config `
@@ -49,11 +81,13 @@ pwsh -NoProfile -File $hdo doctor `
   -RepositoryPath $repoPath -DryRun
 ```
 
-既定 profile は `claude-only` です。`doctor -DryRun` でも GitHub、runner、選択済み local provider、project contract は読み取りますが、path probe file は作りません。
+The default profile is `claude-only`. Even under `doctor -DryRun`, HDO reads GitHub,
+the runners, the selected local provider, and the project contract — but it creates no
+path probe files.
 
-### 2. label を用意する
+### 2. Set up labels
 
-最初の command は差分確認だけ、`-Apply` 付きは label の作成・更新です。
+The first command only shows the diff; adding `-Apply` creates and updates labels.
 
 ```powershell
 pwsh -NoProfile -File $hdo labels `
@@ -63,31 +97,35 @@ pwsh -NoProfile -File $hdo labels `
   -RepositoryPath $repoPath -Repository $repo -Apply
 ```
 
-HDO は `hdo:ready`、相互排他的な `hdo:status/*`、priority/risk label、設定済み profile に対応する `hdo:route/*` を同期します。HDO namespace 外の label は変更しません。
+HDO synchronizes `hdo:ready`, the mutually exclusive `hdo:status/*`, the priority and
+risk labels, and the `hdo:route/*` labels matching the configured profiles. Labels
+outside the HDO namespace are left alone.
 
-### 3. Issue を作る
+### 3. Create an issue
 
-GitHub の New Issue 画面で **HDO implementation task** を選び、少なくとも次を入力します。
+In GitHub's New Issue screen, choose **HDO implementation task** and fill in at least:
 
 - Problem / Context
 - Goal
 - Acceptance Criteria
 - In Scope
 - Validation Gate IDs
-- Priority と Risk
+- Priority and Risk
 
-Validation Gate IDs は `.hdo/project.json` に存在する ID だけを指定します。Issue 本文の command は実行されません。
+Validation Gate IDs must reference IDs that exist in `.hdo/project.json`. Commands in
+the issue body are never executed.
 
-内容と依存関係を確認した maintainer が、最後に `hdo:ready` を付けます。
+Once a maintainer has reviewed the contents and the dependencies, they add
+`hdo:ready`:
 
 ```powershell
 $issue = 123
 gh issue edit $issue --repo $repo --add-label 'hdo:ready'
 ```
 
-Issue Form 自体は `hdo:ready` を自動付与しません。
+The Issue Form does not apply `hdo:ready` on its own.
 
-### 4. 読み取りと dry-run
+### 4. Read and dry-run
 
 ```powershell
 pwsh -NoProfile -File $hdo issues `
@@ -100,57 +138,73 @@ pwsh -NoProfile -File $hdo run -Issue $issue `
   -RepositoryPath $repoPath -Repository $repo -DryRun -Json
 ```
 
-`run -DryRun` は Issue 契約、profile、step routing、project contract、preflight を確認し、execution plan を返します。worktree、run artifact、claim comment、label、assignee、AI runner process は作成しません。
+`run -DryRun` checks the issue contract, the profile, step routing, the project
+contract, and the preflight, then returns an execution plan. It creates no worktree,
+no run artifacts, no claim comment, no labels, no assignee, and starts no AI runner
+process.
 
-### 5. 実行する
+### 5. Run it
 
-GitHub へ claim/status を書き戻す通常実行:
+A normal run, writing claim and status back to GitHub:
 
 ```powershell
 pwsh -NoProfile -File $hdo run -Issue $issue `
   -RepositoryPath $repoPath -Repository $repo
 ```
 
-GitHub を変更せず、同じ implementation / validation / review cycle を実行する場合:
+The same implementation / validation / review cycle without modifying GitHub:
 
 ```powershell
 pwsh -NoProfile -File $hdo run -Issue $issue `
   -RepositoryPath $repoPath -Repository $repo -NoWriteBack
 ```
 
-自動 pickup では `-Issue` の代わりに `-Pick` を使います。
+For automatic pickup, use `-Pick` instead of `-Issue`:
 
 ```powershell
 pwsh -NoProfile -File $hdo run -Pick `
   -RepositoryPath $repoPath -Repository $repo -DryRun -Json
 ```
 
-pickup は eligible な Issue を priority、作成日時、Issue number の順で決定的に並べます。明示 `-Issue` でも open と `hdo:ready`、必須 section、validation gate の検証は省略されません。
+Pickup orders eligible issues deterministically by priority, creation time, and issue
+number. Passing `-Issue` explicitly does not skip the checks for open state,
+`hdo:ready`, the required sections, or the validation gates.
 
-## DryRun と NoWriteBack
+## DryRun and NoWriteBack
 
-| 動作 | 通常実行 | `-DryRun` | `-NoWriteBack` |
+| Behaviour | Normal run | `-DryRun` | `-NoWriteBack` |
 |---|:---:|:---:|:---:|
-| GitHub / Issue の読み取り | yes | yes | yes |
-| Issue 契約・設定・preflight | yes | yes | yes |
-| AI runner の実行 | yes | no | yes |
-| worktree / run artifact 作成 | yes | no | yes |
-| validation / review / fix | yes | no | yes |
-| claim comment / status label / assignee | yes | no | no |
+| Reads GitHub / the issue | yes | yes | yes |
+| Issue contract, config, preflight | yes | yes | yes |
+| Runs the AI runners | yes | no | yes |
+| Creates worktree / run artifacts | yes | no | yes |
+| Validation / review / fix | yes | no | yes |
+| Claim comment, status label, assignee | yes | no | no |
 
-`-NoWriteBack` は dry-run ではありません。コードを変更する full cycle であり、専用 worktree に未 commit の変更を残します。
+`-NoWriteBack` is **not** a dry run. It is a full cycle that modifies code and leaves
+uncommitted changes in a dedicated worktree.
 
-## Repository ごとの model routing
+## Per-repository model routing
 
-対象 repository の `HEAD` に `.hdo/config.json` があれば、HDO は通常の `config`、`doctor`、`run` で自動読込します。そのため plugin からの通常実行は次だけで構いません。
+If the target repository's `HEAD` contains `.hdo/config.json`, HDO loads it
+automatically for the ordinary `config`, `doctor`, and `run` commands. From a plugin,
+a normal run is therefore just:
 
 ```text
 /hdo:run -Issue 123
 ```
 
-自動設定は制限付き schema で検査され、profile routing と built-in Codex/Claude runner の provider、model、sandbox、timeout 等だけを変更できます。任意 command、argument、environment、保存先、GitHub write-back、fallback policy は repository 設定から変更できません。working tree にだけ `.hdo/config.json` があり `HEAD` にない場合は、自動適用せず fail closed になります。file 自体が存在しない repository は従来どおり既定設定で動きます。
+Automatic configuration is validated against a restricted schema. It can change only
+profile routing and the provider, model, sandbox, timeout, and similar fields of the
+built-in Codex and Claude runners. Arbitrary commands, arguments, environment,
+storage locations, GitHub write-back, and fallback policy **cannot** be changed from
+repository configuration. If `.hdo/config.json` exists only in the working tree and
+not in `HEAD`, HDO fails closed rather than applying it. Repositories without the file
+keep working on the default configuration.
 
-実装担当だけを Ollama にする Codex 親向けの例は [config/examples/repository-ollama-hybrid.json](config/examples/repository-ollama-hybrid.json) です。対象 repository へ `.hdo/config.json` として配置して commit します。
+[config/examples/repository-ollama-hybrid.json](config/examples/repository-ollama-hybrid.json)
+is an example for a Codex parent that routes only the implementation step to Ollama.
+Place it in the target repository as `.hdo/config.json` and commit it.
 
 ```powershell
 $hdoRoot = Split-Path -Parent $hdo
@@ -165,9 +219,14 @@ pwsh -NoProfile -File $hdo config -RepositoryPath $repoPath -Json
 pwsh -NoProfile -File $hdo run -Issue $issue -RepositoryPath $repoPath -Repository $repo
 ```
 
-この例は plan/review を現在の Codex cloud model、implement/fix を Ollama の `qwen3.8:27b-q4_K_M` へ割り当てます。local step の `claude` command は tool harness としてだけ動作し、Anthropic の認証・利用枠は使いません。Ollama が利用不能でも cloud へ fallback しません。
+That example assigns plan and review to the current Codex cloud model, and implement
+and fix to Ollama's `qwen3.8:27b-q4_K_M`. The `claude` command in the local steps acts
+only as a tool harness; it uses no Anthropic authentication or quota. If Ollama is
+unavailable, HDO does **not** fall back to the cloud.
 
-別の設定を一時的に使う場合は `-Config` で明示できます。複数 file は comma 区切りで左から右へ merge し、後の file が勝ちます。relative path は対象 repository root 基準です。
+To use a different configuration temporarily, pass `-Config` explicitly. Multiple
+files are comma-separated and merged left to right, with later files winning. Relative
+paths resolve against the target repository root.
 
 ```text
 /hdo:run -Issue 123 -Config ./.hdo/alternate.json
@@ -175,13 +234,20 @@ pwsh -NoProfile -File $hdo run -Issue $issue -RepositoryPath $repoPath -Reposito
 /hdo:run -Issue 123 -IgnoreRepositoryConfig -Config ./.hdo/alternate.json
 ```
 
-`-IgnoreRepositoryConfig` は自動 `.hdo/config.json` だけを無効にします。明示 `-Config` は reviewed full configuration として、自動設定では禁止される user-authorized runner 設定も指定できます。
+`-IgnoreRepositoryConfig` disables only the automatic `.hdo/config.json`. An explicit
+`-Config` is treated as a reviewed full configuration, so it may also set the
+user-authorized runner options that automatic configuration forbids.
 
-## Claude-only、Codex cloud、Ollama hybrid
+## Claude-only, Codex cloud, and Ollama hybrid
 
-既定 [config/hdo.default.json](config/hdo.default.json) は全 step を Claude runner へ割り当て、Codex/Ollama を probe しません。Claude だけがインストールされた PC で完結します。model を明示したい場合は [config/examples/claude-only.json](config/examples/claude-only.json)（plan/review が `opus`、implement/fix が `sonnet`）を使えます。
+The default [config/hdo.default.json](config/hdo.default.json) assigns every step to
+the Claude runner and probes neither Codex nor Ollama, so it works on a machine with
+only Claude installed. To pin models explicitly, use
+[config/examples/claude-only.json](config/examples/claude-only.json) (`opus` for plan
+and review, `sonnet` for implement and fix).
 
-一時的に Codex を使う場合は [config/examples/cloud-only.json](config/examples/cloud-only.json) を明示します。
+To use Codex temporarily, name
+[config/examples/cloud-only.json](config/examples/cloud-only.json) explicitly:
 
 ```powershell
 $codexConfig = 'C:\src\hybrid-dev-orchestrator\config\examples\cloud-only.json'
@@ -191,7 +257,9 @@ pwsh -NoProfile -File $hdo doctor `
   -Profile cloud-only -DryRun
 ```
 
-明示読込用の Ollama hybrid 設定 [config/examples/ollama-hybrid.json](config/examples/ollama-hybrid.json) でも、plan/review は cloud、implement/fix は Ollama です。
+The explicitly loaded Ollama hybrid configuration
+[config/examples/ollama-hybrid.json](config/examples/ollama-hybrid.json) likewise puts
+plan and review in the cloud and implement and fix on Ollama.
 
 ```powershell
 $hybridConfig = 'C:\src\hybrid-dev-orchestrator\config\examples\ollama-hybrid.json'
@@ -205,7 +273,7 @@ pwsh -NoProfile -File $hdo doctor `
   -Profile ollama-hybrid -DryRun
 ```
 
-一時的に step の runner だけを変える場合は、定義済み runner を指定します。
+To change the runner for a single step temporarily, name a defined runner:
 
 ```powershell
 pwsh -NoProfile -File $hdo run -Issue $issue `
@@ -214,46 +282,59 @@ pwsh -NoProfile -File $hdo run -Issue $issue `
   -SetStep implement=claude-ollama-implementer -DryRun -Json
 ```
 
-provider/model の暗黙 fallback はありません。選択した runner が使えない場合、別 runner へ切り替えず preflight または当該 step で停止します。
+There is no implicit provider or model fallback. If the selected runner is
+unavailable, HDO stops at the preflight or at that step rather than switching to
+another runner.
 
-Ollama 0.33.2以降と指定modelを導入済みのlocal hostでは、実providerへ1回だけ送るopt-in smokeも実行できます。通常のtest suite/CIからは実行されません。実行状態と最終結果は `test-results/ollama-smoke-last-result.json` にatomicに保存されるため、呼び出し元のIPCや待機turnが先に終了しても成否を回収できます。
+On a local host with Ollama 0.33.2 or later and the configured model installed, you
+can run an opt-in smoke test that sends exactly one request to the real provider. It
+is excluded from the normal test suite and from CI. Progress and the final result are
+written atomically to `test-results/ollama-smoke-last-result.json`, so the outcome is
+recoverable even if the caller's IPC or waiting turn ends first.
 
 ```powershell
 pwsh -NoProfile -File ./tests/test-ollama-smoke.ps1 -Run
 ```
 
-一時repositoryとraw envelopeも診断用に残す場合は `-KeepArtifacts` を付けます。保存先receiptを変える場合は `-ResultPath <path>` を指定します。
+Add `-KeepArtifacts` to also retain the temporary repository and the raw envelope for
+diagnosis, or `-ResultPath <path>` to change where the receipt is stored.
 
 ## CLI
 
 ```text
-help      CLI usage を表示
-doctor    Git、gh auth、project contract、選択 runner/provider、保存先を検査
-config    merge・profile 解決後の execution plan を表示
-issues    pickup 候補を一覧
-inspect   1件の Issue と正規化契約・validation result を表示
-run       Issue の dry-run または full cycle を実行
-status    artifact の run.json を読み取る
-cleanup   明示した run の worktree を安全条件付きで除去
-labels    label catalog の差分表示または同期
+help      Show CLI usage
+doctor    Check Git, gh auth, the project contract, the selected runners/providers, and storage
+config    Show the execution plan after merging and profile resolution
+issues    List pickup candidates
+inspect   Show one issue with its normalized contract and validation result
+run       Execute a dry run or a full cycle for an issue
+status    Read run.json from the artifacts
+cleanup   Remove a named run's worktree, subject to safety conditions
+labels    Show the label catalog diff, or synchronize it
 ```
 
-正確な構文は次で確認できます。
+For exact syntax:
 
 ```powershell
 pwsh -NoProfile -File $hdo help
 ```
 
-## 成果物と cleanup
+## Artifacts and cleanup
 
-既定では次へ保存します。
+By default HDO stores:
 
-- worktree: `%LOCALAPPDATA%\hdo\worktrees\<run-id>`
-- artifact: `%LOCALAPPDATA%\hdo\runs\<run-id>`
+- worktrees in `%LOCALAPPDATA%\hdo\worktrees\<run-id>`
+- artifacts in `%LOCALAPPDATA%\hdo\runs\<run-id>`
 
-`%LOCALAPPDATA%` が未定義の環境では .NET の既知フォルダーへ fallback します（[docs/configuration.md](docs/configuration.md) 9 節）。
+Where `%LOCALAPPDATA%` is undefined, HDO falls back to the .NET known folder
+(see [docs/configuration.md](docs/configuration.md) §9).
 
-full run は作成直後に `HDO_PROGRESS` JSONをstderrへ出し、run ID とartifact pathを表示します。agent subprocessの待機中も30秒ごとに同じchannelへheartbeatを出します。最終 `-Json` resultはstdoutだけへ出すため、機械的なJSON consumerを壊しません。呼び出し元のIPCや待機turnが途中で失われた場合は、同じIssueを再実行せず、最初のprogress recordのrun IDで保存済みstateを確認します。
+A full run emits an `HDO_PROGRESS` JSON record to stderr immediately after creation,
+showing the run ID and artifact path, and emits a heartbeat on the same channel every
+30 seconds while waiting on an agent subprocess. The final `-Json` result goes to
+stdout only, so machine consumers of the JSON are not broken. If the caller's IPC or
+waiting turn is lost mid-run, do **not** re-run the same issue — inspect the stored
+state using the run ID from the first progress record.
 
 ```powershell
 pwsh -NoProfile -File $hdo status -RunId '<run-id>' `
@@ -263,68 +344,92 @@ pwsh -NoProfile -File $hdo cleanup -RunId '<run-id>' `
   -RepositoryPath $repoPath -Force -WhatIf
 ```
 
-worktree には意図的に未 commit の変更が残るため、通常の cleanup は拒否されます。`final/diff.patch` と必要な新規ファイルを確認・退避した後だけ、`-Force` を付けて実行してください。cleanup 後も run artifact と作成済み branch は残ります。
+Worktrees intentionally retain uncommitted changes, so ordinary cleanup refuses to
+run. Only after you have reviewed and preserved `final/diff.patch` and any new files
+you need should you re-run with `-Force`. Run artifacts and any created branches
+survive cleanup.
 
-## Claude Code plugin として使う
+## Using it as a Claude Code plugin
 
-この repository は Claude Code plugin としてもインストールできます。plugin は TypeScript CLI（`src/cli/main.ts`、`node` で起動）を包む薄い層で、orchestration logic を複製しません。**利用前に plugin root で `npm ci` を一度実行してください**（Node.js 24 LTS が必須で、`node_modules/` は gitignore されているため plugin には同梱されません）。PowerShell 実装（`hdo.ps1`）は maintenance mode のまま repository に残っており、plugin からは呼ばれません。
+This repository can be installed as a Claude Code plugin. The plugin is a thin layer
+over the TypeScript CLI (`src/cli/main.ts`, launched with `node`) and does not
+duplicate any orchestration logic. **Run `npm ci` once in the plugin root before using
+it** — Node.js 24 LTS is required, and `node_modules/` is gitignored so it does not
+ship with the plugin. The PowerShell implementation (`hdo.ps1`) remains in the
+repository in maintenance mode and is not called by the plugin.
 
 ```text
 claude plugin marketplace add kkb-hub/hybrid-dev-orchestrator
 claude plugin install hdo@hybrid-dev-orchestrator
 ```
 
-インストール後、Claude Code のセッションから次の slash command が使えます（対象 repository を作業ディレクトリとして開いた状態で実行します）。
+Once installed, these slash commands are available in a Claude Code session, with the
+target repository open as the working directory:
 
-| Command | 内容 |
+| Command | Purpose |
 |---|---|
-| `/hdo:doctor` | preflight 検査 |
-| `/hdo:config` | 解決済み設定と execution plan |
-| `/hdo:issues` | pickup 候補一覧 |
-| `/hdo:inspect` | Issue と正規化契約の検査 |
-| `/hdo:run` | dry-run / full cycle の実行 |
-| `/hdo:status` | run の状態表示 |
-| `/hdo:cleanup` | run worktree の除去（`-WhatIf` 既定） |
-| `/hdo:labels` | label catalog の差分・同期 |
+| `/hdo:doctor` | Preflight checks |
+| `/hdo:config` | Resolved configuration and execution plan |
+| `/hdo:issues` | List pickup candidates |
+| `/hdo:inspect` | Inspect an issue and its normalized contract |
+| `/hdo:run` | Execute a dry run or a full cycle |
+| `/hdo:status` | Show run status |
+| `/hdo:cleanup` | Remove a run worktree (`-WhatIf` by default) |
+| `/hdo:labels` | Diff or synchronize the label catalog |
 
-ローカル checkout を試す場合は `claude --plugin-dir C:\src\hybrid-dev-orchestrator` でも読み込めます。plugin 経由の前提は Node.js 24 LTS（`npm ci` 実行済み）・`git`・`gh`・runner CLI です。
+To try a local checkout, load it with
+`claude --plugin-dir C:\src\hybrid-dev-orchestrator`. The prerequisites via the plugin
+are Node.js 24 LTS (with `npm ci` already run), `git`, `gh`, and the runner CLIs.
 
-## Codex plugin として使う
+## Using it as a Codex plugin
 
-同じ repository を Codex plugin marketplace として追加できます。Codex 側は `.codex-plugin/plugin.json` と `skills/` を読み込み、Claude Code 用の `commands/` と同じ TypeScript CLI（`node src/cli/main.ts`）を呼び出します。
+The same repository can be added as a Codex plugin marketplace. Codex reads
+`.codex-plugin/plugin.json` and `skills/`, and calls the same TypeScript CLI
+(`node src/cli/main.ts`) as the Claude Code `commands/`.
 
 ```text
 codex plugin marketplace add kkb-hub/hybrid-dev-orchestrator --ref main
 codex plugin add hdo@hybrid-dev-orchestrator
 ```
 
-インストール後は新しい Codex session を開始し、対象 repository を作業ディレクトリとして開きます。自然言語で依頼するか、次の skill を明示的に指定できます。
+After installing, start a new Codex session with the target repository as the working
+directory. Ask in natural language, or name a skill explicitly:
 
-| Skill | 内容 |
+| Skill | Purpose |
 |---|---|
-| `$hdo-doctor` | preflight 検査 |
-| `$hdo-config` | 解決済み設定と execution plan |
-| `$hdo-issues` | pickup 候補一覧 |
-| `$hdo-inspect` | Issue と正規化契約の検査 |
-| `$hdo-run` | dry-run / full cycle の実行 |
-| `$hdo-status` | run の状態表示 |
-| `$hdo-cleanup` | run worktree の除去（preview 既定） |
-| `$hdo-labels` | label catalog の差分・同期 |
+| `$hdo-doctor` | Preflight checks |
+| `$hdo-config` | Resolved configuration and execution plan |
+| `$hdo-issues` | List pickup candidates |
+| `$hdo-inspect` | Inspect an issue and its normalized contract |
+| `$hdo-run` | Execute a dry run or a full cycle |
+| `$hdo-status` | Show run status |
+| `$hdo-cleanup` | Remove a run worktree (preview by default) |
+| `$hdo-labels` | Diff or synchronize the label catalog |
 
-ローカル checkout を検証する場合は、最初の command の source に checkout path を渡します。
+To validate a local checkout, pass the checkout path as the source of the first
+command:
 
 ```text
 codex plugin marketplace add C:\src\hybrid-dev-orchestrator
 codex plugin add hdo@hybrid-dev-orchestrator
 ```
 
-plugin 経由でも前提（Windows 11、Node.js 24 LTS（`npm ci` 実行済み）、`git`、`gh`、選択した runner CLI）は同じです。`$hdo-run` は明示した full run 以外では `-DryRun` を優先し、`$hdo-cleanup` は常に preview から始めます。
+The prerequisites are the same through the plugin: Windows 11, Node.js 24 LTS (with
+`npm ci` already run), `git`, `gh`, and the selected runner CLI. `$hdo-run` prefers
+`-DryRun` unless you explicitly ask for a full run, and `$hdo-cleanup` always starts
+with a preview.
 
-## plugin version を更新する
+## Updating the plugin version
 
-client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`、`package.json`、`package-lock.json`）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。
+Client repositories detect HDO updates **only** through the `version` in the plugin
+manifests. When you change the distribution surface (`hdo.ps1`, `src/`, `commands/`,
+`skills/`, `config/`, `schemas/`, `package.json`, `package-lock.json`), raise the
+`version` in both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` to the
+same value. Bumping only one of them does not propagate the update correctly either.
 
-`.github/workflows/plugin-version.yml` が pull request と `main` への push でこれを検査し、bump 漏れと version 不一致を失敗させます。手元で同じ検査を実行する場合は次のとおりです。
+`.github/workflows/plugin-version.yml` enforces this on pull requests and on pushes to
+`main`, failing both missing bumps and version mismatches. To run the same check
+locally:
 
 ```powershell
 pwsh -NoProfile -File tools/check-plugin-version.ps1 -BaseRef origin/main
@@ -332,28 +437,53 @@ pwsh -NoProfile -File tools/check-plugin-version.ps1 -BaseRef origin/main
 
 ## CI
 
-`.github/workflows/test-suite.yml` は pull request と `main` への push で `windows-latest` を使い、`pwsh -NoProfile -File ./tests/test-suite.ps1` により HDO 本体の full deterministic PowerShell test suite を実行します。suite の失敗は CI failure になります。
+`.github/workflows/test-suite.yml` runs the full deterministic PowerShell test suite
+(`pwsh -NoProfile -File ./tests/test-suite.ps1`) on `windows-latest` for pull requests
+and pushes to `main`. A suite failure is a CI failure.
 
-実 Ollama provider の smoke（`tests/test-ollama-smoke.ps1 -Run`）など外部 provider を必要とする検査は通常 CI には含めず、明示的な opt-in のまま維持します。`.github/workflows/plugin-version.yml` は plugin version guard のみを担当し、本体 regression gate とは責務を分離します。
+Checks that require an external provider — such as the real Ollama smoke test
+(`tests/test-ollama-smoke.ps1 -Run`) — are deliberately kept out of normal CI and
+remain explicitly opt-in. `.github/workflows/plugin-version.yml` handles only the
+plugin version guard, keeping it separate from the main regression gate.
 
-WSL2 / Linux の正式対応は ADR-0001 に基づき TypeScript 実装側で扱い、TypeScript 実装が Windows parity に到達した後に別 Issue で検討します。PowerShell test suite の OS matrix に `ubuntu-latest` を追加する予定はありません。
+Per ADR-0001, official WSL2 and Linux support is handled on the TypeScript side and
+will be considered in a separate issue once the TypeScript implementation reaches
+Windows parity. There are no plans to add `ubuntu-latest` to the PowerShell suite's OS
+matrix.
 
-## 安全境界
+## Safety boundaries
 
-- implement/fix は現在の working tree ではなく専用 worktree だけを変更します。
-- plan/review runner は `read-only`、implement/fix は `workspace-write` でなければ設定 validation に失敗します。
-- GitHub token と名前が secret/token/password/API key に該当する環境変数は worker/validation process から既定で除外します。
-- validation gate の working directory は worktree 内に限定し、junction/symbolic-link boundary を拒否します。
-- 外部 process の stdout/stderr は各32 MiBで打ち切り、process tree を停止します。
-- Issue、comment、外部リンクは untrusted input です。
-- commit、push、PR、Issue close、merge、成果物の自動適用は行いません。
-- cloud runner/reviewer を使うと Issue、関連コード、diff が cloud provider へ送信され得ます。
+- Implement and fix modify only a dedicated worktree, never your current working tree.
+- Plan and review runners must be `read-only`, and implement and fix must be
+  `workspace-write`, or configuration validation fails.
+- GitHub tokens, and environment variables whose names match secret/token/password/API
+  key patterns, are excluded from worker and validation processes by default.
+- Validation gate working directories are confined to the worktree; junction and
+  symbolic-link boundaries are rejected.
+- stdout and stderr of external processes are truncated at 32 MiB each, and the
+  process tree is terminated.
+- Issues, comments, and external links are untrusted input.
+- HDO never commits, pushes, opens PRs, closes issues, merges, or auto-applies
+  results.
+- Using a cloud runner or reviewer may transmit the issue, related code, and diffs to
+  that cloud provider.
 
-MVP の command adapter と validation command に対して、HDO 自身が OS firewall、任意 filesystem access の遮断、command interception を提供するわけではありません。信頼できない repository では low-privilege account、VM/container、runner sandbox、実行環境側の policy を構成してください。
+For the MVP command adapter and validation commands, HDO itself does not provide an OS
+firewall, blocking of arbitrary filesystem access, or command interception. For
+untrusted repositories, configure a low-privilege account, a VM or container, a runner
+sandbox, and policy in the execution environment.
 
-## TypeScript 実装（進行中の移行）
+See [SECURITY.md](SECURITY.md) for the full threat model and for how to report a
+vulnerability.
 
-`docs/adr/0001-primary-runtime-typescript.md`（ADR-0001）に基づき、TypeScript / Node.js 24 LTS を中長期の primary runtime として段階移行しています。移行フェーズは **フェーズ7（cli/plugin）まで完了**しており、`hdo` の全9コマンド（`help`/`doctor`/`config`/`issues`/`inspect`/`run`/`status`/`cleanup`/`labels`）が `src/core/`・`src/platform/`・`src/process/`・`src/git/`・`src/github/`・`src/runners/`・`src/workflow/`・`src/cli/` の TypeScript 実装で使えます（`src/HybridDevOrchestrator/` の既存 PowerShell module は変更していません）。フェーズ7で新たに TypeScript へ移植したのは `issues`・`inspect`・`cleanup`・`labels` の4コマンドです（`help`/`config`/`doctor`/`run`/`status` はフェーズ1・5・6で先行配線済み）。
+## The TypeScript implementation (migration in progress)
+
+Following [ADR-0001](docs/adr/0001-primary-runtime-typescript.md), the project is
+migrating in phases to TypeScript / Node.js 24 LTS as the medium-to-long-term primary
+runtime. All nine `hdo` commands (`help`, `doctor`, `config`, `issues`, `inspect`,
+`run`, `status`, `cleanup`, `labels`) are available in the TypeScript implementation
+under `src/core/`, `src/platform/`, `src/process/`, `src/git/`, `src/github/`,
+`src/runners/`, `src/workflow/`, and `src/cli/`.
 
 ```sh
 npm ci
@@ -369,23 +499,52 @@ node src/cli/main.ts cleanup -RunId <id> -WhatIf
 node src/cli/main.ts labels -Apply -WhatIf
 ```
 
-> **plugin を使う場合は `npm ci` が必須です。** フェーズ7の cut-over により、Claude Code/Codex plugin の全8個の `commands/*.md`・全8個の `skills/*/SKILL.md` は `pwsh`（`hdo.ps1`）ではなく `node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" <command>` を呼び出します。TypeScript CLI は依存（`ajv`/`ajv-formats`/`koffi`）を必要とし、`node_modules/` は gitignore されているため、**plugin をインストールした client repository では、利用前に plugin root（この repository のルート）で `npm ci` を一度実行してください**。`node_modules` が無い状態で呼び出すと command は失敗します。plugin のインストール自体が Node 24 以上と `npm ci` の実行を新しい前提条件として要求します。
+> **`npm ci` is mandatory if you use the plugins.** Since the phase 7 cut-over, all
+> eight `commands/*.md` and all eight `skills/*/SKILL.md` invoke
+> `node "${CLAUDE_PLUGIN_ROOT}/src/cli/main.ts" <command>` rather than `pwsh`
+> (`hdo.ps1`). The TypeScript CLI needs its dependencies (`ajv`, `ajv-formats`,
+> `koffi`) and `node_modules/` is gitignored, so **run `npm ci` once in the plugin
+> root — this repository's root — before using an installed plugin.** Commands fail
+> without `node_modules`.
 
-- `node src/cli/main.ts config -Json` は `pwsh -NoProfile -File hdo.ps1 config -Json` と意味的に等価な出力を返します（オプション名は `hdo.ps1` と同じ `-Json`/`-Config`/`-Profile`/`-IgnoreRepositoryConfig`/`-RepositoryPath` 等）。`-Json` を付けない `config` も同じ JSON を stdout に出力します（PowerShell 版の非`-Json`テーブル表示は再現していません）。
-- `node src/cli/main.ts doctor -DryRun -Json` は `pwsh -NoProfile -File hdo.ps1 doctor -DryRun -Json` と意味的に等価な read-only preflight 結果を返します。`src/runners/`（Codex/Claude/command adapter）と `src/workflow/`（preflight、`.hdo/project.json` の読み込み）がフェーズ5で追加され、`src/github/`（Issue 正規化・pickup・claim/label 同期）はフェーズ4で追加されています。フェーズ7で `doctor` に `node-version` check（`required: false`、Node 24 以上で `pass`）を追加しました。
-- `node src/cli/main.ts run -Issue <n> -NoWriteBack -Json` と `node src/cli/main.ts status -RunId <id> -Json` はフェーズ6で追加しました。`config`/`doctor` と同じ理由（フェーズ6の終了条件の直接 oracle であるため）で、フェーズ7の CLI 移植を待たず先行して配線しています。
-- `node src/cli/main.ts issues -Json`・`inspect -Issue <n> -Json`・`cleanup -RunId <id> -WhatIf`・`labels -Apply -WhatIf` はフェーズ7で追加しました。`cleanup -WhatIf` は PowerShell の `ShouldProcess` 出力（`What if: ...` 行 + stdout の `null`）をそのまま再現します。`labels -WhatIf` は `-Apply` を伴わない限り plain `labels` と同一出力です。詳細・parity 測定方法は `docs/architecture.md` §16.2・§16.4「フェーズ7」を参照してください。
-- PowerShell 実装は、Migration strategy フェーズ6・フェーズ7 両方の終了条件を満たしたことを受け **maintenance mode（既存不具合の修正のみ、新規 subsystem は追加しない）へ移行しました**。`hdo.ps1` と `src/HybridDevOrchestrator/` は削除していません。`workers/hdo-ollama-worker.ps1` も **フェーズ8の完了（2026-09-07）をもって maintenance mode へ移行しました**。これにより `pwsh` は TypeScript runtime のどの route の要件でもなくなりました（この PowerShell worker を明示的に起動し続ける独自 config を使う場合に限り、その環境に `pwsh` が必要です）。フェーズ8の (c) - inner tool loop に AI SDK を採用するかの判断 - は実測の結果 **不採用**（依存 0 ベースライン継続）で決着しています（`docs/adr/0003-agent-harness-lightweight.md` Amendment 2026-09-07、実測データは `poc/ai-sdk/results/`）。移行の詳細な配置・依存方向は `docs/architecture.md` 16節を参照してください。
-- Windows の process-tree containment（`NodeProcessRunner`）は `koffi`（FFI、`package.json` に exact version pin）経由で Win32 Job Object を保持します。詳細は `docs/adr/0002-windows-job-object-via-koffi.md` を参照してください。koffi の import は `src/platform/**` に限定され、`src/core/**` からは import できません（`src/core/boundary.test.ts` が機械的に検査します）。
-- CI は `.github/workflows/typescript.yml` が **`windows-latest` のみ**で `npm ci` → typecheck → test → `help` smoke → `config -Json` → `doctor -DryRun -Json` を実行します（ADR-0001 Amendment 2026-09-05 により、移行の一次ターゲットは Windows です）。
+- The PowerShell implementation has moved to **maintenance mode**: fixes to existing
+  defects only, no new subsystems. `hdo.ps1` and `src/HybridDevOrchestrator/` have not
+  been removed. `workers/hdo-ollama-worker.ps1` also moved to maintenance mode when
+  phase 8 completed (2026-09-07), which means **`pwsh` is no longer required by any
+  route of the TypeScript runtime** — it is needed only if you keep a custom config that
+  explicitly launches the PowerShell worker. Phase 8 (c) — whether to adopt an AI SDK for
+  the inner tool loop — was decided **against** on measured evidence, keeping the
+  zero-dependency baseline ([ADR-0003](docs/adr/0003-agent-harness-lightweight.md)
+  Amendment 2026-09-07; measurements in `poc/ai-sdk/results/`). See
+  `docs/architecture.md` §16 for the detailed layout and dependency direction.
+- Windows process-tree containment (`NodeProcessRunner`) holds a Win32 Job Object via
+  `koffi` (FFI, pinned to an exact version in `package.json`). See
+  [ADR-0002](docs/adr/0002-windows-job-object-via-koffi.md). `koffi` imports are
+  confined to `src/platform/**` and cannot be imported from `src/core/**`;
+  `src/core/boundary.test.ts` enforces this mechanically.
+- `.github/workflows/typescript.yml` runs on **`windows-latest` only** — `npm ci` →
+  typecheck → test → `help` smoke → `config -Json` → `doctor -DryRun -Json` (per
+  ADR-0001 Amendment 2026-09-05, the migration's first target is Windows).
 
-## 詳細文書
+## Contributing
 
-- [要件](docs/requirements.md)
-- [設定](docs/configuration.md)
-- [アーキテクチャ](docs/architecture.md)
-- [GitHub Issue 契約](docs/issue-contract.md)
-- [レビュー基盤](docs/review-platform.md)
-- [ランタイム評価: PowerShell vs TypeScript](docs/evaluation/powershell-vs-typescript.md)
-- [TypeScript 採用時の architecture proposal](docs/evaluation/typescript-architecture-proposal.md)
-- [ADR](docs/adr/README.md)
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the development setup, how to run the test
+suites, and the plugin version bump requirement. This project follows the
+[Contributor Covenant](CODE_OF_CONDUCT.md).
+
+## Further documentation
+
+These documents are in Japanese.
+
+- [Requirements](docs/requirements.md)
+- [Configuration](docs/configuration.md)
+- [Architecture](docs/architecture.md)
+- [GitHub Issue contract](docs/issue-contract.md)
+- [Review platform](docs/review-platform.md)
+- [Runtime evaluation: PowerShell vs TypeScript](docs/evaluation/powershell-vs-typescript.md)
+- [Architecture proposal for adopting TypeScript](docs/evaluation/typescript-architecture-proposal.md)
+- [ADRs](docs/adr/README.md)
+
+## License
+
+[MIT](LICENSE) © kkb-hub

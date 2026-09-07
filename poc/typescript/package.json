@@ -2,6 +2,7 @@
   "name": "hdo-poc-typescript",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Hybrid Dev Orchestrator - TypeScript/Node.js runtime PoC (Issue #18)",
   "type": "module",
   "scripts": {

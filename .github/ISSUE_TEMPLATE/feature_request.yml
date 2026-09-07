@@ -1,0 +1,43 @@
+name: Feature request
+description: Suggest a change or addition to Hybrid Dev Orchestrator.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim `docs/adr/` — some directions have already been
+        decided, notably the phased migration to TypeScript
+        ([ADR-0001](https://github.com/kkb-hub/hybrid-dev-orchestrator/blob/main/docs/adr/0001-primary-runtime-typescript.md))
+        and the Windows-first scope.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the situation you are in, not the solution you have in mind.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This affects the distribution surface (`hdo.ps1`, `src/`, `commands/`, `skills/`, `config/`, `schemas/`) and would need a plugin version bump.
+          required: false
+        - label: I am willing to work on this.
+          required: false

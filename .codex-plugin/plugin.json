@@ -1,10 +1,11 @@
 {
   "name": "hdo",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "description": "Run bounded, issue-driven implement, validate, review, and fix cycles with Hybrid Dev Orchestrator.",
   "author": {
     "name": "kkb-hub"
   },
+  "license": "MIT",
   "homepage": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
   "repository": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
   "keywords": [

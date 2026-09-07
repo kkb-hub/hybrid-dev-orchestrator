@@ -1,10 +1,11 @@
 {
   "name": "hdo",
   "description": "Hybrid Dev Orchestrator: issue-driven implement/validate/review/fix cycles with thin Claude Code and Codex wrappers around a TypeScript (Node) CLI.",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "author": {
     "name": "kkb-hub"
   },
+  "license": "MIT",
   "homepage": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
   "repository": "https://github.com/kkb-hub/hybrid-dev-orchestrator",
   "keywords": [

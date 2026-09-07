@@ -1,0 +1,16 @@
+# Normalize to LF in the repository; check out per-type below.
+* text=auto eol=lf
+
+# PowerShell tooling on Windows is happiest with CRLF in the working tree.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.cmd   text eol=crlf
+*.bat   text eol=crlf
+
+# Recorded PoC evidence, not hand-written source.
+poc/typescript/results/** linguist-generated=true
+poc/ai-sdk/results/**    linguist-generated=true
+
+# Lockfiles: keep diffs collapsed in review.
+package-lock.json -diff linguist-generated=true

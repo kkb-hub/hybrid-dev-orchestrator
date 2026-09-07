@@ -1,4 +1,21 @@
+# Build / runtime artifacts
 artifacts/
 test-results/
-*.tmp
 node_modules/
+*.tmp
+
+# Claude Code / agent runtime state (worktrees here can reach hundreds of MB)
+.claude/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

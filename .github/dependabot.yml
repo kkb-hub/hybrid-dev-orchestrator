@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-dependencies:
+        dependency-type: development
+    ignore:
+      # Pinned to an exact version: the Win32 Job Object FFI signatures in
+      # src/platform/** are validated against this release. See ADR-0002.
+      - dependency-name: koffi
+
+  - package-ecosystem: npm
+    directory: "/poc/typescript"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: npm
+    directory: "/poc/ai-sdk"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly

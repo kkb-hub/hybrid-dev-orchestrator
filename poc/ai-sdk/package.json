@@ -2,6 +2,7 @@
   "name": "hdo-poc-ai-sdk",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Hybrid Dev Orchestrator - AI SDK comparison PoC for the lean Ollama worker (ADR-0001 Migration strategy phase 8 step b, ADR-0003 Decision D2 (b))",
   "type": "module",
   "engines": {

@@ -1,8 +1,28 @@
 {
   "name": "hybrid-dev-orchestrator",
-  "version": "0.1.0",
+  "version": "0.14.0",
   "private": true,
   "description": "Hybrid Dev Orchestrator - TypeScript/Node.js primary runtime (ADR-0001)",
+  "license": "MIT",
+  "author": "kkb-hub",
+  "homepage": "https://github.com/kkb-hub/hybrid-dev-orchestrator#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kkb-hub/hybrid-dev-orchestrator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kkb-hub/hybrid-dev-orchestrator/issues"
+  },
+  "keywords": [
+    "orchestrator",
+    "github-issues",
+    "code-review",
+    "claude-code",
+    "codex",
+    "ollama",
+    "powershell",
+    "windows"
+  ],
   "type": "module",
   "engines": {
     "node": ">=24"
