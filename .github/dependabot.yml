@@ -12,18 +12,30 @@ updates:
       # Pinned to an exact version: the Win32 Job Object FFI signatures in
       # src/platform/** are validated against this release. See ADR-0002.
       - dependency-name: koffi
+      # The production runtime targets Node 24 (engines: >=24) and TypeScript 5.x.
+      # Major bumps here are migration decisions, not routine maintenance, so they
+      # are raised deliberately rather than by Dependabot.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
 
+  # The PoCs under poc/ are frozen evidence for ADR-0001 and ADR-0003: the numbers
+  # committed in their results/ directories were measured against the dependency
+  # versions recorded in their lockfiles. Routine bumps would invalidate that
+  # evidence and churn CI for no benefit, so open-pull-requests-limit is 0 —
+  # Dependabot still reports and raises *security* updates, but no version upgrades.
   - package-ecosystem: npm
     directory: "/poc/typescript"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 0
 
   - package-ecosystem: npm
     directory: "/poc/ai-sdk"
     schedule:
       interval: monthly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 0
 
   - package-ecosystem: github-actions
     directory: "/"
