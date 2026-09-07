@@ -1022,8 +1022,11 @@ Keep the cycle bounded.
     # The whole point of the lean harness: it has no Claude CLI reserve to pay for, so it
     # can use a window that fits entirely in a 24 GB GPU.
     Assert-Hdo ([int]$leanWorkerRunner.contextTokens -eq 32768) 'the lean worker example uses the VRAM-friendly window the Claude CLI route cannot support'
-    Assert-Hdo (@($leanWorkerRunner.extraArgs) -contains '{hdoRoot}/workers/hdo-ollama-worker.ps1') 'the lean worker example locates its worker without a machine-specific absolute path'
-    Assert-Hdo (Test-Path -LiteralPath (Join-Path $repositoryRoot 'workers/hdo-ollama-worker.ps1') -PathType Leaf) 'the worker the example names is actually shipped'
+    # Since phase 8, the lean worker ships as TypeScript and Node runs it directly by type
+    # stripping, with no build step and no pwsh host.
+    Assert-Hdo ($leanWorkerRunner.command -eq 'node') 'the lean worker example invokes its worker through node rather than a script host'
+    Assert-Hdo (@($leanWorkerRunner.extraArgs) -contains '{hdoRoot}/src/workers/leanWorker/main.ts') 'the lean worker example locates its worker without a machine-specific absolute path'
+    Assert-Hdo (Test-Path -LiteralPath (Join-Path $repositoryRoot 'src/workers/leanWorker/main.ts') -PathType Leaf) 'the worker the example names is actually shipped'
 
     $badLabelPrefixConfig = Copy-HdoObject $config
     $badLabelPrefixConfig.github.labels.statusPrefix = 'custom:status/'

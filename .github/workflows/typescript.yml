@@ -7,11 +7,14 @@ name: typescript
 # by this workflow). This workflow is the regression gate for the Migration
 # strategy phases as they land - phase 1 (core contracts / config / state), phase 2
 # (process / platform), phase 3 (git), phase 4 (github), phase 5 (runners), phase 6
-# (workflow), and now phase 7 (cli / plugin: issues/inspect/cleanup/labels wired
+# (workflow), phase 7 (cli / plugin: issues/inspect/cleanup/labels wired
 # into src/cli/main.ts, the phase-7 parity tests under src/cli/*Parity.test.ts and
 # their tests/fixtures/cli/** fixture, and the commands/*.md + skills/*/SKILL.md
-# cut-over to `node`) - and will grow to cover later migration phases in place,
-# without renaming.
+# cut-over to `node`), and now phase 8 (workers: the lean Ollama worker port under
+# src/workers/leanWorker/, `npm test` covers its mock-Ollama parity suite as part
+# of the repository-wide test run - the opt-in real-Ollama smoke gated on
+# HDO_LEAN_WORKER_SMOKE=1 is deliberately not part of this job) - and will grow to
+# cover later migration phases in place, without renaming.
 
 on:
   pull_request:

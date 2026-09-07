@@ -371,7 +371,7 @@ model がなければ導入方法を自動実行せず fail する。Ollama が�
 
 ## 6.1 Ollama lean worker profile
 
-`config/examples/ollama-lean-worker.json` は、local step を Claude CLI ではなく HDO 同梱の `workers/hdo-ollama-worker.ps1` に `type: command` runner として実行させる。plan / review が cloud のままである点は 6 と同じで、違うのは local 側の harness だけである。
+`config/examples/ollama-lean-worker.json` は、local step を Claude CLI ではなく HDO 同梱の lean worker に `type: command` runner として実行させる。plan / review が cloud のままである点は 6 と同じで、違うのは local 側の harness だけである。ADR-0001 Migration strategy フェーズ8 (a)・(iii)（`docs/architecture.md` §16.2）により、この profile が既定で起動する worker は `node` 版（`src/workers/leanWorker/main.ts`、依存 0・Node 24 native `fetch`）であり、`pwsh` を必要としない。フェーズ8完了（ADR-0001 の (iv)、比較 PoC と採否決定）までは PowerShell 版 `workers/hdo-ollama-worker.ps1` も maintenance mode に入らず残っており、`command`/`args` を差し替えてこちらを明示的に指す config を使うことも引き続きできる。
 
 **この profile が存在する理由は context の固定費にある。** 4.3 のとおり Claude CLI は宣言 window から 23000 tokens を先に差し引くため、汎用の対話型 agent としての機能と引き換えに `contextTokens` の下限が 57344 になる。lean worker は HDO が必要とする tool 定義と system prompt しか積まないため、同じ仕事の固定費が桁違いに小さい。
 

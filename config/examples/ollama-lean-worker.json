@@ -27,7 +27,7 @@
     "ollama-lean-implementer": {
       "type": "command",
       "provider": "ollama",
-      "command": "pwsh",
+      "command": "node",
       "model": "qwen3.8:27b-q4_K_M",
       "contextTokens": 32768,
       "sandbox": "workspace-write",
@@ -35,9 +35,7 @@
       "promptTransport": "file",
       "passEnvironment": [],
       "extraArgs": [
-        "-NoProfile",
-        "-File",
-        "{hdoRoot}/workers/hdo-ollama-worker.ps1",
+        "{hdoRoot}/src/workers/leanWorker/main.ts",
         "-PromptFile",
         "{promptFile}",
         "-OutputFile",
