@@ -1,0 +1,68 @@
+name: poc-ai-sdk
+
+# CI for the AI SDK comparison PoC (ADR-0001 Migration strategy phase 8 step (b);
+# ADR-0003 Decision D2 (b)). Mirrors poc-typescript.yml's shape. Scoped to only run when
+# files it actually reads/depends on change - the PoC's own tree, the zero-dependency
+# baseline worker it reuses modules from and compares against, and the schema its tests
+# reference - so it does not run on every PR to the rest of the TypeScript runtime.
+#
+# This workflow runs only the deterministic, stub-Ollama test suite (npm test). The
+# real-Ollama comparison measurement that ADR-0003 D2 (b) actually needs for the phase 8
+# (c) adoption decision is run manually by the repository owner, never in CI - see
+# README.md.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - "poc/ai-sdk/**"
+      - "src/workers/leanWorker/**"
+      - "schemas/**"
+      - ".github/workflows/poc-ai-sdk.yml"
+  push:
+    branches: [main]
+    paths:
+      - "poc/ai-sdk/**"
+      - "src/workers/leanWorker/**"
+      - "schemas/**"
+      - ".github/workflows/poc-ai-sdk.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: poc-ai-sdk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  poc-ai-sdk:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        working-directory: poc/ai-sdk
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: poc/ai-sdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test

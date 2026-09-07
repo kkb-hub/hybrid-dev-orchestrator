@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted (2026-09-06)。Proposed として PR #66 で起票し、同日 repository owner が承認した。
+Accepted (2026-09-06)。Proposed として PR #66 で起票し、同日 repository owner が承認した。Amendment「2026-09-07: フェーズ8 (c) 採否決定」で D2 の (b)(c) を実測に基づいて閉じた（AI SDK 不採用）。
 
-本 ADR は Issue #48「エージェントハーネス軽量化の検討: AI SDK + XState を LangGraph 代替として評価する」の AC「現行独自実装 / AI SDK + XState / LangGraph の trade-off を ADR または docs に記録する」に対する回答である。Issue #48 の PoC 系 AC（AI SDK PoC、XState PoC、本採用判断）は本 ADR では閉じず、Decision D2 の (b)(c) と D4 に期限を切らずに残す。
+本 ADR は Issue #48「エージェントハーネス軽量化の検討: AI SDK + XState を LangGraph 代替として評価する」の AC「現行独自実装 / AI SDK + XState / LangGraph の trade-off を ADR または docs に記録する」に対する回答である。Issue #48 の PoC 系 AC のうち **AI SDK PoC と本採用判断は Amendment 2026-09-07 で閉じた**（`poc/ai-sdk/` と `poc/ai-sdk/results/` が実証根拠）。XState PoC は本 ADR では閉じず、D4 の再評価トリガーに期限を切らずに残す。
 
 Issue #37 の AC-01（Ollama 2経路と doctor preflight のフェーズ）/ AC-02（`workers/hdo-ollama-worker.ps1` の扱い）は ADR-0001 の Amendment「2026-09-06: Ollama 対応の移行スコープ（Issue #37）」で回答済みであり、本 ADR は同 Amendment が「フェーズ7より後の別 Issue で扱う」とした worker の TypeScript 移植を、ADR-0001 の新しい Migration strategy **フェーズ8（workers）** として確定する（ADR-0001 Amendment「2026-09-06: フェーズ8（workers）の追加と lean worker 移植の位置づけ」と対で読む）。
 
@@ -61,7 +61,7 @@ ADR-0001 Migration strategy にフェーズ8（workers）を追加し（同 ADR 
 
 - **(a) ベースライン: 依存 0 の `node` 版 worker**。Node 24 native `fetch` で Ollama `/api/chat` を呼ぶ `workers/hdo-ollama-worker.ps1` の 1:1 移植。`command` runner の token 契約と `schemas/*.json` は変更せず、`config/examples/ollama-lean-worker.json` の `command`/`args` の差し替えだけで起動できる形にする。parity は `tests/test-lean-worker.ps1`（715行）を TypeScript へ移植したテスト（mock Ollama、CI gate）で測り、`tests/test-lean-worker-smoke.ps1` の TypeScript 相当（実 Ollama、opt-in、CI gate にしない）で実機確認する。PR #55 の compaction もこの範囲に含める。
 - **(b) 比較 PoC: `poc/ai-sdk/`**。`ai`（v7 系）+ Ollama provider（第一候補 `ollama-ai-provider-v2`。`@ai-sdk/openai-compatible` は per-request `num_ctx` を渡せないため route 2 の存在理由を打ち消す - Rationale 参照）を使った `ToolLoopAgent` 版 worker を (a) と**同じ tool 関数・同じ `WorkspaceGuard`・同じ artifact 契約**で組み、Issue #48 の指標（token 消費、completion rate、tool call 精度、32K context での安定性、実装量、security/auditability）で (a) と比較する。依存は `poc/ai-sdk/` 配下の `package.json` に閉じ、repository root の `dependencies` には入れない。`poc/typescript/` は凍結のまま触らない。
-- **(c) 採否の記録**。(b) の結果に基づく採否（AI SDK 採用 / ベースライン継続 / 条件付き）を、本 ADR の Amendment または新 ADR として記録する。採用する場合も、root `dependencies` への追加は (c) の決定を経てからにする。
+- **(c) 採否の記録**。(b) の結果に基づく採否（AI SDK 採用 / ベースライン継続 / 条件付き）を、本 ADR の Amendment または新 ADR として記録する。採用する場合も、root `dependencies` への追加は (c) の決定を経てからにする。→ **決定済み（2026-09-07）: 不採用、ベースライン継続。** Amendment「2026-09-07: フェーズ8 (c) 採否決定」を参照。root `dependencies` は変更していない。
 
 フェーズ8の終了条件 (i)〜(iv)（(a) の parity テスト、opt-in smoke、`config/examples/ollama-lean-worker.json` の `node` 版への更新、(b)(c) の記録）は ADR-0001 Migration strategy の項目8に置く。この4条件を満たした時点で `pwsh` を TypeScript runtime の route 2 要件から外し、PowerShell worker は maintenance mode へ移行する。
 
@@ -169,9 +169,11 @@ PR #55 の方針が AI SDK の loop 内で再現できるかを検証した結�
 
 ### なぜ今すぐ採らず (a) → (b) → (c) にするか（評価文書 §2.5）
 
+**この表は 2026-09-06 時点の予測である。(b) で実測した結果、「削れる行数」の行は反証された**（実測は約 25 コード行の**増加**）。詳細と反証の理由は Amendment「2026-09-07: フェーズ8 (c) 採否決定」を参照。他の行は実測と矛盾しなかった。予測を書き換えず、反証されたことを併記する形で残す。
+
 | 観点 | AI SDK + `ollama-ai-provider-v2` | 0依存 `fetch` 移植（(a)） |
 |---|---|---|
-| 削れる行数（1222行中） | ~120-140（10-12%） | 0（ただし PS→TS の 1:1 移植で自然に短くなる） |
+| 削れる行数（1222行中）**← 反証済み** | ~120-140（10-12%） | 0（ただし PS→TS の 1:1 移植で自然に短くなる） |
 | 依存 | +12 packages / ~18 MB、Apache-2.0 主体、peer `zod` 自動導入、Vercel 固有コード同梱 | 0（`ajv` は既存） |
 | 変化速度 | 19か月で4 major、deprecated 122箇所 | Ollama `/api/chat` の JSON 契約のみ |
 | Ollama provider の bus factor | 公式なし、community 単独 maintainer | 該当なし |
@@ -187,7 +189,7 @@ PR #55 の方針が AI SDK の loop 内で再現できるかを検証した結�
 - フェーズ7は cut-over の瞬間（`commands/*.md`・`skills/*/SKILL.md` の呼び出し経路が `pwsh` から `node` へ切り替わる）であり、7コマンド parity に注意を集中させたい。
 - worker は `command` adapter の向こう側にいてフェーズ6/7の parity に現れない（Context）。並行させてもフェーズ7の parity を助けず、review の焦点だけが割れる。
 - 移植は大きい（1222行 + 715行の `tests/test-lean-worker.ps1` + PR #55 の compaction）うえ、完了判定に実 Ollama の smoke という、フェーズ6/7の mock ベース parity とは異なる検証方法を要する。
-- 帰結: フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2 を使うには `pwsh` が PATH 上に必要である（既知の制限、opt-in の経路に限る。Consequences）。
+- 帰結: フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime 上で route 2 を使うには `pwsh` が PATH 上に必要である（既知の制限、opt-in の経路に限る。Consequences）。**この窓は 2026-09-07 のフェーズ8完了で閉じた**（Amendment 2026-09-07）。
 
 ## Consequences
 
@@ -200,9 +202,9 @@ PR #55 の方針が AI SDK の loop 内で再現できるかを検証した結�
 
 **Negative**:
 
-- **`pwsh` が route 2 に残る窓**: フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime の route 2（`config/examples/ollama-lean-worker.json`）は引き続き `pwsh` を PATH 上に要求する。`pwsh` が無い環境では `doctor` の `runner:<name>` 検査（`src/workflow/preflight.ts`）が `Runner command 'pwsh' was not found.` で fail する形で表面化する。route 1（claude+ollama）と cloud route には影響しない。
-- **`ai` v7 の version churn**: 19か月で4 major、`@deprecated` 122箇所という変化速度は、(c) で採用する場合に継続的な追随コストになる。(b) の PoC は `ai` と provider を exact pin し、compaction policy を SDK 型から隔離した純関数として書く。
-- **`poc/ai-sdk/` の依存は PoC 限定**: 約12 package（`zod` 含む）は `poc/ai-sdk/package.json` に閉じ、(c) の決定まで repository root の `dependencies` に入れない。`npm ci` の対象にも CI gate にもしない。新ディレクトリの追加は「`poc/typescript/` は凍結」の意味を弱めうるため、`poc/ai-sdk/README.md` に PoC の目的・比較対象・凍結条件を明記する。
+- **`pwsh` が route 2 に残る窓**: フェーズ7の cut-over からフェーズ8完了までの間、TypeScript runtime の route 2（`config/examples/ollama-lean-worker.json`）は引き続き `pwsh` を PATH 上に要求する。`pwsh` が無い環境では `doctor` の `runner:<name>` 検査（`src/workflow/preflight.ts`）が `Runner command 'pwsh' was not found.` で fail する形で表面化する。route 1（claude+ollama）と cloud route には影響しない。→ **解消済み（2026-09-07、フェーズ8完了）。** `pwsh` は TypeScript runtime のどの route の要件でもなくなった。
+- **`ai` v7 の version churn**: 19か月で4 major、`@deprecated` 122箇所という変化速度は、(c) で採用する場合に継続的な追随コストになる。(b) の PoC は `ai` と provider を exact pin し、compaction policy を SDK 型から隔離した純関数として書く。→ **不採用（2026-09-07）により、この追随コストは発生しない。** `poc/ai-sdk/` は凍結されるため、その依存が古くなっても本体には影響しない。
+- **`poc/ai-sdk/` の依存は PoC 限定**: 約12 package（`zod` 含む）は `poc/ai-sdk/package.json` に閉じ、(c) の決定まで repository root の `dependencies` に入れない。`npm ci` の対象にも CI gate にもしない。新ディレクトリの追加は「`poc/typescript/` は凍結」の意味を弱めうるため、`poc/ai-sdk/README.md` に PoC の目的・比較対象・凍結条件を明記する。→ **(c) は不採用で決着し（2026-09-07）、root `dependencies` は変更されなかった。** `poc/ai-sdk/` も `poc/typescript/` と同様に凍結する。
 - フェーズ8は実 Ollama を要する opt-in smoke を完了条件に含むため、CI だけでは完了を判定できず、owner の実機実行が要る。
 
 **Neutral**:
@@ -210,6 +212,103 @@ PR #55 の方針が AI SDK の loop 内で再現できるかを検証した結�
 - `src/core/boundary.test.ts` の allow-list、`schemas/*.json`、`command` runner の token 契約、artifact layout はどの構成でも変更しない。
 - Issue #48 が挙げた OpenAI Agents SDK / Mastra / VoltAgent は本 ADR で個別評価していない。D4 のトリガーが立った時に LangGraph と同じ表で扱う。
 - worker の out-of-process / in-process はフェーズ8の (a) で決める（D3）。
+
+## Amendments
+
+### 2026-09-07: フェーズ8 (c) 採否決定 — AI SDK を採用せず、依存 0 ベースラインを継続する
+
+D2 が定めた (a) → (b) → (c) の (c) にあたる決定である。(b) の比較 PoC（`poc/ai-sdk/`）を実装し、Issue #48 の6指標すべてを実測した結果、**`ai` + `ollama-ai-provider-v2` を lean worker に採用しない。`src/workers/leanWorker/`（依存 0、Node 24 native `fetch`）を継続する。** repository root の `dependencies` は変更しない（`ajv`・`ajv-formats`・`koffi` のまま）。
+
+これによりフェーズ8の終了条件 (iv) を満たし、フェーズ8全体が完了する。ADR-0001 Migration strategy 項目8 および本 ADR D2 が定める「(i)〜(iv) を満たした時点で `pwsh` を TypeScript runtime の route 2 要件から外し、PowerShell worker は maintenance mode へ移行する」が本日をもって発効する。
+
+#### 測定方法
+
+実モデル4指標は `poc/ai-sdk/scripts/compare.mjs` が測定した。生成物は `poc/ai-sdk/results/comparison.json`（機械可読、全 run の生値）と `comparison.md`（表）で、両者を repository に含める。両 worker を**同一の方法**（直接 subprocess、同一 flag、同一 prompt、同一 fixture）で起動し、シナリオ・成功判定は `src/workers/leanWorker/smoke.test.ts` から移した。1 repetition 内で2実装を連続実行して warm-up 差を相殺し、run ごとに workspace を作り直す。失敗は失敗として記録し、緑になるまでの再試行はしない。実行環境は Windows 11 / Node v24.20.0 / Ollama 0.33.3 / `qwen3.8:27b-q4_K_M`、3シナリオ × 2実装 × 3反復 = 18 run。
+
+実装量・依存・security/auditability の3指標は静的に測定した（後述）。
+
+**この測定の限界を先に明記する**: ローカルモデルは非決定的であり、n=3 の中央値は精密な測定値ではない。下表の token 数の差は、後述するとおり**分散に埋もれており有意ではない**。この節はその限界を承知のうえで、それでも決定に足る結論が出たという主張である。
+
+#### 実測結果（Issue #48 の6指標）
+
+| 指標 | ベースライン (a) | AI SDK PoC (b) | 判定 |
+|---|---|---|---|
+| completion rate | 9/9 | 9/9 | **差なし**（両方満点） |
+| tool call 精度 | 52 call / 失敗 0 | 46 call / 失敗 0 | **差なし**（両方満点） |
+| 32K context 安定性 | 3/3 完了、compaction 0 回 | 3/3 完了、compaction 0 回 | **差なし** |
+| token 消費（中央値） | 4413 / 9139 / 7017 | 4442 / 10484 / 8197 | **有意差なし**（下記） |
+| 実装量（コード行） | 242 | 267 | ベースラインが **25 行少ない** |
+| 依存（プロセス内） | 0 package | 8 package / 1.65 MB | ベースラインが優位 |
+
+（token の3値は `offbyone` / `compaction-4k` / `compaction-32k` の順。`completed` は exit 0 かつ schema 妥当な報告書があり、かつ **workspace 上で実際にタスクが達成されている**ことを全て満たす run のみを数える。）
+
+**token 消費に有意差はない。** 中央値は3シナリオとも PoC の方が大きいが（+0.7% / +15% / +17%）、n=3 の分散がその差をはるかに上回る。`compaction-4k` のベースラインは 5632〜19032 と自身の中で 3.4 倍に振れており、PoC の 5430〜11074 と範囲が大きく重なる。個別 run では PoC がベースラインの 1/3.5 の token で終えた回もある（`compaction-4k` rep1: PoC 5430 / baseline 19032）。**したがって「ベースラインが token 効率で優る」とは主張しない。** 主張するのは「AI SDK は token 消費を改善しなかった」であり、それが (c) にとって必要な事実である。
+
+**実モデルに向かう4指標のいずれにおいても、AI SDK は改善をもたらさなかった。** completion rate・tool call 精度・32K 安定性は両実装とも満点で差がつかず、token 消費は差が測れなかった。
+
+#### 実装量: ADR-0003 の予測は符号が逆だった
+
+本 ADR の「なぜ今すぐ採らず (a) → (b) → (c) にするか」の表は、AI SDK が 1222 行中 **120〜140 行（10-12%）を削る**と予測していた。実測は逆で、**25 コード行（約 10%）増える**。
+
+| | total 行 | コード行 |
+|---|---:|---:|
+| SDK が置き換えるベースライン側（`ollamaClient.ts` + `main.ts`） | 376 | **242** |
+| PoC 自身（`main.ts` + `toolAdapter.ts` + `messageBridge.ts`） | 476 | **267** |
+| 差 | +100 | **+25** |
+
+（コード行は空行・`//`・`/* */`・`*` 継続行を除いた行数。`poc/ai-sdk/src/main.ts` はベースラインの `main.ts` が `run(process.argv.slice(2))` を import 時の副作用として実行するため、純粋 helper 3個 - `normalizeWorkspace`・`loadResponseSchema`・`buildInitialMessages` - をバイト等価で複製している。それ以外の tool 実装・`WorkspaceGuard`・artifact 契約は production の実体を import しており、複製ではない。）
+
+**予測が外れた理由は、予測を立てた時点と検証した時点で比較対象が変わったことにある。** 120〜140 行という見積もりは **PowerShell 実装（1222 行）**に対するもので、そこでは HTTP の組み立てと JSON marshalling が高くついていた。しかし (a) の TypeScript 移植が native `fetch` でその部分を既に 66 コード行（`ollamaClient.ts`）まで縮めてしまったため、SDK に吸収させる余地がほとんど残っていない。一方で SDK は `ModelMessage` ↔ Ollama native message の変換（`messageBridge.ts`、65 コード行）を**新たに要求する**。ベースラインのメッセージ形状は Ollama のワイヤ形状そのものなので、この変換は元々存在しない仕事である。
+
+つまり **SDK が約束していた削減は、PS→TS 移行が native `fetch` で既に回収済みだった**。これは (a) を先に完成させてから (b) を測るという D2 の順序を守ったからこそ観測できた事実であり、(a) 無しに PoC を作っていれば PowerShell との比較になって同じ結論には至らなかった。
+
+D2 が期待した「compaction policy を `prepareStep` から1行で呼ぶ」形（本 ADR「compaction は SDK 内で実装できる」注意点 (d)）も、実際には `messageBridge.ts` 全体を必要とした。SDK 内で実装できるという判断自体は正しかった（blocker ではなかった）が、そのコストは見積もりに入っていなかった。
+
+#### 依存: 予測は的中。ただしインストール量と実行時ロード量を分けて記録する
+
+`npm ci` が入れるのは **12 production package / 21.68 MB**。ADR-0003 の予測（12 packages / 約 18 MB）とパッケージ名・バージョンまで一致した（F5 の一覧と同一、`zod@4.5.4` 込み）。内訳は `ai` 8.25 MB / `zod` 7.23 / `undici` 2.04 / `@ai-sdk/provider-utils` 1.27 / `@ai-sdk/provider` 1.19 / `@ai-sdk/gateway` 0.90、残りは各 0.4 未満。license は Apache-2.0 / MIT 主体。
+
+ただし D3 が問題にするのは「workspace への書き込み権限を持つプロセスの中で、どれだけの第三者コードが動くか」であり、それはディスク上の量とは1桁違う。`poc/ai-sdk/scripts/loaded-modules.mjs`（`node:module` の `register` による ESM `load` hook で実測）によれば、実際にプロセスへロードされるのは:
+
+- `ai` の import で **8 package / 103 module file / 1.65 MB**
+- `ollama-ai-provider-v2` の import で **6 package / 101 file / 0.97 MB**
+- `undici` は**ロードされない**（Node native `fetch` が使われる）。これは SDK に有利な事実として記録する。
+
+一方でロードされる 8 package には、HDO が一度も呼ばないものが含まれる: `@ai-sdk/gateway` と `@vercel/oidc`（Vercel Gateway の認証経路。HDO は Ollama にしか繋がない）、および `zod`（PoC は `jsonSchema()` を使い zod schema を1つも書いていないにもかかわらず 95 file がロードされる）。
+
+ベースライン側は機械的に確認して **0**（`src/workers/leanWorker/` の import は `node:` builtin と相対 import のみ。grep で検証）。
+
+#### security / auditability: 境界は壊れなかったが、監査面は増える
+
+D3 の要求は PoC でも守れた。`poc/ai-sdk/src/toolAdapter.ts` は production の `dispatchTool` を包むだけで、`WorkspaceGuard` も tool 実装も HDO 側の実体をそのまま import する。read-only sandbox では `getTools(ctx.readOnly)` が返す `ToolSet` に `write_file`/`edit_file` の**キー自体が存在しない**（framework 側の `activeTools` による隠蔽ではない）。shell/git/build/test の tool は両実装とも定義していない。**この点で AI SDK は減点ではない。**
+
+差がつくのは監査対象の量である。ベースラインでは workspace 書き込み権限を持つプロセスに第三者コードが 1 行も無く、監査範囲は HDO 自身のコードに閉じる。PoC ではそこに 8 package / 103 file が同居し、うち2つは HDO の用途と無関係な経路（Vercel Gateway）である。境界の**設計**は同じでも、境界の内側で信頼する必要のあるコード量は同じではない。
+
+#### 決定の理由
+
+実モデルに向かう4指標（completion rate・tool call 精度・32K 安定性・token 消費）で AI SDK は**一つも改善しなかった**。静的な2指標（実装量・依存）は**いずれも純粋なコスト**であり、しかも実装量については本 ADR の予測と符号が逆だった。加えて `ai` は 19か月で4 major・`@deprecated` 122 箇所という変化速度を持ち、Ollama provider は公式が存在せず community の単独 maintainer に依存する。
+
+今の要件は Ollama 単一 provider・32K 安定運用であり、その範囲では **SDK が吸収する責務が実質的に残っていない**。したがって採用しない。
+
+#### 再評価トリガー
+
+次のいずれかが起きたら本決定を再評価する（D4 と同じ扱い）。
+
+1. **2つ目以降の provider を worker 経由で使う要件が出た場合**（OpenAI / Anthropic を lean worker から直接叩く等）。provider 差分の吸収は SDK の最も強い部分であり、`ollamaClient.ts` を provider ごとに書き増やす側のコストが逆転する。本決定はこの要件が**無い**ことに依存している。
+2. **`messageBridge.ts` に相当する変換が不要になった場合**（provider が Ollama native の message 形状を素通しする、または HDO 側の履歴表現を `ModelMessage` に寄せる判断をした場合）。実装量の符号が反転しうる。
+3. **Ollama `/api/chat` の JSON 契約が破壊的に変わり、追随コストが SDK の追随コストを上回った場合。**
+4. tool loop 自体に、HDO が自前で持つには重い機能（並列 tool 実行、provider 側 approval、structured streaming 等）が要件として入った場合。
+
+#### `poc/ai-sdk/` の扱い
+
+`poc/typescript/` と同じく **凍結**する。不採用の根拠として保存し、以後は本 ADR の再評価トリガーが立った時にのみ更新する。`.github/workflows/poc-ai-sdk.yml` は path-scoped（`poc/ai-sdk/**` の変更時のみ起動）なので、凍結されたディレクトリに対しては実質的に実行されず、CI コストを増やさない。依存は `poc/ai-sdk/package.json` に閉じたままで、root の `npm ci` にも CI gate にも入らない。
+
+`poc/ai-sdk/scripts/compare.mjs` は再実行可能な状態で残す。数値に疑いが生じたときに追試できることが、この決定を「記録」ではなく「検証可能な主張」にしている。18 run のスイープは数十分を要し実機が中断されうるため、run 単位の JSONL journal（`poc/ai-sdk/results/runs.jsonl`）に完了ごとに追記し、再実行時は同一 `(model, scenario, implementation, repetition)` をスキップして再開する。
+
+#### 副次的な観測（PoC 実装中に判明した事実、いずれも本決定の主因ではない）
+
+- AI SDK v7 は `messages` 配列内の `system` role message を実行時に拒否する。system prompt は `instructions` で渡す必要がある。
+- `ollama-ai-provider-v2` は応答の各 chunk に `model` / `created_at` / `done` を要求する。両 worker の自前クライアントはいずれもこれらを要求しておらず、mock サーバはこの3 field を追加して初めて PoC を駆動できた。
 
 ## References
 
@@ -220,6 +319,7 @@ PR #55 の方針が AI SDK の loop 内で再現できるかを検証した結�
 - ADR-0001（`docs/adr/0001-primary-runtime-typescript.md`）Migration strategy フェーズ6・7・8、Amendments 2026-09-06
 - ADR-0002（`docs/adr/0002-windows-job-object-via-koffi.md`）- 依存追加の前例（exact pin、owner 承認）
 - 評価文書: `issue-48-assessment.md`（2026-09-06、`origin/main` = `a4fa523` に対する read-only 調査。repository 外に置かれた作業文書であり、本 ADR が結論と Facts checked を取り込む）
+- `poc/ai-sdk/`（D2 (b) の比較 PoC、2026-09-07 以降は凍結）と `poc/ai-sdk/results/comparison.json`・`comparison.md`（実測データ）、`poc/ai-sdk/scripts/compare.mjs`（実モデル比較ハーネス）・`loaded-modules.mjs`（プロセス内ロード量の実測）- Amendment 2026-09-07 の実証根拠
 - `src/core/state/index.ts`、`src/core/boundary.test.ts`、`src/runners/agentStep.ts`、`workers/hdo-ollama-worker.ps1`、`tests/test-lean-worker.ps1`、`tests/test-lean-worker-smoke.ps1`、`config/examples/ollama-lean-worker.json`
 - AI SDK: https://ai-sdk.dev/docs/reference/ai-sdk-core/generate-text 、https://ai-sdk.dev/docs/agents/loop-control
 - Ollama OpenAI compatibility: https://docs.ollama.com/api/openai-compatibility

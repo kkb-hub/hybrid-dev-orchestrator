@@ -1,0 +1,22 @@
+{
+  "name": "hdo-poc-ai-sdk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Hybrid Dev Orchestrator - AI SDK comparison PoC for the lean Ollama worker (ADR-0001 Migration strategy phase 8 step b, ADR-0003 Decision D2 (b))",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc",
+    "test": "node --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "ai": "^7.0.93",
+    "ollama-ai-provider-v2": "^4.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.8.0"
+  }
+}

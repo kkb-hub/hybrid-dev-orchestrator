@@ -1,0 +1,6 @@
+# The committed evidence for ADR-0003 Amendment 2026-09-07 is comparison.json (every run's
+# raw values) and comparison.md (the tables). The two files below are local working state of
+# a sweep, not evidence: they duplicate what comparison.json already records and they carry
+# absolute paths from whichever machine produced them.
+runs.jsonl
+run.log
