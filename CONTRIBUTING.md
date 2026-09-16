@@ -68,7 +68,10 @@ Smoke tests that need a live provider (`tests/test-ollama-smoke.ps1`,
 
 CI **will fail your PR** if you change the distribution surface without bumping both
 plugin manifests in lockstep. The watched paths are `hdo.ps1`, `src/`, `commands/`,
-`skills/`, `config/`, and `schemas/`.
+`skills/`, `config/`, `schemas/`, and `workers/`, plus the runtime dependencies in
+`package.json` / `package-lock.json` (everything except `devDependencies`). A change
+that only touches `devDependencies`, such as a Dependabot bump of `@types/node` or
+`typescript`, does not need a bump because it does not change what clients run.
 
 If you touched any of those, bump `version` in **both**:
 

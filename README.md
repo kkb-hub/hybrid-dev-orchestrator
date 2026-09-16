@@ -423,9 +423,11 @@ with a preview.
 
 Client repositories detect HDO updates **only** through the `version` in the plugin
 manifests. When you change the distribution surface (`hdo.ps1`, `src/`, `commands/`,
-`skills/`, `config/`, `schemas/`, `package.json`, `package-lock.json`), raise the
-`version` in both `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` to the
-same value. Bumping only one of them does not propagate the update correctly either.
+`skills/`, `config/`, `schemas/`, `workers/`, or the runtime dependencies in
+`package.json` / `package-lock.json`), raise the `version` in both
+`.claude-plugin/plugin.json` and `.codex-plugin/plugin.json` to the same value. Bumping
+only one of them does not propagate the update correctly either. Changes limited to
+`devDependencies` are exempt: they do not change what clients run.
 
 `.github/workflows/plugin-version.yml` enforces this on pull requests and on pushes to
 `main`, failing both missing bumps and version mismatches. To run the same check

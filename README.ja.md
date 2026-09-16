@@ -326,7 +326,7 @@ plugin 経由でも前提（Windows 11、Node.js 24 LTS（`npm ci` 実行済み�
 
 ## plugin version を更新する
 
-client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`、`package.json`、`package-lock.json`）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。
+client repository は plugin manifest の `version` でのみ HDO の更新を検知します。配布面（`hdo.ps1`、`src/`、`commands/`、`skills/`、`config/`、`schemas/`、`workers/`、および `package.json` / `package-lock.json` の runtime 依存）を変更したら、`.claude-plugin/plugin.json` と `.codex-plugin/plugin.json` の `version` を同じ値へ揃えて引き上げてください。片方だけ上げた場合も更新は正しく伝播しません。`devDependencies` だけの変更は client の動作を変えないため bump 不要です。
 
 `.github/workflows/plugin-version.yml` が pull request と `main` への push でこれを検査し、bump 漏れと version 不一致を失敗させます。手元で同じ検査を実行する場合は次のとおりです。
 
