@@ -16,7 +16,9 @@
 - [ ] Tests added or updated for the behaviour change
 - [ ] `CHANGELOG.md` updated under `## [Unreleased]`
 - [ ] If the distribution surface changed (`hdo.ps1`, `src/`, `commands/`, `skills/`,
-      `config/`, `schemas/`), the version was bumped in **both**
+      `config/`, `schemas/`, `workers/`, or runtime dependencies in `package.json` /
+      `package-lock.json`; `devDependencies`-only changes are exempt), the version was
+      bumped in **both**
       `.claude-plugin/plugin.json` and `.codex-plugin/plugin.json`
       (verify: `pwsh -NoProfile -File ./tools/check-plugin-version.ps1 -BaseRef origin/main -HeadRef HEAD`)
 - [ ] New code is TypeScript under `src/`, or is a bug fix to the PowerShell
