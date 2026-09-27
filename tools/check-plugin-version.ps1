@@ -4,8 +4,10 @@
 
 .DESCRIPTION
     HDO の client repository は plugin manifest の version でのみ更新を検知する。
-    そのため配布される file（hdo.ps1 / src / commands / skills / config / schemas と
-    manifest 自体）が変わったのに version が据え置かれると、client 側は更新を取得できない。
+    そのため配布される file（hdo.ps1 / src / commands / skills / config / schemas /
+    workers と manifest 自体、および package.json / package-lock.json の runtime 依存）
+    が変わったのに version が据え置かれると、client 側は更新を取得できない。
+    devDependencies だけの変更は client の動作を変えないため bump を要求しない。
     本 script は base ref と head ref を比較し、次を検査する。
 
       1. Claude manifest と Codex manifest の version が一致すること
@@ -28,9 +30,6 @@ $claudeManifestPath = '.claude-plugin/plugin.json'
 $codexManifestPath = '.codex-plugin/plugin.json'
 
 # client に配布され動作を変えうる path。ここが変わったら version bump を要求する。
-# フェーズ7 cut-over 後は plugin の runtime が node になり、依存（ajv / ajv-formats /
-# koffi）が package.json / package-lock.json で固定される。これらは配布面の一部
-# （`npm ci` で client にも展開される）なので、依存変更も version bump 対象にする。
 $watchedPaths = @(
     'hdo.ps1',
     'src/',
@@ -39,11 +38,20 @@ $watchedPaths = @(
     'config/',
     'schemas/',
     'workers/',
-    'package.json',
-    'package-lock.json',
     $claudeManifestPath,
     $codexManifestPath
 )
+
+# フェーズ7 cut-over 後は plugin の runtime が node になり、依存（ajv / ajv-formats /
+# koffi）が package.json / package-lock.json で固定される。これらは配布面の一部
+# （`npm ci` で client にも展開される）なので、依存変更も version bump 対象にする。
+# ただし devDependencies（@types/node / typescript）は `node src/cli/main.ts` の実行時
+# には使われず client の動作を変えないため、devDependencies だけが変わった場合
+# （Dependabot の dev-dependencies group など）は bump を要求しない。
+# 判定は path ではなく内容で行う: 両 file について runtime に関係する部分だけを
+# 取り出して base / head を比較する。
+$dependencyManifestPath = 'package.json'
+$dependencyLockPath = 'package-lock.json'
 
 $problems = [Collections.Generic.List[string]]::new()
 
@@ -146,6 +154,102 @@ function Get-ManifestVersion {
     return $version
 }
 
+function Get-JsonAtRevision {
+    param(
+        [Parameter(Mandatory)][string]$Revision,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $result = Invoke-Git -Arguments @('show', "${Revision}:${Path}")
+    if ($result.ExitCode -ne 0) { return $null }
+    try {
+        return ($result.Output -join "`n") | ConvertFrom-Json -AsHashtable -Depth 100
+    }
+    catch {
+        Add-Problem "$Path ($Revision) の JSON を解析できません: $($_.Exception.Message)"
+        return $null
+    }
+}
+
+function Get-RuntimeDependencyView {
+    <#
+    .SYNOPSIS
+        package.json / package-lock.json から devDependencies に由来する部分を除いた
+        「client の実行時に効く内容」を、比較用の正規化文字列として返す。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [AllowNull()]$Json
+    )
+    if ($null -eq $Json) { return $null }
+
+    if ($Path -eq $dependencyManifestPath) {
+        $view = [ordered]@{}
+        foreach ($key in $Json.Keys) {
+            if ($key -eq 'devDependencies') { continue }
+            $view[$key] = $Json[$key]
+        }
+        return ($view | ConvertTo-Json -Depth 100 -Compress)
+    }
+
+    if ($Path -eq $dependencyLockPath) {
+        # lockfileVersion 2/3: `packages` の各 entry は `dev: true` で devDependencies
+        # 由来（transitive を含む）と判別できる。root entry ("") は devDependencies
+        # の宣言そのものを含むので、そこだけ落として残りを比較する。
+        # top-level と root entry の name / version / license は package.json の写しで
+        # あり（npm が lockfile を再生成した際に追随するだけ）、install 内容を変えない
+        # ので比較から外す。package.json 側の同じ field は manifest の比較で見ている。
+        # 想定外の形式（`packages` が無い lockfileVersion 1 など）は判別できないので、
+        # file 全体を比較対象にして保守的に扱う。
+        $mirroredMetadataKeys = @('name', 'version', 'license')
+        if (-not $Json.ContainsKey('packages') -or $Json['packages'] -isnot [Collections.IDictionary]) {
+            return ($Json | ConvertTo-Json -Depth 100 -Compress)
+        }
+        $view = [ordered]@{}
+        foreach ($key in $Json.Keys) {
+            if ($key -eq 'packages' -or $key -in $mirroredMetadataKeys) { continue }
+            $view[$key] = $Json[$key]
+        }
+        $packages = [ordered]@{}
+        foreach ($entryPath in $Json['packages'].Keys) {
+            $entry = $Json['packages'][$entryPath]
+            if ($entryPath -eq '') {
+                $root = [ordered]@{}
+                foreach ($key in $entry.Keys) {
+                    if ($key -eq 'devDependencies' -or $key -in $mirroredMetadataKeys) { continue }
+                    $root[$key] = $entry[$key]
+                }
+                $packages[$entryPath] = $root
+                continue
+            }
+            if ($entry -is [Collections.IDictionary] -and $entry.ContainsKey('dev') -and $entry['dev'] -eq $true) { continue }
+            $packages[$entryPath] = $entry
+        }
+        $view['packages'] = $packages
+        return ($view | ConvertTo-Json -Depth 100 -Compress)
+    }
+
+    throw "Get-RuntimeDependencyView: 未対応の path '$Path'"
+}
+
+function Test-RuntimeDependencyChange {
+    <#
+    .SYNOPSIS
+        package.json / package-lock.json の変更が runtime 依存（devDependencies 以外）
+        に影響するかを返す。base か head に file が無い場合は変更ありとして扱う。
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$BaseRevision,
+        [Parameter(Mandatory)][string]$HeadRevision
+    )
+    $baseJson = Get-JsonAtRevision -Revision $BaseRevision -Path $Path
+    $headJson = Get-JsonAtRevision -Revision $HeadRevision -Path $Path
+    if ($null -eq $baseJson -or $null -eq $headJson) { return $true }
+    $baseView = Get-RuntimeDependencyView -Path $Path -Json $baseJson
+    $headView = Get-RuntimeDependencyView -Path $Path -Json $headJson
+    return $baseView -ne $headView
+}
+
 $baseResolve = Invoke-Git -Arguments @('rev-parse', '--verify', "$BaseRef^{commit}")
 if ($baseResolve.ExitCode -ne 0) {
     Write-Host "ERROR: base ref '$BaseRef' を解決できません。fetch 済みか確認してください。" -ForegroundColor Red
@@ -176,17 +280,34 @@ if ($diff.ExitCode -ne 0) {
     exit 2
 }
 $changedFiles = @($diff.Output | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-$watchedChanges = @(
-    $changedFiles | Where-Object {
-        $file = $_
-        @($watchedPaths | Where-Object {
-                # ディレクトリ entry（trailing '/'）は配下すべてに一致させ、
-                # ファイル entry は完全一致のみに限定する（例: hdo.ps1.bak を誤検知しない）。
-                if ($_.EndsWith('/')) { $file.StartsWith($_, [StringComparison]::Ordinal) }
-                else { $file -eq $_ }
-            }).Count -gt 0
+$watchedChanges = [Collections.Generic.List[string]]::new()
+$devOnlyDependencyChanges = [Collections.Generic.List[string]]::new()
+foreach ($file in $changedFiles) {
+    if ($file -eq $dependencyManifestPath -or $file -eq $dependencyLockPath) {
+        if (Test-RuntimeDependencyChange -Path $file -BaseRevision $baseRevision -HeadRevision $headCommit) {
+            $watchedChanges.Add($file)
+        }
+        else {
+            $devOnlyDependencyChanges.Add($file)
+        }
+        continue
     }
-)
+    $isWatched = @($watchedPaths | Where-Object {
+            # ディレクトリ entry（trailing '/'）は配下すべてに一致させ、
+            # ファイル entry は完全一致のみに限定する（例: hdo.ps1.bak を誤検知しない）。
+            if ($_.EndsWith('/')) { $file.StartsWith($_, [StringComparison]::Ordinal) }
+            else { $file -eq $_ }
+        }).Count -gt 0
+    if ($isWatched) { $watchedChanges.Add($file) }
+}
+$watchedChanges = @($watchedChanges)
+$devOnlyDependencyChanges = @($devOnlyDependencyChanges)
+
+if ($devOnlyDependencyChanges.Count -gt 0) {
+    Write-Host ''
+    Write-Host "devDependencies のみの変更（version bump 対象外） $($devOnlyDependencyChanges.Count) 件:"
+    foreach ($file in $devOnlyDependencyChanges) { Write-Host "  - $file" }
+}
 
 $baseClaude = Get-ManifestVersion -Revision $baseRevision -Path $claudeManifestPath -Label 'Claude manifest'
 $baseCodex = Get-ManifestVersion -Revision $baseRevision -Path $codexManifestPath -Label 'Codex manifest'
@@ -242,6 +363,11 @@ if ($env:GITHUB_STEP_SUMMARY) {
     $summary.Add('')
     $summary.Add("配布面の変更: $($watchedChanges.Count) 件")
     foreach ($file in $watchedChanges) { $summary.Add("- ``$file``") }
+    if ($devOnlyDependencyChanges.Count -gt 0) {
+        $summary.Add('')
+        $summary.Add("devDependencies のみの変更（version bump 対象外）: $($devOnlyDependencyChanges.Count) 件")
+        foreach ($file in $devOnlyDependencyChanges) { $summary.Add("- ``$file``") }
+    }
     if ($problems.Count -gt 0) {
         $summary.Add('')
         $summary.Add('### 検出された問題')

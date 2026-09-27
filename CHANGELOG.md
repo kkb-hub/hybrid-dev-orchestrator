@@ -11,6 +11,17 @@ The authoritative version number is the one in `.claude-plugin/plugin.json` and
 
 ## [Unreleased]
 
+### Changed
+
+- `tools/check-plugin-version.ps1` (the `plugin-version` CI guard) no longer requires
+  a plugin version bump for changes limited to `devDependencies` in `package.json` /
+  `package-lock.json`. It now compares the runtime-relevant content of both files
+  (ignoring `devDependencies`, `dev: true` lockfile entries, and the lockfile's
+  mirrored `name` / `version` / `license` metadata) instead of matching on path, so
+  Dependabot's dev-dependencies group PRs can merge without a release. Runtime
+  dependency changes still require a bump. `workers/` is now documented as a watched
+  path (it was already enforced).
+
 ## [0.14.0] - 2026-09-07
 
 First public release. No functional changes — this release prepares the project
